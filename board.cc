@@ -10,15 +10,20 @@
 #include <utility>
 #include <vector>
 
-#include "board.h"
+#include "board.h" // This now includes types.h
+#include "nnue/nnue.h"
 
 namespace chess {
 
 constexpr int kMobilityMultiplier = 5;
-Piece Piece::kNoPiece = Piece();
-BoardLocation BoardLocation::kNoLocation = BoardLocation();
+// Piece::kNoPiece, BoardLocation::kNoLocation, Player constants, and Piece constants
+// are now defined in types.cc and declared in types.h.
+// They are accessible via the include of "board.h" which now includes "types.h".
+
+// CastlingRights::kMissingRights is defined here as CastlingRights class is still in board.h
 CastlingRights CastlingRights::kMissingRights = CastlingRights();
 
+// Initial rook locations are specific to the board layout, so they remain here.
 const BoardLocation kRedInitialRookLocationKingside(13, 10);
 const BoardLocation kRedInitialRookLocationQueenside(13, 3);
 const BoardLocation kBlueInitialRookLocationKingside(10, 0);
@@ -28,38 +33,6 @@ const BoardLocation kYellowInitialRookLocationQueenside(0, 10);
 const BoardLocation kGreenInitialRookLocationKingside(3, 13);
 const BoardLocation kGreenInitialRookLocationQueenside(10, 13);
 
-const Player kRedPlayer = Player(RED);
-const Player kBluePlayer = Player(BLUE);
-const Player kYellowPlayer = Player(YELLOW);
-const Player kGreenPlayer = Player(GREEN);
-
-const Piece kRedPawn(kRedPlayer, PAWN);
-const Piece kRedKnight(kRedPlayer, KNIGHT);
-const Piece kRedBishop(kRedPlayer, BISHOP);
-const Piece kRedRook(kRedPlayer, ROOK);
-const Piece kRedQueen(kRedPlayer, QUEEN);
-const Piece kRedKing(kRedPlayer, KING);
-
-const Piece kBluePawn(kBluePlayer, PAWN);
-const Piece kBlueKnight(kBluePlayer, KNIGHT);
-const Piece kBlueBishop(kBluePlayer, BISHOP);
-const Piece kBlueRook(kBluePlayer, ROOK);
-const Piece kBlueQueen(kBluePlayer, QUEEN);
-const Piece kBlueKing(kBluePlayer, KING);
-
-const Piece kYellowPawn(kYellowPlayer, PAWN);
-const Piece kYellowKnight(kYellowPlayer, KNIGHT);
-const Piece kYellowBishop(kYellowPlayer, BISHOP);
-const Piece kYellowRook(kYellowPlayer, ROOK);
-const Piece kYellowQueen(kYellowPlayer, QUEEN);
-const Piece kYellowKing(kYellowPlayer, KING);
-
-const Piece kGreenPawn(kGreenPlayer, PAWN);
-const Piece kGreenKnight(kGreenPlayer, KNIGHT);
-const Piece kGreenBishop(kGreenPlayer, BISHOP);
-const Piece kGreenRook(kGreenPlayer, ROOK);
-const Piece kGreenQueen(kGreenPlayer, QUEEN);
-const Piece kGreenKing(kGreenPlayer, KING);
 
 namespace {
 
@@ -771,9 +744,6 @@ bool Board::IsAttackedByTeam(Team team, const BoardLocation& location) const {
   PlacedPiece attackers[1];
   size_t pos = GetAttackers2(attackers, 1, team, location);
   return pos > 0;
-
-  // auto attackers = GetAttackers(team, location, /*return_early=*/true);
-  // return attackers.size() > 0;
 }
 
 bool Board::IsOnPathBetween(
@@ -937,6 +907,25 @@ GameResult Board::CheckWasLastMoveKingCapture() const {
   return IN_PROGRESS;
 }
 
+bool Board::IsLegalLocation(int row, int col) const {
+  if (row < 0
+      || row > GetMaxRow()
+      || col < 0
+      || col > GetMaxCol()
+      || (row < 3 && (col < 3 || col > 10))
+      || (row > 10 && (col < 3 || col > 10))) {
+    return false;
+  }
+  return true;
+}
+
+bool Board::IsLegalLocation(const BoardLocation& location) const {
+  if (location.Missing()) {
+      return false;
+  }
+  return IsLegalLocation(location.GetRow(), location.GetCol());
+}
+
 void Board::SetPiece(
     const BoardLocation& location,
     const Piece& piece) {
@@ -949,6 +938,7 @@ void Board::SetPiece(
     king_locations_[piece.GetColor()] = location;
   }
   // Update piece eval
+  // kPieceEvaluations is now available from types.h
   int piece_eval = kPieceEvaluations[piece.GetPieceType()];
   if (piece.GetTeam() == RED_YELLOW) {
     piece_evaluation_ += piece_eval;
@@ -956,6 +946,11 @@ void Board::SetPiece(
     piece_evaluation_ -= piece_eval;
   }
   player_piece_evaluations_[piece.GetColor()] += piece_eval;
+
+  // NNUE Update: Add piece to NNUE's internal state
+  if (nnue_) {
+    nnue_->SetPiece(piece, location);
+  }
 }
 
 void Board::RemovePiece(const BoardLocation& location) {
@@ -977,6 +972,7 @@ void Board::RemovePiece(const BoardLocation& location) {
     king_locations_[piece.GetColor()] = BoardLocation::kNoLocation;
   }
   // Update piece eval
+  // kPieceEvaluations is now available from types.h
   int piece_eval = kPieceEvaluations[piece.GetPieceType()];
   if (piece.GetTeam() == RED_YELLOW) {
     piece_evaluation_ -= piece_eval;
@@ -984,6 +980,11 @@ void Board::RemovePiece(const BoardLocation& location) {
     piece_evaluation_ += piece_eval;
   }
   player_piece_evaluations_[piece.GetColor()] -= piece_eval;
+
+  // NNUE Update: Remove piece from NNUE's internal state
+  if (nnue_) {
+    nnue_->RemovePiece(piece, location);
+  }
 }
 
 void Board::InitializeHash() {
@@ -1058,7 +1059,7 @@ void Board::MakeMove(const Move& move) {
   UpdateTurnHash(t);
   UpdateTurnHash((t+1)%4);
 
-  turn_ = GetNextPlayer(turn_);
+  turn_ = GetNextPlayer(turn_); // GetNextPlayer is now from types.h
   moves_.push_back(move);
 }
 
@@ -1072,7 +1073,7 @@ void Board::UndoMove() {
 
   assert(!moves_.empty());
   const Move& move = moves_.back();
-  Player turn_before = GetPreviousPlayer(turn_);
+  Player turn_before = GetPreviousPlayer(turn_); // GetPreviousPlayer is now from types.h
 
   const BoardLocation& to = move.To();
   const BoardLocation& from = move.From();
@@ -1132,7 +1133,7 @@ BoardLocation Board::GetKingLocation(PlayerColor color) const {
 }
 
 Team Board::TeamToPlay() const {
-  return GetTeam(GetTurn().GetColor());
+  return GetTeam(GetTurn().GetColor()); // GetTeam is now from types.h
 }
 
 int Board::PieceEvaluation() const {
@@ -1194,7 +1195,7 @@ Board::Board(
     std::unordered_map<BoardLocation, Piece> location_to_piece,
     std::optional<std::unordered_map<Player, CastlingRights>> castling_rights,
     std::optional<EnpassantInitialization> enp)
-  : turn_(std::move(turn))
+  : turn_(std::move(turn)), nnue_(nullptr)
     {
 
   for (int color = 0; color < 4; color++) {
@@ -1226,14 +1227,28 @@ Board::Board(
     king_locations_[i] = BoardLocation::kNoLocation;
   }
 
+  // Populate pieces using SetPiece to ensure NNUE (if attached) is updated
   for (const auto& it : location_to_piece) {
     const auto& location = it.first;
     const auto& piece = it.second;
-    PlayerColor color = piece.GetColor();
+    // SetPiece will update internal state (location_to_piece_, piece_list_, eval, hash, and nnue_)
+    // NOTE: PieceEvaluation and player_piece_evaluations_ would have been built
+    // correctly by the SetPiece calls above, but the constructor initializes them to 0 prior to this loop.
+    // We will recalculate them below based on the filled location_to_piece map.
     location_to_piece_[location.GetRow()][location.GetCol()] = piece;
-    piece_list_[piece.GetColor()].push_back(PlacedPiece(
-          locations_[location.GetRow()][location.GetCol()],
-          piece));
+    piece_list_[piece.GetColor()].emplace_back(location, piece);
+    if (piece.GetPieceType() == KING) {
+      king_locations_[piece.GetColor()] = location;
+    }
+  }
+
+  // Recalculate piece_evaluation_ and player_piece_evaluations_ after all pieces are set
+  // kPieceEvaluations is now available from types.h
+  piece_evaluation_ = 0;
+  for(int i=0; i<4; ++i) player_piece_evaluations_[i] = 0;
+
+  for (const auto& it : location_to_piece) {
+    const auto& piece = it.second;
     PieceType piece_type = piece.GetPieceType();
     if (piece.GetTeam() == RED_YELLOW) {
       piece_evaluation_ += kPieceEvaluations[static_cast<int>(piece_type)];
@@ -1241,9 +1256,6 @@ Board::Board(
       piece_evaluation_ -= kPieceEvaluations[static_cast<int>(piece_type)];
     }
     player_piece_evaluations_[piece.GetColor()] += kPieceEvaluations[static_cast<int>(piece_type)];
-    if (piece.GetPieceType() == KING) {
-      king_locations_[color] = location;
-    }
   }
 
   struct {
@@ -1282,53 +1294,50 @@ Board::Board(
     }
   }
 
+  // Call InitializeHash after pieces are placed and hashes are set up
   InitializeHash();
 }
 
-inline Team GetTeam(PlayerColor color) {
-  return (color == RED || color == YELLOW) ? RED_YELLOW : BLUE_GREEN;
+const CastlingRights& Board::GetCastlingRights(const Player& player) {
+  return castling_rights_[player.GetColor()];
 }
 
-Player GetNextPlayer(const Player& player) {
+std::optional<CastlingType> Board::GetRookLocationType(
+    const Player& player, const BoardLocation& location) const {
   switch (player.GetColor()) {
   case RED:
-    return kBluePlayer;
+    if (location == kRedInitialRookLocationKingside) {
+      return KINGSIDE;
+    } else if (location == kRedInitialRookLocationQueenside) {
+      return QUEENSIDE;
+    }
+    break;
   case BLUE:
-    return kYellowPlayer;
+    if (location == kBlueInitialRookLocationKingside) {
+      return KINGSIDE;
+    } else if (location == kBlueInitialRookLocationQueenside) {
+      return QUEENSIDE;
+    }
+    break;
   case YELLOW:
-    return kGreenPlayer;
+    if (location == kYellowInitialRookLocationKingside) {
+      return KINGSIDE;
+    } else if (location == kYellowInitialRookLocationQueenside) {
+      return QUEENSIDE;
+    }
+    break;
   case GREEN:
+    if (location == kGreenInitialRookLocationKingside) {
+      return KINGSIDE;
+    } else if (location == kGreenInitialRookLocationQueenside) {
+      return QUEENSIDE;
+    }
+    break;
   default:
-    return kRedPlayer;
+    assert(false);
+    break;
   }
-}
-
-Player GetPartner(const Player& player) {
-  switch (player.GetColor()) {
-  case RED:
-    return kYellowPlayer;
-  case BLUE:
-    return kGreenPlayer;
-  case YELLOW:
-    return kRedPlayer;
-  case GREEN:
-  default:
-    return kBluePlayer;
-  }
-}
-
-Player GetPreviousPlayer(const Player& player) {
-  switch (player.GetColor()) {
-  case RED:
-    return kGreenPlayer;
-  case BLUE:
-    return kRedPlayer;
-  case YELLOW:
-    return kBluePlayer;
-  case GREEN:
-  default:
-    return kYellowPlayer;
-  }
+  return std::nullopt;
 }
 
 std::shared_ptr<Board> Board::CreateStandardSetup() {
@@ -1394,73 +1403,38 @@ int Move::ManhattanDistance() const {
        + std::abs(from_.GetCol() - to_.GetCol());
 }
 
-namespace {
-
-std::string ToStr(PlayerColor color) {
-  switch (color) {
-  case RED:
-    return "RED";
-  case BLUE:
-    return "BLUE";
-  case YELLOW:
-    return "YELLOW";
-  case GREEN:
-    return "GREEN";
-  default:
-    return "UNINITIALIZED_PLAYER";
-  }
+bool Move::operator==(const Move& other) const {
+    return from_ == other.from_
+        && to_ == other.to_
+        && standard_capture_ == other.standard_capture_
+        && promotion_piece_type_ == other.promotion_piece_type_
+        && en_passant_location_ == other.en_passant_location_
+        && en_passant_capture_ == other.en_passant_capture_
+        && rook_move_ == other.rook_move_
+        && initial_castling_rights_ == other.initial_castling_rights_
+        && castling_rights_ == other.castling_rights_;
 }
 
-std::string ToStr(PieceType piece_type) {
-  switch (piece_type) {
-  case PAWN:
-    return "P";
-  case ROOK:
-    return "R";
-  case KNIGHT:
-    return "N";
-  case BISHOP:
-    return "B";
-  case KING:
-    return "K";
-  case QUEEN:
-    return "Q";
-  default:
-    return "U";
-  }
-}
-
-}  // namespace
-
-std::ostream& operator<<(
-    std::ostream& os, const Piece& piece) {
-  os << ToStr(piece.GetColor()) << "(" << ToStr(piece.GetPieceType()) << ")";
-  return os;
-}
-
-std::ostream& operator<<(
-    std::ostream& os, const PlacedPiece& placed_piece) {
-  os << placed_piece.GetPiece() << "@" << placed_piece.GetLocation();
-  return os;
-}
-
-std::ostream& operator<<(
-    std::ostream& os, const Player& player) {
-  os << "Player(" << ToStr(player.GetColor()) << ")";
-  return os;
-}
-
-std::ostream& operator<<(
-    std::ostream& os, const BoardLocation& location) {
-  os << "Loc(" << (int)location.GetRow() << ", " << (int)location.GetCol() << ")";
-  return os;
-}
-
+// operator<< for Move
 std::ostream& operator<<(std::ostream& os, const Move& move) {
-  os << "Move(" << move.From() << " -> " << move.To() << ")";
+  os << "Move(" << move.From() << " -> " << move.To();
+  if (move.GetPromotionPieceType() != NO_PIECE) {
+       os << "=" << ToStr(move.GetPromotionPieceType());
+  }
+  os << ")";
   return os;
 }
 
+// Move::PrettyStr
+std::string Move::PrettyStr() const {
+  std::string s = from_.PrettyStr() + "-" + to_.PrettyStr();
+  if (promotion_piece_type_ != NO_PIECE) {
+    s += "=" + ToStr(promotion_piece_type_);
+  }
+  return s;
+}
+
+// operator<< for Board
 std::ostream& operator<<(
     std::ostream& os, const Board& board) {
   for (int i = 0; i < 14; i++) {
@@ -1488,66 +1462,6 @@ std::ostream& operator<<(
   return os;
 }
 
-const CastlingRights& Board::GetCastlingRights(const Player& player) {
-  return castling_rights_[player.GetColor()];
-}
-
-std::optional<CastlingType> Board::GetRookLocationType(
-    const Player& player, const BoardLocation& location) const {
-  switch (player.GetColor()) {
-  case RED:
-    if (location == kRedInitialRookLocationKingside) {
-      return KINGSIDE;
-    } else if (location == kRedInitialRookLocationQueenside) {
-      return QUEENSIDE;
-    }
-    break;
-  case BLUE:
-    if (location == kBlueInitialRookLocationKingside) {
-      return KINGSIDE;
-    } else if (location == kBlueInitialRookLocationQueenside) {
-      return QUEENSIDE;
-    }
-    break;
-  case YELLOW:
-    if (location == kYellowInitialRookLocationKingside) {
-      return KINGSIDE;
-    } else if (location == kYellowInitialRookLocationQueenside) {
-      return QUEENSIDE;
-    }
-    break;
-  case GREEN:
-    if (location == kGreenInitialRookLocationKingside) {
-      return KINGSIDE;
-    } else if (location == kGreenInitialRookLocationQueenside) {
-      return QUEENSIDE;
-    }
-    break;
-  default:
-    assert(false);
-    break;
-  }
-  return std::nullopt;
-}
-
-Team OtherTeam(Team team) {
-  return team == RED_YELLOW ? BLUE_GREEN : RED_YELLOW;
-}
-
-std::string BoardLocation::PrettyStr() const {
-  std::string s;
-  s += ('a' + GetCol());
-  s += std::to_string(14 - GetRow());
-  return s;
-}
-
-std::string Move::PrettyStr() const {
-  std::string s = from_.PrettyStr() + "-" + to_.PrettyStr();
-  if (promotion_piece_type_ != NO_PIECE) {
-    s += "=" + ToStr(promotion_piece_type_);
-  }
-  return s;
-}
 
 bool Board::DeliversCheck(const Move& move) {
   int color = GetTurn().GetColor();
@@ -1660,7 +1574,7 @@ int StaticExchangeEvaluationFromLocation(
   size_t num_attackers_this_side = board.GetAttackers2(
       attackers_this_side, kLimit, board.GetTurn().GetTeam(), loc);
   size_t num_attackers_that_side = board.GetAttackers2(
-      attackers_that_side, kLimit, OtherTeam(board.GetTurn().GetTeam()), loc);
+      attackers_that_side, kLimit, OtherTeam(board.GetTurn().GetTeam()), loc); // OtherTeam from types.h
 
   std::vector<int> piece_values_this_side;
   piece_values_this_side.reserve(num_attackers_this_side);
@@ -1714,4 +1628,3 @@ int StaticExchangeEvaluationCapture(
 
 
 }  // namespace chess
-

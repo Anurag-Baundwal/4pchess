@@ -14,6 +14,11 @@
 #include "move_picker.h"
 #include "transposition_table.h"
 
+// Forward declare NNUE class
+namespace chess {
+class NNUE;
+}
+
 namespace chess {
 
 constexpr int kMateValue = 1000000'00;  // mate value (centipawns)
@@ -67,6 +72,10 @@ struct PlayerOptions {
   bool enable_knight_bonus = true;
   Team engine_team = NO_TEAM;
 
+  // for NNUE
+  bool enable_nnue = false;
+  std::string nnue_weights_filepath = ""; // Path to NNUE model directory
+
   // for pruning / reduction
   bool enable_futility_pruning = true;
   bool enable_late_move_reduction = true;
@@ -106,14 +115,17 @@ constexpr size_t kBufferNumPartitions = 200; // number of recursive calls
 // Manages state of worker threads during search
 class ThreadState {
  public:
-  ThreadState(
-      PlayerOptions options, const Board& board, const PVInfo& pv_info);
-  Board& GetBoard() { return board_; }
+  // Constructor now takes a shared_ptr to the NNUE template for deep copying
+  ThreadState(PlayerOptions options, const Board& board, const PVInfo& pv_info, std::shared_ptr<NNUE> nnue_template_for_copy = nullptr);
+  
+  // Board is now non-const as we might modify its internal NNUE pointer
+  Board& GetBoard() { return board_; } 
   Move* GetNextMoveBufferPartition();
   void ReleaseMoveBufferPartition();
   int* NActivated() { return n_activated_; }
   int* TotalMoves() { return total_moves_; }
   PVInfo& GetPVInfo() { return pv_info_; }
+  NNUE* GetNNUE() { return nnue_.get(); } // Access per-thread NNUE instance
   void ResetHistoryHeuristic();
 
   ~ThreadState();
@@ -132,8 +144,13 @@ class ThreadState {
 
  private:
   PlayerOptions options_;
-  Board board_;
+  Board board_; // Board state for this thread's search
   PVInfo pv_info_;
+
+  // Per-thread NNUE instance
+  // Note: nnue_ is a shared_ptr to an NNUE object that is a *deep copy*
+  // of the main NNUE's weights. This allows incremental updates without locks.
+  std::shared_ptr<NNUE> nnue_; 
 
   // Buffer used to store moves per node.
   // Each node generates up to `partition_size` moves, and there
@@ -149,7 +166,10 @@ class ThreadState {
 class AlphaBetaPlayer {
  public:
   AlphaBetaPlayer(
-      std::optional<PlayerOptions> options = std::nullopt);
+      std::optional<PlayerOptions> options = std::nullopt,
+      // For NNUE training, if you want to copy weights from an existing NNUE object.
+      // This is passed to the primary NNUE instance.
+      std::shared_ptr<NNUE> nnue_template_for_copy = nullptr);
 
   std::optional<std::tuple<int, std::optional<Move>, int>> MakeMove(
       Board& board,
@@ -164,7 +184,7 @@ class AlphaBetaPlayer {
   void SetCanceled(bool canceled) { canceled_ = canceled; }
   bool IsCanceled() { return canceled_; }
   const PVInfo& GetPVInfo() const { return pv_info_; }
-
+  void ResetMobilityScores(ThreadState& thread_state);
   std::optional<std::tuple<int, std::optional<Move>>> Search(
       Stack* ss,
       NodeType node_type,
@@ -228,7 +248,6 @@ class AlphaBetaPlayer {
       std::optional<std::chrono::time_point<std::chrono::system_clock>> deadline,
       int max_depth = 20);
 
-  void ResetMobilityScores(ThreadState& thread_state);
   void UpdateStats(Stack* ss, ThreadState& thread_state, const Board& board,
                    const Move& move, int depth, bool fail_high,
                    const std::vector<Move>& searched_moves);
@@ -259,7 +278,6 @@ class AlphaBetaPlayer {
   PlayerOptions options_;
   int location_evaluations_[14][14];
 
-  //HashTableEntry* hash_table_ = nullptr;
   std::unique_ptr<TranspositionTable> transposition_table_;
   PVInfo pv_info_;
 
@@ -270,6 +288,9 @@ class AlphaBetaPlayer {
   int asp_sum_sq_ = 0;
   int asp_sum_ = 0;
   int64_t last_board_key_ = 0;
+
+  // Main NNUE instance (shared among threads for initial copying)
+  std::shared_ptr<NNUE> nnue_; 
 
   // For evaluation
   int king_attack_weight_[30];

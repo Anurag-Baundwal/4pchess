@@ -1,6 +1,6 @@
 """Wrapper for the UCI engine in python."""
 
-from typing import Callable
+from typing import Callable, List, Optional
 
 import time
 import os
@@ -47,9 +47,9 @@ def get_move_response(process, response, pv_callback, gameover_callback):
 
 class UciWrapper:
 
-  def __init__(self, num_threads, max_depth, ponder):
+  def __init__(self, num_threads, max_depth, ponder, enable_nnue=False, nnue_path=None):
     self._num_threads = num_threads
-    self.create_process(num_threads)
+    self.create_process() # Call create_process to start the engine process
     self._max_depth = max_depth
     self._ponder_thread = None
     self._ponder_result = {}
@@ -57,15 +57,36 @@ class UciWrapper:
     self._team = None
     self._ponder = ponder
 
-  def create_process(self, num_threads):
+    # --- NNUE additions ---
+    # Send NNUE options to the engine
+    if enable_nnue:
+      self._process.stdin.write(f'setoption name NNUE value true\n')
+      if nnue_path:
+        self._process.stdin.write(f'setoption name NNUEPath value {nnue_path}\n')
+    else:
+      self._process.stdin.write(f'setoption name NNUE value false\n')
+    # --- End NNUE additions ---
+
+    # Send threads option. Keep it after NNUE, in case NNUE init relies on thread config
+    self._process.stdin.write(
+        f'setoption name threads value {num_threads}\n')
+
+  def create_process(self):
+    # Determine the path to the C++ cli executable.
+    # Assuming it's built by Bazel and located in bazel-bin/cli
+    cli_path = os.path.join(os.getcwd(), 'bazel-bin', 'cli')
+    if not os.path.exists(cli_path):
+        # Fallback for non-Bazel build if cli is in the current directory
+        cli_path = os.path.join(os.getcwd(), 'cli')
+        if not os.path.exists(cli_path):
+            raise FileNotFoundError(f"CLI executable not found at {os.path.join(os.getcwd(), 'bazel-bin', 'cli')} or {os.path.join(os.getcwd(), 'cli')}")
+
     self._process = subprocess.Popen(
-        os.path.join(os.getcwd(), 'cli'),
+        cli_path,
         universal_newlines=True,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         bufsize=1)
-    self._process.stdin.write(
-        f'setoption name threads value {num_threads}\n')
 
   def __del__(self):
     if self._process is not None:
@@ -74,8 +95,21 @@ class UciWrapper:
   def maybe_recreate_process(self):
     if self._process is None or self._process.returncode is not None:
       print('recreate process')
-      self._process = self.create_process()
+      # Recreate the process and re-send all initial options
+      # This effectively calls __init__'s logic without creating a new UciWrapper object
+      # A cleaner way would be to encapsulate the initial setup commands in a method
+      self.create_process()
+      self._process.stdin.write(
+          f'setoption name threads value {self._num_threads}\n')
+      if hasattr(self, '_enable_nnue') and self._enable_nnue: # Check if these were set during original init
+          self._process.stdin.write(f'setoption name NNUE value true\n')
+          if hasattr(self, '_nnue_path') and self._nnue_path:
+              self._process.stdin.write(f'setoption name NNUEPath value {self._nnue_path}\n')
+      else:
+          self._process.stdin.write(f'setoption name NNUE value false\n')
+
       self.set_team(self._team)
+
 
   def maybe_stop_ponder_thread(self):
     if self._ponder_thread is not None:
@@ -142,8 +176,10 @@ class UciWrapper:
       self,
       time_limit_ms: int,
       gameover_callback: Callable[[], None],
-      pv_callback: Callable[list[str], None] | None = None,
-      last_move: str | None = None):
+      # pv_callback: Callable[list[str], None] | None = None,
+      pv_callback: Optional[Callable[[List[str]], None]] = None, 
+      # last_move: str | None = None):
+      last_move: Optional[str] = None):
     self.maybe_recreate_process()
     self.maybe_stop_ponder_thread()
 
@@ -193,4 +229,3 @@ class UciWrapper:
     if not response.get('gameover') and 'best_move' not in response:
       raise ValueError('Best move not found in process response:', response)
     return response
-

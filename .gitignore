@@ -18,19 +18,22 @@ ui/build/*
 ui/bin
 ui/bin/*
 
-todo.txt
+todo*.txt
 nohup*
 api_key*.txt
 __pycache__*
 
 .vs
+.vscode
+
 d2
 d3
 d4
 data*
 games
 models
-nnue
 cli
 MODULE.bazel*
 
+old_code*
+code_summary*

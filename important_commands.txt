@@ -1,0 +1,80 @@
+Compilation
+
+With bazel ------------------------------------------------------
+bazel build -c opt //:cli  
+bazel build -c opt //nnue:gen_data
+
+Without bazel -----------------------------------------------------
+
+With avx2
+g++ -o cli_avx2 cli.cc command_line.cc board.cc types.cc player.cc utils.cc transposition_table.cc move_picker.cc nnue/nnue.cc -I. -std=c++17 -Wall -O3 -g -static-libstdc++ -static-libgcc -mavx2 -march=native
+
+Without avx2
+g++ -o cli_no_avx2 cli.cc command_line.cc board.cc types.cc player.cc utils.cc transposition_table.cc move_picker.cc nnue/nnue.cc -I. -std=c++17 -Wall -O3 -g -static-libstdc++ -static-libgcc
+
+    
+Could change the exe name to be just cli instead of cli_avx2 or cli_no_avx2
+
+Might need to place the exe in the bazel bin folder
+
+
+gen_data.exe compilation without bazel --------------------------
+
+Inside the nnue directory (C:\Users\dell3\source\repos5\4pchess\nnue), run:
+
+g++ -o gen_data.exe gen_data.cc nnue.cc ../board.cc ../player.cc ../types.cc ../utils.cc ../transposition_table.cc ../move_picker.cc -I. -I.. -std=c++17 -Wall -O3 -g -mavx2 -static-libstdc++ -static-libgcc -Wl,--stack,134217728
+
+g++ -o gen_data.exe gen_data.cc nnue.cc ../board.cc ../player.cc ../types.cc ../utils.cc ../transposition_table.cc ../move_picker.cc -I. -I.. -std=c++17 -Wall -O3 -g -mavx2 -march=native -mfma -static-libstdc++ -static-libgcc -Wl,--stack,134217728
+
+Then go and paste it in the folder C:\Users\dell3\source\repos5\4pchess\bazel-bin\nnue
+
+
+===================================================================================================================================
+
+Training
+
+python nnue/train6.py --output_dir=data --num_self_play_loops=1000 --train_positions_per_loop=2500 --search_depth=8 --epochs_per_loop=1 --train_last_n=5 --batch_size=32 --nnue_search_rate=0
+
+python nnue/train6.py --output_dir=data --num_self_play_loops=1000 --train_positions_per_loop=10000 --search_depth=8 --epochs_per_loop=1 --train_last_n=1 --batch_size=32 --nnue_search_rate=0
+
+====================================================================================================================================
+
+To enable nnue during inference
+
+C:\Users\dell3\source\repos5\4pchess\bazel-bin>cli.exe
+setoption name nnuepath value ../data/models
+setoption name nnue value true
+go infinte
+info string Unrecognized 'go' option: infinte
+info depth 1 time 25 nodes 12 pv e1-d3 score cp 100000000 nps 480
+bestmove e1-d3
+^C
+C:\Users\dell3\source\repos5\4pchess\bazel-bin>
+
+cli.exe
+setoption name nnuepath value C:\Users\dell3\source\repos5\4pchess\data\gen_models\gen_23
+setoption name nnue value true
+position startpos
+go depth 1
+
+------
+
+C:\Users\dell3\source\repos5\4pchess\bazel-bin>cli.exe
+setoption name nnuepath value C:\Users\dell3\source\repos5\4pchess\data\gen_models\gen_33
+setoption name nnue value true
+isready
+readyok
+go infinite
+
+---------
+
+setoption name nnuepath value C:\Users\dell3\source\repos5\4pchess\data_depth_12\gen_models\gen_26
+setoption name nnue value true
+
+---------
+
+========================================================================================================
+
+To test:
+
+bazel test -c opt //nnue:nnue_test --test_output=all

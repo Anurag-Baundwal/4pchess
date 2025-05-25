@@ -1,5 +1,5 @@
 common --enable_platform_specific_config
-build:linux --cxxopt='-std=c++17'
-build:windows --cxxopt='/std:c++latest'
+build:linux --cxxopt='-std=c++17' --cxxopt='-mavx2'
+build:windows --cxxopt='/std:c++latest' --cxxopt='/arch:AVX2'
 build:macos --cxxopt='-std=c++17'
-
+build --linkopt=/STACK:134217728
