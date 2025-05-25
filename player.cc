@@ -15,11 +15,12 @@
 #include "board.h"
 #include "player.h"
 #include "move_picker.h"
-//#include "static_exchange.h"
+#include "nnue/nnue.h" // Add this include
+//#include "static_exchange.h" // This include seems commented out in original, so keeping it commented.
 
 namespace chess {
 
-AlphaBetaPlayer::AlphaBetaPlayer(std::optional<PlayerOptions> options) {
+AlphaBetaPlayer::AlphaBetaPlayer(std::optional<PlayerOptions> options, std::shared_ptr<NNUE> nnue_template_for_copy) {
   if (options.has_value()) {
     options_ = *options;
   }
@@ -151,17 +152,32 @@ AlphaBetaPlayer::AlphaBetaPlayer(std::optional<PlayerOptions> options) {
       }
     }
   }
+
+  // NNUE Initialization: Create the main NNUE instance.
+  // Only initialize if NNUE is enabled in options AND a non-empty path is provided.
+  if (options_.enable_nnue && !options_.nnue_weights_filepath.empty()) {
+    nnue_ = std::make_shared<NNUE>(options_.nnue_weights_filepath, nnue_template_for_copy);
+  } else {
+    nnue_ = nullptr; // Ensure it's null if NNUE is not used or path is empty
+  }
 }
 
 
 ThreadState::ThreadState(
-    PlayerOptions options, const Board& board, const PVInfo& pv_info)
+    PlayerOptions options, const Board& board, const PVInfo& pv_info, std::shared_ptr<NNUE> nnue_template_for_copy)
   : options_(options), board_(board), pv_info_(pv_info) {
   move_buffer_ = new Move[kBufferPartitionSize * kBufferNumPartitions];
   counter_moves = new Move[14*14*14*14];
   continuation_history = new ContinuationHistory*[2];
   for (int i = 0; i < 2; i++) {
     continuation_history[i] = new ContinuationHistory[2];
+  }
+
+  // NNUE Initialization for this thread
+  if (options_.enable_nnue && !options_.nnue_weights_filepath.empty() && nnue_template_for_copy) {
+    nnue_ = std::make_shared<NNUE>(options_.nnue_weights_filepath, nnue_template_for_copy);
+  } else {
+    nnue_ = nullptr;
   }
 }
 
@@ -172,6 +188,7 @@ ThreadState::~ThreadState() {
     delete[] continuation_history[i];
   }
   delete[] continuation_history;
+  // nnue_ will be deallocated automatically by shared_ptr
 }
 
 Move* ThreadState::GetNextMoveBufferPartition() {
@@ -522,8 +539,8 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       quiets++;
     }
 
-    if (options_.enable_mobility_evaluation
-        || options_.enable_piece_activation) {
+    // Only update mobility evaluation if NNUE is not enabled
+    if (!options_.enable_nnue && (options_.enable_mobility_evaluation || options_.enable_piece_activation)) {
       UpdateMobilityEvaluation(thread_state, player);
     }
 
@@ -600,8 +617,8 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
 
     board.UndoMove();
 
-    if (options_.enable_mobility_evaluation
-        || options_.enable_piece_activation) { // reset
+    // Only reset mobility evaluation if NNUE is not enabled
+    if (!options_.enable_nnue && (options_.enable_mobility_evaluation || options_.enable_piece_activation)) { // reset
       thread_state.NActivated()[player_color] = curr_n_activated;
       thread_state.TotalMoves()[player_color] = curr_total_moves;
     }
@@ -873,8 +890,8 @@ AlphaBetaPlayer::QSearch(
 
     quiet_check_evasions += !capture && in_check;
 
-    if (options_.enable_mobility_evaluation
-        || options_.enable_piece_activation) {
+    // Only update mobility evaluation if NNUE is not enabled
+    if (!options_.enable_nnue && (options_.enable_mobility_evaluation || options_.enable_piece_activation)) {
       UpdateMobilityEvaluation(thread_state, player);
     }
 
@@ -884,8 +901,8 @@ AlphaBetaPlayer::QSearch(
 
     board.UndoMove();
 
-    if (options_.enable_mobility_evaluation
-        || options_.enable_piece_activation) { // reset
+    // Only reset mobility evaluation if NNUE is not enabled
+    if (!options_.enable_nnue && (options_.enable_mobility_evaluation || options_.enable_piece_activation)) { // reset
       thread_state.NActivated()[player_color] = curr_n_activated;
       thread_state.TotalMoves()[player_color] = curr_total_moves;
     }
@@ -1033,8 +1050,26 @@ int GetNumMajorPieces(const std::vector<PlacedPiece>& pieces) {
 
 int AlphaBetaPlayer::Evaluate(
     ThreadState& thread_state, bool maximizing_player, int alpha, int beta) {
-  int eval; // w.r.t. RY team
   Board& board = thread_state.GetBoard();
+
+  // --- NNUE Evaluation ---
+  if (options_.enable_nnue && thread_state.GetNNUE()) {
+    int nnue_score = thread_state.GetNNUE()->Evaluate(board.GetTurn().GetColor());
+
+    // Convert NNUE score to the perspective of `maximizing_player` for this node.
+    // nnue_score is the evaluation from the perspective of the player whose turn it is.
+    if ((board.GetTurn().GetTeam() == RED_YELLOW && maximizing_player) ||
+        (board.GetTurn().GetTeam() == BLUE_GREEN && !maximizing_player)) {
+      return nnue_score;
+    } else {
+      return -nnue_score;
+    }
+  }
+  // --- End NNUE Evaluation ---
+
+
+  // --- Hand-crafted Evaluation (used if NNUE is disabled) ---
+  int eval; // w.r.t. RY team
   GameResult game_result = board.CheckWasLastMoveKingCapture();
   if (game_result != IN_PROGRESS) { // game is over
     if (game_result == WIN_RY) {
@@ -1405,19 +1440,38 @@ void ThreadState::ResetHistoryHeuristic() {
 }
 
 void AlphaBetaPlayer::ResetMobilityScores(ThreadState& thread_state) {
-  // reset pseudo-mobility scores
-  if (options_.enable_mobility_evaluation || options_.enable_piece_activation) {
-    for (int i = 0; i < 4; i++) {
-      Player player(static_cast<PlayerColor>(i));
-      UpdateMobilityEvaluation(thread_state, player);
+  // Only do this if NNUE is NOT enabled. NNUE covers evaluation aspects.
+  if (!options_.enable_nnue) {
+    // reset pseudo-mobility scores
+    if (options_.enable_mobility_evaluation || options_.enable_piece_activation) {
+      for (int i = 0; i < 4; i++) {
+        Player player(static_cast<PlayerColor>(i));
+        UpdateMobilityEvaluation(thread_state, player);
+      }
     }
   }
 }
 
 int AlphaBetaPlayer::StaticEvaluation(Board& board) {
-  auto pv_copy = pv_info_.Copy();
-  ThreadState thread_state(options_, board, *pv_copy);
-  ResetMobilityScores(thread_state);
+  // Create a temporary ThreadState for this board.
+  // It needs its own NNUE instance if NNUE is enabled.
+  PlayerOptions temp_options = options_; // Copy options to pass to ThreadState
+  // Pass the main nnue_ shared_ptr to ThreadState constructor for copying
+  ThreadState thread_state(temp_options, board, *(pv_info_.Copy()), nnue_);
+
+  // Set the NNUE pointer on the temporary board object if NNUE is enabled
+  if (thread_state.GetNNUE()) {
+    thread_state.GetBoard().SetNNUE(thread_state.GetNNUE()); 
+    
+    std::vector<PlacedPiece> all_pieces_flat;
+    const auto& piece_list_of_lists = thread_state.GetBoard().GetPieceList();
+    for (const auto& pieces_for_color : piece_list_of_lists) {
+        all_pieces_flat.insert(all_pieces_flat.end(), pieces_for_color.begin(), pieces_for_color.end());
+    }
+    thread_state.GetNNUE()->InitializeWeights(all_pieces_flat); 
+  }
+
+  ResetMobilityScores(thread_state); // This will be conditional inside
   return Evaluate(thread_state, true, -kMateValue, kMateValue);
 }
 
@@ -1457,7 +1511,8 @@ AlphaBetaPlayer::MakeMove(
   thread_states.reserve(num_threads);
   for (int i = 0; i < num_threads; i++) {
     auto pv_copy = pv_info_.Copy();
-    thread_states.emplace_back(options_, board, *pv_copy);
+    // Pass nnue_ (shared_ptr) to ThreadState constructor for copying
+    thread_states.emplace_back(options_, board, *pv_copy, nnue_);
     auto& thread_state = thread_states.back();
     ResetMobilityScores(thread_state);
     thread_state.ResetHistoryHeuristic();
@@ -1471,6 +1526,18 @@ AlphaBetaPlayer::MakeMove(
     threads.push_back(std::make_unique<std::thread>([
       i, &thread_states, deadline, max_depth, this, &res, &mutex] {
       ThreadState& thread_state = thread_states[i];
+      
+      if (thread_state.GetNNUE()) {
+        thread_state.GetBoard().SetNNUE(thread_state.GetNNUE());
+
+        std::vector<PlacedPiece> all_pieces_flat;
+        const auto& piece_list_of_lists = thread_state.GetBoard().GetPieceList();
+        for (const auto& pieces_for_color : piece_list_of_lists) {
+            all_pieces_flat.insert(all_pieces_flat.end(), pieces_for_color.begin(), pieces_for_color.end());
+        }
+        thread_state.GetNNUE()->InitializeWeights(all_pieces_flat);
+      }
+
       auto r = MakeMoveSingleThread(thread_state, deadline,
           max_depth);
       SetCanceled(true);
@@ -1623,6 +1690,9 @@ int PVInfo::GetDepth() const {
 
 void AlphaBetaPlayer::UpdateMobilityEvaluation(
     ThreadState& thread_state, Player player) {
+  // Only execute this if NNUE is NOT enabled, as NNUE handles evaluation.
+  if (options_.enable_nnue) return;
+
   Board& board = thread_state.GetBoard();
 
   Move* moves = thread_state.GetNextMoveBufferPartition();
@@ -1759,6 +1829,7 @@ bool AlphaBetaPlayer::HasShield(
   case GREEN:
     return ray_blocked(-1, -1) && ray_blocked(0, -1) && ray_blocked(1, -1);
   default:
+    std::cout << "pp" << std::endl;
     abort();
   }
   return has_shield;

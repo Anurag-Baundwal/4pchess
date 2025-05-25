@@ -22,6 +22,8 @@ namespace chess {
 
 constexpr char kEngineName[] = "4pChess 0.1";
 constexpr char kAuthorName[] = "Louis O.";
+// Default path for NNUE models
+constexpr char kDefaultNNUEPath[] = "models"; 
 
 using std::chrono::milliseconds;
 using std::chrono::system_clock;
@@ -58,6 +60,8 @@ std::string GetPVStr(const AlphaBetaPlayer& player) {
 
 CommandLine::CommandLine() {
   player_options_.num_threads = 1;
+  // Set default NNUE path in options
+  player_options_.nnue_weights_filepath = kDefaultNNUEPath; 
 }
 
 void CommandLine::Run() {
@@ -178,18 +182,23 @@ void CommandLine::StartEvaluation() {
           nps = (int) (((float)num_evals) / (duration_ms.count() / 1000.0));
         }
         int score_centipawn = std::get<0>(*res);
+        // The score from MakeMove is already adjusted to the engine's team perspective (RED_YELLOW if engine_team is NO_TEAM or RED_YELLOW, or BLUE_GREEN if engine_team is BLUE_GREEN).
+        // For UCI output, we typically want the score from the perspective of the side to move.
+        // However, the current engine output for `MakeMove` already gives `eval`
+        // which is positive for winning team (RY) and negative for (BG).
+        // Let's assume for UCI output, it should be relative to the side to move.
+        // If the current turn is BG, then flip the score for UCI output.
         if (board->GetTurn().GetTeam() == BLUE_GREEN) {
           score_centipawn = -score_centipawn;
         }
-        std::string pv = GetPVStr(*player);
 
         std::cout
           << "info"
           << " depth " << depth
           << " time " << duration_ms.count()
           << " nodes " << num_evals
-          << " pv " << pv
-          << " score " << score_centipawn;
+          << " pv " << GetPVStr(*player)
+          << " score cp " << score_centipawn; // Changed to "cp" for centipawns
         if (nps.has_value()) {
           std::cout << " nps " << *nps;
         }
@@ -197,11 +206,11 @@ void CommandLine::StartEvaluation() {
 
         best_move = std::get<1>(*res);
         if (std::abs(score_centipawn) == kMateValue) {
-          break;
+          break; // Stop if mate found
         }
 
       } else {
-        break;
+        break; // Search interrupted or timed out
       }
 
       depth++;
@@ -209,7 +218,7 @@ void CommandLine::StartEvaluation() {
 
     if (best_move.has_value()) {
       std::cout << "bestmove " << best_move->PrettyStr() << std::endl;
-      best_move = std::nullopt;
+      best_move = std::nullopt; // Clear for next search
     }
 
   });
@@ -235,6 +244,9 @@ void CommandLine::HandleCommand(
       << std::endl; // size in MB
     std::cout << "option name UCI_ShowCurrLine type check default false"
       << std::endl;
+    // New NNUE options
+    std::cout << "option name NNUE type check default false" << std::endl;
+    std::cout << "option name NNUEPath type string default " << kDefaultNNUEPath << std::endl;
 
     std::cout << "uciok" << std::endl;
   } else if (command == "debug") {
@@ -253,12 +265,27 @@ void CommandLine::HandleCommand(
   } else if (command == "isready") {
     std::cout << "readyok" << std::endl;
   } else if (command == "setoption") {
-    if (parts.size() != 5) {
+    if (parts.size() < 5 || parts[1] != "name") { // Ensure "name" is present and at least 5 parts for "setoption name OPTION value VALUE"
       SendInvalidCommandMessage(line);
       return;
     }
+    
+    // Find the 'value' keyword and extract its part.
+    size_t value_idx = 0;
+    for (size_t i = 3; i < parts.size(); ++i) { // Start searching from part[3] (after "name OPTION")
+        if (parts[i] == "value") {
+            value_idx = i + 1;
+            break;
+        }
+    }
+    if (value_idx == 0 || value_idx >= parts.size()) {
+        SendInvalidCommandMessage("Missing 'value' in setoption command: " + line);
+        return;
+    }
+
     std::string option_name = LowerCase(parts[2]);
-    const auto& option_value = parts[4];
+    const std::string& option_value = parts[value_idx];
+
     if (option_name == "hash") {
       auto val = ParseInt(option_value);
       if (val.has_value()) {
@@ -270,6 +297,7 @@ void CommandLine::HandleCommand(
         size_t size = *val * 1000000 / sizeof(HashTableEntry);
         if (size != player_options_.transposition_table_size) {
           player_options_.transposition_table_size = size;
+          // Re-instantiate player to apply new hash table size
           player_ = std::make_shared<AlphaBetaPlayer>(player_options_);
         }
       } else {
@@ -298,10 +326,12 @@ void CommandLine::HandleCommand(
       }
       if (n_threads < 0) {
         SendInvalidCommandMessage("Num threads must be positive");
+        return;
       }
       if (n_threads != player_options_.num_threads) {
         player_options_.num_threads = n_threads;
         player_options_.enable_multithreading = n_threads > 1;
+        // Re-instantiate player to apply new thread count
         player_ = std::make_shared<AlphaBetaPlayer>(player_options_);
       }
     } else if (option_name == "engine_team") {
@@ -319,16 +349,39 @@ void CommandLine::HandleCommand(
         player_ = std::make_shared<AlphaBetaPlayer>(player_options_);
       } else {
         SendInvalidCommandMessage(
-            "Invalid team: " + option_value + ". Must be red_yellow, or blue_green.");
+            "Invalid team: " + option_value + ". Must be red_yellow, blue_green, no_team, or current_team.");
         return;
       }
+    } else if (option_name == "nnue") { // Handle NNUE enable/disable
+        if (option_value == "true") {
+            player_options_.enable_nnue = true;
+        } else if (option_value == "false") {
+            player_options_.enable_nnue = false;
+            // Clear path if NNUE is disabled, though path might be reused if re-enabled
+            // player_options_.nnue_weights_filepath = ""; 
+        } else {
+            SendInvalidCommandMessage("NNUE option value must be 'true' or 'false', given: " + option_value);
+            return;
+        }
+        // Re-instantiate player to apply new NNUE status and potentially load/unload weights
+        player_ = std::make_shared<AlphaBetaPlayer>(player_options_);
+    } else if (option_name == "nnuepath") { // Handle NNUE path
+        player_options_.nnue_weights_filepath = option_value;
+        // Re-instantiate player to load NNUE weights from the new path
+        player_ = std::make_shared<AlphaBetaPlayer>(player_options_);
     } else {
       SendInvalidCommandMessage("Unrecognized option: " + option_name);
       return;
     }
-    StopEvaluation();
+    StopEvaluation(); // Stop any ongoing search after changing options
 
   } else if (command == "get_num_legal_moves") {
+    // Acquire a lock before accessing board_
+    std::lock_guard lock(mutex_);
+    if (board_ == nullptr) {
+        SendInfoMessage("Board not initialized.");
+        return;
+    }
     int n_legal = player_->GetNumLegalMoves(*board_);
     SendInfoMessage("n_legal " + std::to_string(n_legal));
 
@@ -405,7 +458,7 @@ void CommandLine::HandleCommand(
     option_name_to_value["btime"] = &options.blue_time;
     option_name_to_value["ytime"] = &options.yellow_time;
     option_name_to_value["gtime"] = &options.green_time;
-    option_name_to_value["rinc"] = &options.red_time;
+    option_name_to_value["rinc"] = &options.red_time; // Reusing time options for increment
     option_name_to_value["binc"] = &options.blue_time;
     option_name_to_value["yinc"] = &options.yellow_time;
     option_name_to_value["ginc"] = &options.green_time;
@@ -417,8 +470,7 @@ void CommandLine::HandleCommand(
     while (cmd_id < parts.size()) {
       const auto& option_name = parts[cmd_id];
 
-      if (option_name_to_value.find(option_name)
-          != option_name_to_value.end()) {
+      if (option_name_to_value.count(option_name)) { // Use .count() for map key existence check
         if (parts.size() < cmd_id + 2) {
           SendInvalidCommandMessage(line);
           return;
@@ -427,7 +479,8 @@ void CommandLine::HandleCommand(
         auto* value = option_name_to_value[option_name];
         *value = ParseInt(int_str);
         if (!value->has_value()) {
-          SendInvalidCommandMessage("Can not parse integer: {}" + int_str);
+          SendInvalidCommandMessage("Can not parse integer for " + option_name + ": " + int_str);
+          return;
         }
         cmd_id += 2;
       } else if (option_name == "searchmoves") {
@@ -440,7 +493,7 @@ void CommandLine::HandleCommand(
             options.search_moves.push_back(std::move(*move));
             move_id++;
           } else {
-            break;
+            break; // Stop if not a valid move string
           }
         }
 
@@ -451,13 +504,15 @@ void CommandLine::HandleCommand(
       } else if (option_name == "infinite") { 
         options.infinite = true;
         cmd_id++;
+      } else { // Handle unrecognized 'go' options gracefully
+          SendInfoMessage("Unrecognized 'go' option: " + option_name);
+          cmd_id++; // Advance to avoid infinite loop
       }
-
     }
 
-    StopEvaluation();
-    SetEvaluationOptions(options);
-    StartEvaluation();
+    StopEvaluation(); // Stop any previous search
+    SetEvaluationOptions(options); // Set new options
+    StartEvaluation(); // Start new search
 
   } else if (command == "stop") {
     // cancel current search, if any
@@ -465,7 +520,9 @@ void CommandLine::HandleCommand(
   } else if (command == "ponderhit") {
     // switch from pondering to normal move
     StopEvaluation();
-    MakePonderMove();
+    MakePonderMove(); // This is a placeholder for actual ponderhit logic.
+                      // In a full UCI implementation, this would signal the engine
+                      // to switch from pondering to full search.
     StartEvaluation();
   } else if (command == "quit") {
     // exit the program
@@ -478,4 +535,3 @@ void CommandLine::HandleCommand(
 
 
 }  // namespace chess
-

@@ -37,6 +37,16 @@ parser.add_argument(
 parser.add_argument(
     '-ponder', '--ponder', type=parse_bool, required=False,
     default=True)
+
+# --- NNUE specific arguments ---
+parser.add_argument(
+    '-enable_nnue', '--enable_nnue', type=parse_bool, required=False,
+    default=False) # Changed default to False, usually enabled via config
+parser.add_argument(
+    '-nnue_path', '--nnue_path', type=str, required=False,
+    default='./models') # Default path to NNUE weights directory
+# --- End NNUE specific arguments ---
+
 args = parser.parse_args()
 
 
@@ -149,8 +159,14 @@ class Server:
 
   def __init__(self):
     self._token = _read_api_token(_API_KEY_FILENAME)
-    self._uci = uci_wrapper.UciWrapper(args.num_threads, args.max_depth,
-        args.ponder)
+    # Pass NNUE specific arguments to UciWrapper
+    self._uci = uci_wrapper.UciWrapper(
+        args.num_threads,
+        args.max_depth,
+        args.ponder,
+        enable_nnue=args.enable_nnue, # New argument
+        nnue_path=args.nnue_path # New argument
+    )
     self._api = api.Api(_SERVER_URL, self._token, _BOT_NAME, _BOT_VERSION)
     self._pgn4_info = None
     self._last_arrow_request = None
@@ -329,5 +345,3 @@ class Server:
 
 if __name__ == '__main__':
   Server().run()
-
-

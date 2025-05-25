@@ -2,11 +2,20 @@ package(default_visibility=[
     "//visibility:public",
 ])
 
+cc_library(
+    name = "types",
+    hdrs = ["types.h"],
+    srcs = ["types.cc"],
+)
 
 cc_library(
     name = "board",
     hdrs = ["board.h"],
     srcs = ["board.cc"],
+    deps = [
+        ":types",        # Board depends on types
+        "//nnue:nnue",   # Board includes nnue/nnue.h and has an NNUE member
+    ],
 )
 
 cc_test(
@@ -27,7 +36,14 @@ cc_library(
         ":board",
         ":transposition_table",
         ":move_picker",
+        "//nnue:nnue",
     ],
+    copts = select({
+        "//conditions:default": [],
+        "@bazel_tools//tools/cpp:msvc": ["/arch:AVX2"],
+        "@bazel_tools//tools/cpp:clang": ["-mavx2"],
+        "@bazel_tools//tools/cpp:gcc": ["-mavx2"],
+    }),
 )
 
 cc_test(
@@ -135,5 +151,3 @@ cc_binary(
         "@com_google_absl//absl/flags:parse",
     ],
 )
-
-
