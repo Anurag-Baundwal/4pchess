@@ -89,6 +89,7 @@ class MovePicker {
  public:
   MovePicker(
     Board& board,
+    size_t thread_id,
     const std::optional<Move>& pvmove,
     Move* killers,
     const int piece_evaluations[6],
@@ -121,6 +122,7 @@ class MovePicker {
   uint8_t stage_ = 0;
   uint8_t stage_idx_ = 0;
   std::vector<std::vector<Item>> stages_;
+  size_t thread_id_ = 0;
   bool init_stages_[5] = {false, false, false, false, false};
   bool enable_move_order_checks_;
 };

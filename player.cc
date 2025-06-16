@@ -26,12 +26,14 @@ AlphaBetaPlayer::AlphaBetaPlayer(std::optional<PlayerOptions> options) {
     options_ = *options;
   }
 
-  piece_move_order_scores_[PAWN] = 1;
-  piece_move_order_scores_[KNIGHT] = 2;
-  piece_move_order_scores_[BISHOP] = 3;
-  piece_move_order_scores_[ROOK] = 4;
-  piece_move_order_scores_[QUEEN] = 5;
-  piece_move_order_scores_[KING] = 0;
+  constexpr int kBaseScoreMultiplier = 20;
+
+  piece_move_order_scores_[PAWN]   = 1 * kBaseScoreMultiplier;
+  piece_move_order_scores_[KNIGHT] = 2 * kBaseScoreMultiplier;
+  piece_move_order_scores_[BISHOP] = 3 * kBaseScoreMultiplier;
+  piece_move_order_scores_[ROOK]   = 4 * kBaseScoreMultiplier;
+  piece_move_order_scores_[QUEEN]  = 5 * kBaseScoreMultiplier;
+  piece_move_order_scores_[KING]   = 0 * kBaseScoreMultiplier;
 
   king_attacker_values_[PAWN] = 25;
   king_attacker_values_[KNIGHT] = 30;
@@ -220,6 +222,7 @@ int AlphaBetaPlayer::GetNumLegalMoves(Board& board) {
 // before finishing search and the results should not be used.
 std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     Stack* ss,
+    size_t thread_id,
     NodeType node_type,
     ThreadState& thread_state,
     int ply,
@@ -286,7 +289,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
 
   if (depth <= 0) {
     if (options_.enable_qsearch) {
-      return QSearch(ss, is_pv_node ? PV : NonPV, thread_state, 0, alpha, beta,
+      return QSearch(ss, thread_id, is_pv_node ? PV : NonPV, thread_state, 0, alpha, beta,
           maximizing_player, deadline, pvinfo);
     }
 
@@ -354,7 +357,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     int r = std::min(depth / 3 + 2, depth);
 
     auto value_and_move_or = Search(
-        ss+1, NonPV, thread_state, ply + 1, depth - r,
+        ss+1, thread_id, NonPV, thread_state, ply + 1, depth - r,
         -beta, -beta + 1, !maximizing_player, expanded, deadline, null_pvinfo,
         null_moves + 1);
 
@@ -391,6 +394,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
   Move* moves = thread_state.GetNextMoveBufferPartition();
   MovePicker move_picker(
     board,
+    thread_id,
     pv_move.has_value() ? pv_move : tt_move,
     ss->killers,
     kPieceEvaluations,
@@ -568,7 +572,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       r = std::clamp(r, 0, depth - 1);
 
       value_and_move_or = Search(
-          ss+1, NonPV, thread_state, ply + 1, depth - 1 - r + e,
+          ss+1, thread_id, NonPV, thread_state, ply + 1, depth - 1 - r + e,
           -alpha-1, -alpha, !maximizing_player, expanded + e,
           deadline, *child_pvinfo, /*null_moves=*/0, true);
       if (value_and_move_or.has_value() && r > 0) {
@@ -576,7 +580,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
         if (score > alpha) {  // re-search
           num_lmr_researches_++;
           value_and_move_or = Search(
-              ss+1, NonPV, thread_state, ply + 1, depth - 1 + e,
+              ss+1, thread_id, NonPV, thread_state, ply + 1, depth - 1 + e,
               -alpha-1, -alpha, !maximizing_player, expanded + e,
               deadline, *child_pvinfo, /*null_moves=*/0, !is_cut_node);
         }
@@ -589,7 +593,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       }
 
       value_and_move_or = Search(
-          ss+1, NonPV, thread_state, ply + 1, depth - 1 + e - (r > 3),
+          ss+1, thread_id, NonPV, thread_state, ply + 1, depth - 1 + e - (r > 3),
           -alpha-1, -alpha, !maximizing_player, expanded + e,
           deadline, *child_pvinfo, /*null_moves=*/0, !is_cut_node);
     }
@@ -608,7 +612,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
 
     if (full_search) {
       value_and_move_or = Search(
-          ss+1, PV, thread_state, ply + 1, depth - 1 + e,
+          ss+1, thread_id, PV, thread_state, ply + 1, depth - 1 + e,
           -beta, -alpha, !maximizing_player, expanded + e,
           deadline, *child_pvinfo, /*null_moves=*/0, false);
     }
@@ -694,6 +698,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
 std::optional<std::tuple<int, std::optional<Move>>>
 AlphaBetaPlayer::QSearch(
     Stack* ss,
+    size_t thread_id,
     NodeType node_type,
     ThreadState& thread_state,
     int depth,
@@ -805,6 +810,7 @@ AlphaBetaPlayer::QSearch(
   Move* moves = thread_state.GetNextMoveBufferPartition();
   MovePicker move_picker(
     board,
+    thread_id,
     pv_move,
     ss->killers,
     kPieceEvaluations,
@@ -905,7 +911,7 @@ AlphaBetaPlayer::QSearch(
     }
 
     value_and_move_or = QSearch(
-        ss+1, node_type, thread_state, depth - 1, -beta, -alpha, !maximizing_player,
+        ss+1, thread_id, node_type, thread_state, depth - 1, -beta, -alpha, !maximizing_player,
         deadline, *child_pvinfo);
 
     board.UndoMove();
@@ -1626,7 +1632,7 @@ AlphaBetaPlayer::MakeMoveSingleThread(
 
           while (true) {
             move_and_value = Search(
-                ss, Root, thread_state, 1, next_depth, alpha, beta, maximizing_player,
+                ss, thread_id, Root, thread_state, 1, next_depth, alpha, beta, maximizing_player,
                 0, deadline, pv_info);
             if (!move_and_value.has_value()) { // Hit deadline
               break;
@@ -1666,7 +1672,7 @@ AlphaBetaPlayer::MakeMoveSingleThread(
       } else {
           // Helper threads use a full window
           move_and_value = Search(
-            ss, Root, thread_state, 1, next_depth, -kMateValue, kMateValue, maximizing_player,
+            ss, thread_id, Root, thread_state, 1, next_depth, -kMateValue, kMateValue, maximizing_player,
             0, deadline, pv_info);
       }
 
@@ -1688,7 +1694,7 @@ AlphaBetaPlayer::MakeMoveSingleThread(
       std::optional<std::tuple<int, std::optional<Move>>> move_and_value;
 
       move_and_value = Search(
-          ss, Root, thread_state, 1, next_depth, alpha, beta, maximizing_player,
+          ss, thread_id, Root, thread_state, 1, next_depth, alpha, beta, maximizing_player,
           0, deadline, pv_info);
 
       if (!move_and_value.has_value()) { // Hit deadline

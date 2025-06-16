@@ -15,6 +15,7 @@ enum Stage {
 
 MovePicker::MovePicker(
     Board& board,
+    size_t thread_id,
     const std::optional<Move>& pvmove,
     Move* killers,
     const int piece_evaluations[6],
@@ -33,6 +34,7 @@ MovePicker::MovePicker(
   moves_ = buffer;
   num_moves_ = board.GetPseudoLegalMoves2(buffer, buffer_size);
   board_ = &board;
+  thread_id_ = thread_id;
 
   for (size_t i = 0; i < num_moves_; i++) {
     auto& move = moves_[i];
@@ -46,40 +48,48 @@ MovePicker::MovePicker(
     int score = piece_move_order_scores[piece.GetPieceType()];
     if (pvmove.has_value() && move == *pvmove) {
       stages_[PV_MOVE].emplace_back(static_cast<short>(i), static_cast<float>(score));
-    } else if (killers != nullptr
+    } else {
+      if (thread_id_ > 0) {
+        // Add a small pseudo-random value to perturb move ordering for helper threads.
+        // This is deterministic based on thread_id and move index, but different
+        // for each thread. This helps threads explore different parts of the search tree.
+        score += (((i * 13) + (thread_id_ * 31)) % 17) - 8;
+      }
+
+      if (killers != nullptr
                && (killers[0] == move || killers[1] == move)
                && include_quiets) {
-      stages_[KILLER].emplace_back(static_cast<short>(i), static_cast<float>(score + (move == killers[0] ? 1 : 0)));
-    } else if (move.IsCapture()) {
-      int captured_val = piece_evaluations[capture.GetPieceType()];
-      int attacker_val = piece_evaluations[piece.GetPieceType()];
-      int incr_score = captured_val - attacker_val/100;
-      score += incr_score;
-      int history_score = capture_heuristic[piece.GetPieceType()][piece.GetColor()]
-        [capture.GetPieceType()][capture.GetColor()]
-        [to.GetRow()][to.GetCol()];
-      score += history_score;
-      if (attacker_val <= captured_val) {
-        stages_[GOOD_CAPTURE].emplace_back(static_cast<short>(i), static_cast<float>(score));
-      } else {
-        stages_[BAD_CAPTURE].emplace_back(static_cast<short>(i), static_cast<float>(score));
-      }
-    } else if (include_quiets) {
-      score += history_heuristic[piece.GetPieceType()][from.GetRow()][from.GetCol()][to.GetRow()][to.GetCol()] / 2;
-      if (move == counter_moves[from.GetRow()*14*14*14 + from.GetCol()*14*14
-          + to.GetRow()*14 + to.GetCol()]) {
-        score += 50;
-      }
-      score += (*piece_to_history[0])[piece_type][to.GetRow()][to.GetCol()] / 2;
-      score += (*piece_to_history[1])[piece_type][to.GetRow()][to.GetCol()] / 4;
-      score += (*piece_to_history[2])[piece_type][to.GetRow()][to.GetCol()] / 4;
-      score += (*piece_to_history[3])[piece_type][to.GetRow()][to.GetCol()] / 4;
-      score += (*piece_to_history[4])[piece_type][to.GetRow()][to.GetCol()] / 4;
+        stages_[KILLER].emplace_back(static_cast<short>(i), static_cast<float>(score + (move == killers[0] ? 1 : 0)));
+      } else if (move.IsCapture()) {
+        int captured_val = piece_evaluations[capture.GetPieceType()];
+        int attacker_val = piece_evaluations[piece.GetPieceType()];
+        int incr_score = captured_val - attacker_val/100;
+        score += incr_score;
+        int history_score = capture_heuristic[piece.GetPieceType()][piece.GetColor()]
+          [capture.GetPieceType()][capture.GetColor()]
+          [to.GetRow()][to.GetCol()];
+        score += history_score;
+        if (attacker_val <= captured_val) {
+          stages_[GOOD_CAPTURE].emplace_back(static_cast<short>(i), static_cast<float>(score));
+        } else {
+          stages_[BAD_CAPTURE].emplace_back(static_cast<short>(i), static_cast<float>(score));
+        }
+      } else if (include_quiets) {
+        score += history_heuristic[piece.GetPieceType()][from.GetRow()][from.GetCol()][to.GetRow()][to.GetCol()] / 2;
+        if (move == counter_moves[from.GetRow()*14*14*14 + from.GetCol()*14*14
+            + to.GetRow()*14 + to.GetCol()]) {
+          score += 50;
+        }
+        score += (*piece_to_history[0])[piece_type][to.GetRow()][to.GetCol()] / 2;
+        score += (*piece_to_history[1])[piece_type][to.GetRow()][to.GetCol()] / 4;
+        score += (*piece_to_history[2])[piece_type][to.GetRow()][to.GetCol()] / 4;
+        score += (*piece_to_history[3])[piece_type][to.GetRow()][to.GetCol()] / 4;
+        score += (*piece_to_history[4])[piece_type][to.GetRow()][to.GetCol()] / 4;
 
-      stages_[QUIET].emplace_back(static_cast<short>(i), static_cast<float>(score));
+        stages_[QUIET].emplace_back(static_cast<short>(i), static_cast<float>(score));
+      }
     }
   }
-
 }
 
 Move* MovePicker::GetNextMove() {

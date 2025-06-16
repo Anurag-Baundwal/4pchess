@@ -157,6 +157,7 @@ class AlphaBetaPlayer {
 
   std::optional<std::tuple<int, std::optional<Move>>> Search(
       Stack* ss,
+      size_t thread_id,
       NodeType node_type,
       ThreadState& thread_state,
       int ply,
@@ -172,6 +173,7 @@ class AlphaBetaPlayer {
 
   std::optional<std::tuple<int, std::optional<Move>>> QSearch(
       Stack* ss,
+      size_t thread_id,
       NodeType node_type,
       ThreadState& thread_state,
       int depth, // called initially with depth = 0, further decreases
