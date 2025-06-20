@@ -168,11 +168,21 @@ void InitBitboards() {
         for (int j = 0; j < kNumSquares; j++) {
             if (i == j) continue;
             for (int d = 0; d < 8; d++) {
-                 if ((kRayAttacks[i][d] & IndexToBitboard(j))) {
-                     int opposite_dir = (d < 4) ? (3-d) : (11-d); // Bishop:NE/SW,NW/SE, Rook:N/S,E/W
-                     kLineBetween[i][j] = kRayAttacks[i][d] & kRayAttacks[j][opposite_dir];
-                     break;
-                 }
+                if ((kRayAttacks[i][d] & IndexToBitboard(j))) {
+                    int opposite_dir;
+                    switch (d) {
+                        case D_NE: opposite_dir = D_SW; break;
+                        case D_NW: opposite_dir = D_SE; break;
+                        case D_SE: opposite_dir = D_NW; break;
+                        case D_SW: opposite_dir = D_NE; break;
+                        case D_N:  opposite_dir = D_S;  break;
+                        case D_E:  opposite_dir = D_W;  break;
+                        case D_S:  opposite_dir = D_N;  break;
+                        case D_W:  opposite_dir = D_E;  break;
+                    }
+                    kLineBetween[i][j] = kRayAttacks[i][d] & kRayAttacks[j][opposite_dir];
+                    break;
+                }
             }
         }
     }
