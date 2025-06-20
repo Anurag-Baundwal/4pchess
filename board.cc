@@ -422,8 +422,8 @@ Bitboard Board::GetAttackersBB(int sq, Team team) const {
     PlayerColor c2 = (team == RED_YELLOW) ? YELLOW : GREEN;
 
     // Pawns need special handling as their attack depends on their color
-    attackers |= (kPawnAttacks[GetPreviousPlayer(Player(c1)).GetColor()][sq] & piece_bitboards_[c1][PAWN]);
-    attackers |= (kPawnAttacks[GetPreviousPlayer(Player(c2)).GetColor()][sq] & piece_bitboards_[c2][PAWN]);
+    attackers |= (kPawnAttacks[GetPartner(Player(c1)).GetColor()][sq] & piece_bitboards_[c1][PAWN]);
+    attackers |= (kPawnAttacks[GetPartner(Player(c2)).GetColor()][sq] & piece_bitboards_[c2][PAWN]);
     
     // Knights & King
     attackers |= (kKnightAttacks[sq] & (piece_bitboards_[c1][KNIGHT] | piece_bitboards_[c2][KNIGHT]));
