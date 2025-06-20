@@ -513,7 +513,7 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
         if (!push1.is_zero()) {
             AddPawnMovesFromBB(moves, from_idx, push1, color, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece);
             // Check for double push only if single push is possible
-            if ((IndexToBitboard(from_idx) & kPawnStartMask[color]).is_zero()) {
+            if (kPawnStartMask[color] & IndexToBitboard(from_idx)) {
                 Bitboard push2 = kPawnDoublePush[color][from_idx] & empty_squares;
                 if (!push2.is_zero()) {
                     AddPawnMovesFromBB(moves, from_idx, push2, color, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece);
@@ -1128,65 +1128,97 @@ int Move::ApproxSEE(const Board& board, const int* piece_evaluations) {
   return captured_val - attacker_val;
 }
 
-namespace {
-int StaticExchangeEvaluationFromLocation(
+// Recursive helper for Static Exchange Evaluation.
+// It finds the least valuable attacker for 'sq' from the 'attacker_team'
+// and simulates the exchange recursively.
+// 'occupied' is a bitboard of all pieces currently on the board for this simulation.
+int SeeRecursive(
+    const Board& board,
     const int piece_evaluations[6],
-    Board& board, const int sq, PlayerColor next_to_move) {
+    int sq,
+    Team attacker_team,
+    Bitboard occupied) {
 
-    int value = 0;
-    
-    Team move_team = GetTeam(next_to_move);
-    Bitboard attackers = board.GetAttackersBB(sq, move_team);
-
-    if(attackers.is_zero()) {
-        return 0;
-    }
-    
-    // Find least valuable attacker
-    int best_pt = -1;
-    int best_val = 100000;
     int from_sq = -1;
+    PieceType attacker_type = NO_PIECE;
 
-    for (int pt = 0; pt < 6; ++pt) {
-        Bitboard piece_attackers = board.piece_bitboards_[next_to_move][pt] | board.piece_bitboards_[GetPartner(Player(next_to_move)).GetColor()][pt];
-        if(!(piece_attackers & attackers).is_zero()){
-            if (piece_evaluations[pt] < best_val) {
-                best_val = piece_evaluations[pt];
-                best_pt = pt;
-            }
+    // 1. Find the least valuable attacker for the given square 'sq'.
+    // We iterate from Pawn to King to find the cheapest piece type that can attack.
+    Bitboard attackers_bb = board.GetAttackersBB(sq, attacker_team);
+    attackers_bb &= occupied; // Only consider pieces that are still on the board in our simulation
+
+    if (attackers_bb.is_zero()) {
+        return 0; // No more attackers, exchange ends.
+    }
+
+    // Find the piece type and location of the least valuable attacker
+    for (int pt_idx = 0; pt_idx < 6; ++pt_idx) {
+        PieceType pt = static_cast<PieceType>(pt_idx);
+        PlayerColor c1 = (attacker_team == RED_YELLOW) ? RED : BLUE;
+        PlayerColor c2 = (attacker_team == RED_YELLOW) ? YELLOW : GREEN;
+        
+        Bitboard type_attackers = (board.piece_bitboards_[c1][pt] | board.piece_bitboards_[c2][pt]) & attackers_bb;
+        
+        if (!type_attackers.is_zero()) {
+            attacker_type = pt;
+            from_sq = type_attackers.ctz(); // Get the square of the first attacker of this type
+            break;
         }
     }
     
-    Bitboard least_valuable_attackers_bb = (board.piece_bitboards_[next_to_move][best_pt] | board.piece_bitboards_[GetPartner(Player(next_to_move)).GetColor()][best_pt]) & attackers;
-    from_sq = least_valuable_attackers_bb.ctz();
-    
-    // Make move
-    Piece attacker_piece = board.GetPiece(from_sq);
-    Piece victim_piece = board.GetPiece(sq);
-    board.MakeMove(Move(IndexToLocation(from_sq), IndexToLocation(sq), victim_piece));
+    if (from_sq == -1) {
+       return 0; // Should be covered by the initial check, but good for safety.
+    }
 
-    value = piece_evaluations[victim_piece.GetPieceType()] - StaticExchangeEvaluationFromLocation(piece_evaluations, board, sq, board.GetTurn().GetColor());
+    // 2. Simulate the capture for the recursion.
+    // The "victim" for the next stage of the recursion is the piece that just attacked.
+    int victim_value = piece_evaluations[attacker_type];
     
-    board.UndoMove();
+    // Remove the attacker from the board for the next recursive call
+    Bitboard next_occupied = occupied ^ BitboardImpl::IndexToBitboard(from_sq);
 
-    return std::max(0, value);
-}
+    // 3. Recurse. The gain for us is the victim's value minus what the opponent gains.
+    int gain = victim_value - SeeRecursive(board, piece_evaluations, sq, OtherTeam(attacker_team), next_occupied);
+
+    // We are not forced to continue a losing exchange.
+    return std::max(0, gain);
 }
 
 int StaticExchangeEvaluationCapture(
     const int piece_evaluations[6],
     Board& board,
     const Move& move) {
-  if (!move.IsCapture()) return 0;
-  
-  Piece captured = move.GetCapturePiece();
-  int value = piece_evaluations[captured.GetPieceType()];
-  
-  board.MakeMove(move);
-  value -= StaticExchangeEvaluationFromLocation(piece_evaluations, board, LocationToIndex(move.To()), board.GetTurn().GetColor());
-  board.UndoMove();
-  
-  return value;
+    
+    if (!move.IsCapture()) {
+        return 0;
+    }
+    
+    Piece captured_piece = move.GetCapturePiece();
+    int victim_value = piece_evaluations[captured_piece.GetPieceType()];
+    
+    int from_sq = BitboardImpl::LocationToIndex(move.From());
+    int to_sq = BitboardImpl::LocationToIndex(move.To());
+
+    // Setup the board state as if the move has been made
+    Bitboard all_pieces = board.team_bitboards_[0] | board.team_bitboards_[1];
+    Bitboard occupied_after_move = (all_pieces ^ BitboardImpl::IndexToBitboard(from_sq)) | BitboardImpl::IndexToBitboard(to_sq);
+
+    // The captured piece is removed from the 'occupied' bitboard for the simulation.
+    // The attacker's value is now the "victim" on the square for the opponent's turn.
+    Piece attacker_piece = board.GetPiece(move.From());
+    int first_attacker_value = piece_evaluations[attacker_piece.GetPieceType()];
+
+    // The opponent will now recapture. Their gain is calculated by the recursive helper.
+    int opponent_gain = SeeRecursive(
+        board,
+        piece_evaluations,
+        to_sq,
+        OtherTeam(board.GetTurn().GetTeam()), // It's the opponent's turn to recapture
+        occupied_after_move
+    );
+
+    // Our final gain is the value of the piece we took, minus the opponent's net gain.
+    return victim_value - opponent_gain;
 }
 
 

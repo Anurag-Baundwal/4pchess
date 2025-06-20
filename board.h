@@ -19,6 +19,9 @@ namespace chess {
 
 using Bitboard = my_math::FastUint256;
 
+// Forward declarations
+int SeeRecursive(const Board& board, const int piece_evaluations[6], int sq, Team attacker_team, Bitboard occupied);
+
 class Board;
 
 constexpr int kNumPieceTypes = 6;
@@ -449,6 +452,8 @@ class Board {
   void UndoNullMove();
 
   const EnpassantInitialization& GetEnpassantInitialization() { return enp_; }
+
+  friend int chess::SeeRecursive(const Board&, const int[6], int, Team, Bitboard);
  
  private:
   void GetPawnMoves2(MoveBuffer& moves, const Player& player) const;
