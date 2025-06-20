@@ -508,17 +508,20 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
         int from_idx = pawns_copy.ctz();
         pawns_copy &= pawns_copy - 1;
         
-        // Pushes
+        // --- 1. Standard Pawn Pushes ---
         Bitboard push1 = kPawnSinglePush[color][from_idx] & empty_squares;
         if (!push1.is_zero()) {
             AddPawnMovesFromBB(moves, from_idx, push1, color, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece);
-            Bitboard push2 = kPawnDoublePush[color][from_idx] & empty_squares;
-            if (!push2.is_zero()) {
-                AddPawnMovesFromBB(moves, from_idx, push2, color, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece);
+            // Check for double push only if single push is possible
+            if ((IndexToBitboard(from_idx) & kPawnStartMask[color]).is_zero()) {
+                Bitboard push2 = kPawnDoublePush[color][from_idx] & empty_squares;
+                if (!push2.is_zero()) {
+                    AddPawnMovesFromBB(moves, from_idx, push2, color, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece);
+                }
             }
         }
         
-        // Captures
+        // --- 2. Standard Pawn Captures ---
         Bitboard attacks = kPawnAttacks[color][from_idx] & enemy_pieces;
         while (!attacks.is_zero()) {
             int to_idx = attacks.ctz();
@@ -527,42 +530,89 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
         }
     }
     
-    // En-passant
-    if (!moves_.empty()) {
-        const Move& last_move = moves_.back();
-        // Check if the last move was a 2-square pawn push by an opponent
-        if (last_move.ManhattanDistance() == 2 && GetPiece(last_move.To()).GetPieceType() == PAWN) {
-            
-            // The square the opponent's pawn skipped over is our target square
-            int from_idx = LocationToIndex(last_move.From());
-            int to_idx = LocationToIndex(last_move.To());
-            int ep_sq = (from_idx + to_idx) / 2; // This is an integer average, which is fine for indices
+    // --- 3. Corrected En-Passant Logic ---
+    // Helper to find the relevant last move for a given opponent.
+    // This restores the logic from the original mailbox version.
+    auto find_relevant_move = [&](PlayerColor opponent_color) -> const Move* {
+        // Calculate how many turns ago the given opponent moved.
+        // e.g., If it's Red's (0) turn, Green (3) moved 1 turn ago, Blue (1) moved 3 turns ago.
+        int turns_ago = (color - opponent_color + 4) % 4;
+        
+        // Check the move history first.
+        if (moves_.size() >= turns_ago) {
+            return &moves_[moves_.size() - turns_ago];
+        }
+        
+        // If history is too short (e.g., loaded from FEN), check the enp_ struct.
+        const auto& enp_move = enp_.enp_moves[opponent_color];
+        if (enp_move.has_value()) {
+            return &*enp_move;
+        }
+        
+        return nullptr;
+    };
 
-            // To find which of OUR pawns attack ep_sq, we do a reverse lookup.
-            // The squares a RED pawn must be on to attack a square are the same squares
-            // a YELLOW (partner) pawn would attack FROM that square.
-            PlayerColor my_color = player.GetColor();
-            PlayerColor partner_color = GetPartner(player).GetColor();
-            Bitboard potential_attack_squares = kPawnAttacks[partner_color][ep_sq];
+    // An en-passant capture is possible against either opponent. Check both.
+    const PlayerColor opponents[2] = { GetNextPlayer(player).GetColor(), GetPreviousPlayer(player).GetColor() };
+
+    for (const PlayerColor opponent_color : opponents) {
+        const Move* opponent_last_move = find_relevant_move(opponent_color);
+
+        if (opponent_last_move == nullptr || !opponent_last_move->Present()) {
+            continue;
+        }
+
+        // Verify the opponent's move was a 2-square pawn push.
+        Piece moved_piece = GetPiece(opponent_last_move->To());
+        if (moved_piece.GetPieceType() != PAWN || moved_piece.GetColor() != opponent_color) {
+            continue;
+        }
+        if (opponent_last_move->ManhattanDistance() != 2) {
+            continue;
+        }
+
+        // This was a valid EP-creating move. The square behind the pawn is the target.
+        int from_idx = LocationToIndex(opponent_last_move->From());
+        int to_idx = LocationToIndex(opponent_last_move->To());
+        int ep_target_idx = (from_idx + to_idx) / 2;
+
+        // Find which of OUR pawns can make the capture using the reverse-attack trick.
+        // A RED pawn attacks square X if a YELLOW (partner) pawn at X would attack the RED pawn's square.
+        PlayerColor partner_color = GetPartner(player).GetColor();
+        Bitboard potential_attackers_bb = kPawnAttacks[partner_color][ep_target_idx];
+        Bitboard our_attacking_pawns = pawns & potential_attackers_bb;
+        
+        if (our_attacking_pawns.is_zero()) {
+            continue;
+        }
+
+        // --- Restore the simultaneous capture feature ---
+        // 'ep_capture' is the pawn that moved two squares.
+        // 'standard_capture' is a piece that might be on the destination square.
+        BoardLocation ep_target_loc = IndexToLocation(ep_target_idx);
+        Piece standard_capture = GetPiece(ep_target_loc);
+        Piece ep_capture = moved_piece;
+        BoardLocation ep_capture_loc = opponent_last_move->To();
+        
+        // The move is illegal if a FRIENDLY piece is on the destination square.
+        if (standard_capture.Present() && standard_capture.GetTeam() == team) {
+            continue;
+        }
+
+        // Generate the en-passant move(s).
+        while (!our_attacking_pawns.is_zero()) {
+            int our_pawn_idx = our_attacking_pawns.ctz();
+            our_attacking_pawns &= (our_attacking_pawns - 1);
+            BoardLocation our_pawn_loc = IndexToLocation(our_pawn_idx);
             
-            // Intersect these potential squares with our actual pawns to find the real attackers.
-            Bitboard actual_attackers = pawns & potential_attack_squares;
-            
-            // The original code was also missing this loop to actually create the moves!
-            while(!actual_attackers.is_zero()){
-                int attacker_idx = actual_attackers.ctz();
-                actual_attackers &= (actual_attackers - 1);
-                
-                // The capture is an en-passant capture. The captured piece is on 'to_idx'.
-                moves.emplace_back(
-                    IndexToLocation(attacker_idx),            // From: Our pawn's location
-                    IndexToLocation(ep_sq),                   // To: The en-passant square
-                    Piece::kNoPiece,                          // Standard capture: None
-                    last_move.To(),                           // En-passant location: where the captured pawn is
-                    GetPiece(last_move.To()),                 // En-passant capture: the piece itself
-                    NO_PIECE                                  // Promotion: Not possible with e.p.
-                );
-            }
+            // En-passant cannot result in a promotion, so NO_PIECE is passed.
+            // The correct Move constructor is used to specify both standard and e.p. captures.
+            moves.emplace_back(our_pawn_loc, 
+                               ep_target_loc, 
+                               standard_capture, 
+                               ep_capture_loc, 
+                               ep_capture,
+                               NO_PIECE);
         }
     }
 }
