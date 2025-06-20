@@ -76,8 +76,13 @@ void InitBitboards() {
 
     // Pawn masks & moves
     int push_offsets[] = {-kBoardWidth, 1, kBoardWidth, -1};
-    int capture_dr[][2] = {{-1,-1}, {-1,1}, {1,1}, {-1,1}};
-    int capture_dc[][2] = {{-1,1}, {1,1}, {-1,1}, {-1,-1}}; // Corrected logic
+    // Deltas for the two pawn captures for each color. Format: { {d_row, d_col}, {d_row, d_col} }
+    const int pawn_capture_deltas[4][2][2] = {
+        /* [RED]    */ { {-1, -1}, {-1,  1} },  // Attacks are (-dr, -dc) and (-dr, +dc)
+        /* [BLUE]   */ { {-1,  1}, { 1,  1} },  // Attacks are (-dr, +dc) and (+dr, +dc)
+        /* [YELLOW] */ { { 1, -1}, { 1,  1} },  // Attacks are (+dr, -dc) and (+dr, +dc)
+        /* [GREEN]  */ { {-1, -1}, { 1, -1} }   // Attacks are (-dr, -dc) and (+dr, -dc)
+    };
 
     for (int r_14 = 0; r_14 < 14; ++r_14) {
         for (int c_14 = 0; c_14 < 14; ++c_14) {
@@ -111,7 +116,9 @@ void InitBitboards() {
                 }
                 // Captures
                 for (int k = 0; k < 2; ++k) {
-                    BoardLocation to_cap = from_loc.Relative(capture_dr[color][k], capture_dc[color][k]);
+                    const int dr = pawn_capture_deltas[color][k][0];
+                    const int dc = pawn_capture_deltas[color][k][1];
+                    BoardLocation to_cap = from_loc.Relative(dr, dc);
                     if ((kLegalSquares & IndexToBitboard(LocationToIndex(to_cap)))) {
                         kPawnAttacks[color][idx] |= IndexToBitboard(LocationToIndex(to_cap));
                     }
