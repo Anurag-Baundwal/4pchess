@@ -544,19 +544,19 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
         pawns_copy &= pawns_copy - 1;
         
         // --- 1. Standard Pawn Pushes ---
-        Bitboard push1 = kPawnSinglePush[color][from_idx] & empty_squares;
-        if (!push1.is_zero()) {
-            AddPawnMovesFromBB(moves, from_idx, push1, color, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece);
-            // Check for double push only if single push is possible
+        Bitboard push1_target = kPawnSinglePush[color][from_idx];
+        if (!(push1_target & empty_squares).is_zero()) {
+            AddPawnMovesFromBB(moves, from_idx, push1_target, color, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece);
+            
             if (kPawnStartMask[color] & IndexToBitboard(from_idx)) {
-                Bitboard push2 = kPawnDoublePush[color][from_idx] & empty_squares;
-                if (!push2.is_zero()) {
-                    AddPawnMovesFromBB(moves, from_idx, push2, color, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece);
+                Bitboard push2_target = kPawnDoublePush[color][from_idx];
+                if (!(push2_target & empty_squares).is_zero()) {
+                     AddPawnMovesFromBB(moves, from_idx, push2_target, color, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece);
                 }
             }
         }
         
-        // --- 2. Standard Pawn Captures ---
+        // --- 2. Standard Pawn Captures (Diagonal) ---
         Bitboard attacks = kPawnAttacks[color][from_idx] & enemy_pieces;
         while (!attacks.is_zero()) {
             int to_idx = attacks.ctz();
@@ -565,17 +565,20 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
         }
     }
     
-    // --- 3. Corrected En-Passant Logic ---
+    // --- 3. CORRECTED En-Passant Logic (Forward Capture Only) ---
     auto find_relevant_move = [&](PlayerColor opponent_color) -> const Move* {
         int turns_ago = (color - opponent_color + 4) % 4;
-        if (turns_ago == 0 || moves_.size() < turns_ago) {
-            const auto& enp_move = enp_.enp_moves[opponent_color];
-            return enp_move.has_value() ? &*enp_move : nullptr;
+        if (turns_ago > 0 && moves_.size() >= turns_ago) {
+            return &moves_[moves_.size() - turns_ago];
         }
-        return &moves_[moves_.size() - turns_ago];
+        const auto& enp_move = enp_.enp_moves[opponent_color];
+        return enp_move.has_value() ? &*enp_move : nullptr;
     };
 
     const PlayerColor opponents[2] = { GetNextPlayer(player).GetColor(), GetPreviousPlayer(player).GetColor() };
+
+    constexpr int pawn_push_delta_rows[] = {-1, 0, 1, 0};
+    constexpr int pawn_push_delta_cols[] = {0, 1, 0, -1};
 
     for (const PlayerColor opponent_color : opponents) {
         const Move* opponent_last_move = find_relevant_move(opponent_color);
@@ -585,37 +588,46 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
         }
 
         Piece moved_piece = GetPiece(opponent_last_move->To());
-        if (moved_piece.GetPieceType() != PAWN || moved_piece.GetColor() != opponent_color || opponent_last_move->ManhattanDistance() != 2) {
+        const auto& move_from = opponent_last_move->From();
+        const auto& move_to = opponent_last_move->To();
+
+        // Check for a 2-square *straight* pawn push
+        if (moved_piece.GetPieceType() != PAWN || 
+            moved_piece.GetColor() != opponent_color || 
+            opponent_last_move->ManhattanDistance() != 2 ||
+            (move_from.GetRow() != move_to.GetRow() && move_from.GetCol() != move_to.GetCol())) { // <-- THE FIX
             continue;
         }
 
-        int from_idx = LocationToIndex(opponent_last_move->From());
-        int to_idx = LocationToIndex(opponent_last_move->To());
-        int ep_target_idx = (from_idx + to_idx) / 2;
-
-        PlayerColor partner_color = GetPartner(player).GetColor();
-        Bitboard potential_attackers_bb = kPawnAttacks[partner_color][ep_target_idx];
-        Bitboard our_attacking_pawns = pawns & potential_attackers_bb;
+        int moved_to_idx = LocationToIndex(move_to);
         
-        if (our_attacking_pawns.is_zero()) {
-            continue;
-        }
-
-        BoardLocation ep_target_loc = IndexToLocation(ep_target_idx);
-        Piece standard_capture = GetPiece(ep_target_loc);
-        Piece ep_capture = moved_piece;
-        BoardLocation ep_capture_loc = opponent_last_move->To();
-        
-        if (standard_capture.Present() && standard_capture.GetTeam() == team) {
-            continue;
-        }
-
-        while (!our_attacking_pawns.is_zero()) {
-            int our_pawn_idx = our_attacking_pawns.ctz();
-            our_attacking_pawns &= (our_attacking_pawns - 1);
-            BoardLocation our_pawn_loc = IndexToLocation(our_pawn_idx);
+        Bitboard our_pawns_copy = piece_bitboards_[color][PAWN];
+        while(!our_pawns_copy.is_zero()) {
+            int our_pawn_idx = our_pawns_copy.ctz();
+            our_pawns_copy &= (our_pawns_copy - 1);
             
-            moves.emplace_back(our_pawn_loc, ep_target_loc, standard_capture, ep_capture_loc, ep_capture, NO_PIECE);
+            // If the square in front of our pawn is where the enemy pawn landed
+            if (LocationToIndex(IndexToLocation(our_pawn_idx).Relative(
+                    pawn_push_delta_rows[color],
+                    pawn_push_delta_cols[color]
+                )) == moved_to_idx)
+            {
+                int moved_from_idx = LocationToIndex(move_from);
+                int ep_capture_dest_idx = (moved_from_idx + moved_to_idx) / 2;
+
+                BoardLocation our_pawn_loc = IndexToLocation(our_pawn_idx);
+                BoardLocation ep_target_loc = IndexToLocation(ep_capture_dest_idx);
+
+                Piece standard_capture = GetPiece(ep_target_loc);
+                if (standard_capture.Present() && standard_capture.GetTeam() == team) {
+                    continue;
+                }
+                
+                Piece ep_capture = moved_piece;
+                BoardLocation ep_capture_loc = move_to;
+
+                AddPawnMovesFromBB(moves, our_pawn_idx, IndexToBitboard(ep_capture_dest_idx), color, standard_capture, ep_capture_loc, ep_capture);
+            }
         }
     }
 }
