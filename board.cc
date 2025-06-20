@@ -651,63 +651,66 @@ void Board::GetKingMoves2(MoveBuffer& moves, const Player& player) const {
     if (initial_cr.Present() && !IsAttackedByTeam(OtherTeam(player.GetTeam()), from_idx)) {
         Bitboard all_pieces = team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN];
         Team enemy_team = OtherTeam(player.GetTeam());
+        BoardLocation king_from_loc = IndexToLocation(from_idx);
 
-        // Kingside
+        // KINGSIDE
         if (initial_cr.Kingside() && (all_pieces & kCastlingEmptyMask[color][KINGSIDE]).is_zero()) {
             Bitboard attack_mask = kCastlingAttackMask[color][KINGSIDE];
-            bool can_castle = true;
+            
+            bool is_safe = true;
             while(!attack_mask.is_zero()){
                 int sq = attack_mask.ctz();
-                attack_mask &= attack_mask-1;
+                attack_mask &= (attack_mask-1);
                 if(IsAttackedByTeam(enemy_team, sq)){
-                    can_castle = false;
+                    is_safe = false;
                     break;
                 }
             }
-            if(can_castle){
-                int to_idx = from_idx + 2 * (color==RED ? 1 : (color==BLUE ? -kBoardWidth : (color==YELLOW ? -1 : kBoardWidth)));
-                to_idx = from_idx + (color == RED ? 2 : (color == BLUE ? -2*kBoardWidth : (color == YELLOW ? -2 : 2*kBoardWidth)));
-                int rook_from_idx = kInitialRookSq[color][KINGSIDE];
-                int rook_to_idx = to_idx- (color == RED ? 1 : (color == BLUE ? -kBoardWidth : (color == YELLOW ? -1 : kBoardWidth)));
 
-                BoardLocation king_to_loc = IndexToLocation(from_idx).Relative(0,2);
-                if (color == BLUE) king_to_loc = IndexToLocation(from_idx).Relative(2,0);
-                if (color == YELLOW) king_to_loc = IndexToLocation(from_idx).Relative(0,-2);
-                if (color == GREEN) king_to_loc = IndexToLocation(from_idx).Relative(-2,0);
+            if(is_safe){
+                // Define king and rook moves with simple, clear relative logic
+                BoardLocation king_to_loc, rook_from_loc, rook_to_loc;
+                rook_from_loc = IndexToLocation(kInitialRookSq[color][KINGSIDE]);
 
-                SimpleMove rook_move(IndexToLocation(rook_from_idx), king_to_loc.Relative(0,-1));
-                if(color==BLUE) rook_move = SimpleMove(IndexToLocation(rook_from_idx), king_to_loc.Relative(-1,0));
-                if(color==YELLOW) rook_move = SimpleMove(IndexToLocation(rook_from_idx), king_to_loc.Relative(0,1));
-                if(color==GREEN) rook_move = SimpleMove(IndexToLocation(rook_from_idx), king_to_loc.Relative(1,0));
-
-                moves.emplace_back(IndexToLocation(from_idx), king_to_loc, rook_move, initial_cr, final_cr);
+                switch(color) {
+                    case RED:    king_to_loc = king_from_loc.Relative(0, 2); rook_to_loc = king_from_loc.Relative(0, 1); break;
+                    case BLUE:   king_to_loc = king_from_loc.Relative(2, 0); rook_to_loc = king_from_loc.Relative(1, 0); break;
+                    case YELLOW: king_to_loc = king_from_loc.Relative(0, -2); rook_to_loc = king_from_loc.Relative(0, -1); break;
+                    case GREEN:  king_to_loc = king_from_loc.Relative(-2, 0); rook_to_loc = king_from_loc.Relative(-1, 0); break;
+                }
+                
+                SimpleMove rook_move(rook_from_loc, rook_to_loc);
+                moves.emplace_back(king_from_loc, king_to_loc, rook_move, initial_cr, final_cr);
             }
         }
-        // Queenside
+
+        // QUEENSIDE
         if (initial_cr.Queenside() && (all_pieces & kCastlingEmptyMask[color][QUEENSIDE]).is_zero()) {
             Bitboard attack_mask = kCastlingAttackMask[color][QUEENSIDE];
-             bool can_castle = true;
+            
+            bool is_safe = true;
             while(!attack_mask.is_zero()){
                 int sq = attack_mask.ctz();
-                attack_mask &= attack_mask-1;
+                attack_mask &= (attack_mask-1);
                 if(IsAttackedByTeam(enemy_team, sq)){
-                    can_castle = false;
+                    is_safe = false;
                     break;
                 }
             }
-             if(can_castle){
-                BoardLocation king_to_loc = IndexToLocation(from_idx).Relative(0,-2);
-                if (color == BLUE) king_to_loc = IndexToLocation(from_idx).Relative(-2,0);
-                if (color == YELLOW) king_to_loc = IndexToLocation(from_idx).Relative(0,2);
-                if (color == GREEN) king_to_loc = IndexToLocation(from_idx).Relative(2,0);
+            
+            if(is_safe){
+                BoardLocation king_to_loc, rook_from_loc, rook_to_loc;
+                rook_from_loc = IndexToLocation(kInitialRookSq[color][QUEENSIDE]);
                 
-                int rook_from_idx = kInitialRookSq[color][QUEENSIDE];
-                SimpleMove rook_move(IndexToLocation(rook_from_idx), king_to_loc.Relative(0,1));
-                if(color==BLUE) rook_move = SimpleMove(IndexToLocation(rook_from_idx), king_to_loc.Relative(1,0));
-                if(color==YELLOW) rook_move = SimpleMove(IndexToLocation(rook_from_idx), king_to_loc.Relative(0,-1));
-                if(color==GREEN) rook_move = SimpleMove(IndexToLocation(rook_from_idx), king_to_loc.Relative(-1,0));
+                switch(color) {
+                    case RED:    king_to_loc = king_from_loc.Relative(0, -2); rook_to_loc = king_from_loc.Relative(0, -1); break;
+                    case BLUE:   king_to_loc = king_from_loc.Relative(-2, 0); rook_to_loc = king_from_loc.Relative(-1, 0); break;
+                    case YELLOW: king_to_loc = king_from_loc.Relative(0, 2); rook_to_loc = king_from_loc.Relative(0, 1); break;
+                    case GREEN:  king_to_loc = king_from_loc.Relative(2, 0); rook_to_loc = king_from_loc.Relative(1, 0); break;
+                }
 
-                moves.emplace_back(IndexToLocation(from_idx), king_to_loc, rook_move, initial_cr, final_cr);
+                SimpleMove rook_move(rook_from_loc, rook_to_loc);
+                moves.emplace_back(king_from_loc, king_to_loc, rook_move, initial_cr, final_cr);
             }
         }
     }
