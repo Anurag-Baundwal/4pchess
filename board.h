@@ -417,7 +417,6 @@ class Board {
   const Player& GetTurn() const { return turn_; }
   bool IsAttackedByTeam(Team team, int sq) const;
 
-  size_t GetAttackers2(PlacedPiece* buffer, size_t limit, int sq, Team team) const;
   Bitboard GetAttackersBB(int sq, Team team) const;
 
   BoardLocation GetKingLocation(PlayerColor color) const;
