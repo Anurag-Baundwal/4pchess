@@ -520,18 +520,38 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
     // En-passant
     if (!moves_.empty()) {
         const Move& last_move = moves_.back();
-        Piece moved_piece = GetPiece(last_move.To());
-        if (moved_piece.GetPieceType() == PAWN && last_move.ManhattanDistance() == 2) {
+        // Check if the last move was a 2-square pawn push by an opponent
+        if (last_move.ManhattanDistance() == 2 && GetPiece(last_move.To()).GetPieceType() == PAWN) {
+            
+            // The square the opponent's pawn skipped over is our target square
             int from_idx = LocationToIndex(last_move.From());
             int to_idx = LocationToIndex(last_move.To());
-            int ep_sq = (from_idx + to_idx) / 2;
+            int ep_sq = (from_idx + to_idx) / 2; // This is an integer average, which is fine for indices
+
+            // To find which of OUR pawns attack ep_sq, we do a reverse lookup.
+            // The squares a RED pawn must be on to attack a square are the same squares
+            // a YELLOW (partner) pawn would attack FROM that square.
+            PlayerColor my_color = player.GetColor();
+            PlayerColor partner_color = GetPartner(player).GetColor();
+            Bitboard potential_attack_squares = kPawnAttacks[partner_color][ep_sq];
             
-            // Pawns of current player that attack the en-passant square
-            Bitboard attackers = pawns & kPawnAttacks[GetPreviousPlayer(player).GetColor()][ep_sq];
-            while(!attackers.is_zero()){
-                int attacker_idx = attackers.ctz();
-                attackers &= attackers-1;
-                moves.emplace_back(IndexToLocation(attacker_idx), IndexToLocation(ep_sq), Piece::kNoPiece, last_move.To(), moved_piece, NO_PIECE);
+            // Intersect these potential squares with our actual pawns to find the real attackers.
+            Bitboard actual_attackers = pawns & potential_attack_squares;
+            
+            // The original code was also missing this loop to actually create the moves!
+            while(!actual_attackers.is_zero()){
+                int attacker_idx = actual_attackers.ctz();
+                actual_attackers &= (actual_attackers - 1);
+                
+                // The capture is an en-passant capture. The captured piece is on 'to_idx'.
+                moves.emplace_back(
+                    IndexToLocation(attacker_idx),            // From: Our pawn's location
+                    IndexToLocation(ep_sq),                   // To: The en-passant square
+                    Piece::kNoPiece,                          // Standard capture: None
+                    last_move.To(),                           // En-passant location: where the captured pawn is
+                    GetPiece(last_move.To()),                 // En-passant capture: the piece itself
+                    NO_PIECE                                  // Promotion: Not possible with e.p.
+                );
             }
         }
     }
