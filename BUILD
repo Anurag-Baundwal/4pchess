@@ -136,4 +136,13 @@ cc_binary(
     ],
 )
 
-
+cc_binary(
+    name = "perft",
+    srcs = ["perft.cc"],
+    deps = [
+        ":board",
+        ":utils",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/flags:parse",
+    ],
+)
