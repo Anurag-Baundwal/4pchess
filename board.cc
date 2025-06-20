@@ -880,7 +880,6 @@ GameResult Board::GetGameResult() {
   Player player = turn_;
 
   size_t num_moves = GetPseudoLegalMoves2(move_buffer_2_, kInternalMoveBufferSize);
-  bool has_legal_move = false;
   for (size_t i = 0; i < num_moves; i++) {
     const auto& move = move_buffer_2_[i];
     MakeMove(move);
@@ -889,19 +888,12 @@ GameResult Board::GetGameResult() {
       UndoMove();
       return king_capture_result;
     }
-    if (!IsKingInCheck(player)) {
-      has_legal_move = true;
-    }
+    bool legal = !IsKingInCheck(player); // Check if the move was legal
     UndoMove();
-    if (has_legal_move) {
-      return IN_PROGRESS;
+    if (legal) {
+      return IN_PROGRESS; // <-- Exit immediately on the FIRST legal move.
     }
   }
-
-  if (has_legal_move) {
-    return IN_PROGRESS;
-  }
-
   if (!IsKingInCheck(player)) {
     return STALEMATE;
   }
