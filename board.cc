@@ -376,53 +376,87 @@ BoardLocation Board::GetKingLocation(PlayerColor color) const {
     return IndexToLocation(king_bb.ctz());
 }
 
+// Corrected GetRookAttacks
 Bitboard Board::GetRookAttacks(int sq, Bitboard blockers) const {
     Bitboard attacks;
-    // North
+    // North (indices decrease -> use MSB/clz)
     Bitboard ray_n = kRayAttacks[sq][D_N];
     Bitboard b_n = ray_n & blockers;
-    if (!b_n.is_zero()) attacks |= (ray_n ^ kRayAttacks[b_n.ctz()][D_N]);
-    else attacks |= ray_n;
-    // South
+    if (!b_n.is_zero()) {
+        int blocker_idx = 255 - b_n.clz();
+        attacks |= (ray_n ^ kRayAttacks[blocker_idx][D_N]);
+    } else {
+        attacks |= ray_n;
+    }
+    // South (indices increase -> use LSB/ctz)
     Bitboard ray_s = kRayAttacks[sq][D_S];
     Bitboard b_s = ray_s & blockers;
-    if (!b_s.is_zero()) attacks |= (ray_s ^ kRayAttacks[255 - b_s.clz()][D_S]);
-    else attacks |= ray_s;
-    // East
+    if (!b_s.is_zero()) {
+        int blocker_idx = b_s.ctz();
+        attacks |= (ray_s ^ kRayAttacks[blocker_idx][D_S]);
+    } else {
+        attacks |= ray_s;
+    }
+    // East (indices increase -> use LSB/ctz)
     Bitboard ray_e = kRayAttacks[sq][D_E];
     Bitboard b_e = ray_e & blockers;
-    if (!b_e.is_zero()) attacks |= (ray_e ^ kRayAttacks[b_e.ctz()][D_E]);
-    else attacks |= ray_e;
-    // West
+    if (!b_e.is_zero()) {
+        int blocker_idx = b_e.ctz();
+        attacks |= (ray_e ^ kRayAttacks[blocker_idx][D_E]);
+    } else {
+        attacks |= ray_e;
+    }
+    // West (indices decrease -> use MSB/clz)
     Bitboard ray_w = kRayAttacks[sq][D_W];
     Bitboard b_w = ray_w & blockers;
-    if (!b_w.is_zero()) attacks |= (ray_w ^ kRayAttacks[255 - b_w.clz()][D_W]);
-    else attacks |= ray_w;
+    if (!b_w.is_zero()) {
+        int blocker_idx = 255 - b_w.clz();
+        attacks |= (ray_w ^ kRayAttacks[blocker_idx][D_W]);
+    } else {
+        attacks |= ray_w;
+    }
     return attacks;
 }
 
+// Corrected GetBishopAttacks
 Bitboard Board::GetBishopAttacks(int sq, Bitboard blockers) const {
     Bitboard attacks;
-    // NE
+    // Northeast (indices decrease -> use MSB/clz)
     Bitboard ray_ne = kRayAttacks[sq][D_NE];
     Bitboard b_ne = ray_ne & blockers;
-    if (!b_ne.is_zero()) attacks |= (ray_ne ^ kRayAttacks[b_ne.ctz()][D_NE]);
-    else attacks |= ray_ne;
-    // SW
+    if (!b_ne.is_zero()) {
+        int blocker_idx = 255 - b_ne.clz();
+        attacks |= (ray_ne ^ kRayAttacks[blocker_idx][D_NE]);
+    } else {
+        attacks |= ray_ne;
+    }
+    // Southwest (indices increase -> use LSB/ctz)
     Bitboard ray_sw = kRayAttacks[sq][D_SW];
     Bitboard b_sw = ray_sw & blockers;
-    if (!b_sw.is_zero()) attacks |= (ray_sw ^ kRayAttacks[255 - b_sw.clz()][D_SW]);
-    else attacks |= ray_sw;
-    // NW
+    if (!b_sw.is_zero()) {
+        int blocker_idx = b_sw.ctz();
+        attacks |= (ray_sw ^ kRayAttacks[blocker_idx][D_SW]);
+    } else {
+        attacks |= ray_sw;
+    }
+    // Northwest (indices decrease -> use MSB/clz)
     Bitboard ray_nw = kRayAttacks[sq][D_NW];
     Bitboard b_nw = ray_nw & blockers;
-    if (!b_nw.is_zero()) attacks |= (ray_nw ^ kRayAttacks[b_nw.ctz()][D_NW]);
-    else attacks |= ray_nw;
-    // SE
+    if (!b_nw.is_zero()) {
+        int blocker_idx = 255 - b_nw.clz();
+        attacks |= (ray_nw ^ kRayAttacks[blocker_idx][D_NW]);
+    } else {
+        attacks |= ray_nw;
+    }
+    // Southeast (indices increase -> use LSB/ctz)
     Bitboard ray_se = kRayAttacks[sq][D_SE];
     Bitboard b_se = ray_se & blockers;
-    if (!b_se.is_zero()) attacks |= (ray_se ^ kRayAttacks[255 - b_se.clz()][D_SE]);
-    else attacks |= ray_se;
+    if (!b_se.is_zero()) {
+        int blocker_idx = b_se.ctz();
+        attacks |= (ray_se ^ kRayAttacks[blocker_idx][D_SE]);
+    } else {
+        attacks |= ray_se;
+    }
     return attacks;
 }
 
