@@ -19,11 +19,7 @@ namespace chess {
 
 using Bitboard = my_math::FastUint256;
 
-// Forward declarations
-int SeeRecursive(const Board& board, const int piece_evaluations[6], int sq, Team attacker_team, Bitboard occupied);
-
-class Board;
-
+// FIX: All enums and constants are now defined BEFORE they are used in forward declarations.
 constexpr int kNumPieceTypes = 6;
 
 enum PieceType : int8_t {
@@ -49,6 +45,13 @@ enum PlayerColor : int8_t {
 enum Team : int8_t {
   RED_YELLOW = 0, BLUE_GREEN = 1, NO_TEAM = 2, CURRENT_TEAM = 3,
 };
+
+// Forward declarations for classes and functions
+class Board;
+class Move;
+
+int SeeRecursive(const Board& board, const int piece_evaluations[6], int sq, Team attacker_team, Bitboard occupied);
+int StaticExchangeEvaluationCapture(const int piece_evaluations[6], Board& board, const Move& move);
 
 class Player {
  public:
@@ -326,7 +329,7 @@ class Move {
   std::string PrettyStr() const;
   bool DeliversCheck(Board& board);
   int SEE(Board& board, const int* piece_evaluations);
-  int ApproxSEE(const Board& board, const int* piece_evaluations);
+  int ApproxSEE(const Board& board, const int* piece_evaluations) const;
 
  private:
   BoardLocation from_;
@@ -382,10 +385,6 @@ struct MoveBuffer {
   template<class... T>
   void emplace_back(T&&... args) {
     if (pos >= limit) {
-      // This is a critical error, but printing can be slow. A no-op or assert might be better in release.
-      // For now, keeping the debug message.
-      // std::cout << "Move buffer overflow" << std::endl;
-      // abort();
     } else {
         buffer[pos++] = Move(std::forward<T>(args)...);
     }
@@ -453,7 +452,8 @@ class Board {
 
   const EnpassantInitialization& GetEnpassantInitialization() { return enp_; }
 
-  friend int chess::SeeRecursive(const Board&, const int[6], int, Team, Bitboard);
+  friend int SeeRecursive(const Board&, const int[6], int, Team, Bitboard);
+  friend int StaticExchangeEvaluationCapture(const int[6], Board&, const Move&);
  
  private:
   void GetPawnMoves2(MoveBuffer& moves, const Player& player) const;
@@ -497,23 +497,16 @@ class Board {
   int64_t piece_hashes_[4][6][256]; // [color][type][square_index]
   int64_t turn_hashes_[4];
   
-  // A reasonably sized buffer for internal move generation tasks.
   static constexpr size_t kInternalMoveBufferSize = 300;
   Move move_buffer_2_[kInternalMoveBufferSize];
 };
 
 // Helper functions
-
 Team OtherTeam(Team team);
 Team GetTeam(PlayerColor color);
 Player GetNextPlayer(const Player& player);
 Player GetPreviousPlayer(const Player& player);
 Player GetPartner(const Player& player);
-
-int StaticExchangeEvaluationCapture(
-    const int piece_evaluations[6],
-    Board& board,
-    const Move& move);
 
 }  // namespace chess
 
