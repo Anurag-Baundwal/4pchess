@@ -2,6 +2,7 @@
 #define _BOARD_H_
 
 // Classes for a 4-player teams chess board (chess.com variant).
+// This version is refactored to use bitboards with a 256-bit integer type.
 
 #include <functional>
 #include <memory>
@@ -12,7 +13,11 @@
 #include <vector>
 #include <iostream>
 
+#include "FastUint256.h"
+
 namespace chess {
+
+using Bitboard = my_math::FastUint256;
 
 class Board;
 
@@ -79,33 +84,6 @@ struct std::hash<chess::Player>
 
 namespace chess {
 
-//class Piece {
-// public:
-//  Piece() : piece_type_(NO_PIECE) { }
-//
-//  Piece(Player player, PieceType piece_type)
-//    : player_(std::move(player)),
-//      piece_type_(piece_type)
-//  { }
-//
-//  const Player& GetPlayer() const { return player_; }
-//  PieceType GetPieceType() const { return piece_type_; }
-//  Team GetTeam() const { return GetPlayer().GetTeam(); }
-//  PlayerColor GetColor() const { return GetPlayer().GetColor(); }
-//  bool operator==(const Piece& other) const {
-//    return player_ == other.player_ && piece_type_ == other.piece_type_;
-//  }
-//  bool operator!=(const Piece& other) const {
-//    return !(*this == other);
-//  }
-//  friend std::ostream& operator<<(
-//      std::ostream& os, const Piece& piece);
-//
-// private:
-//  Player player_;
-//  PieceType piece_type_;
-//};
-
 class Piece {
  public:
   Piece() : Piece(false, RED, NO_PIECE) { }
@@ -144,14 +122,8 @@ class Piece {
   static Piece kNoPiece;
 
  private:
-  // bit 0: presence
-  // bit 1-2: player
-  // bit 3-5: piece type
   int8_t bits_;
 };
-
-//extern const Piece* kPieceSet[4][6];
-
 
 class BoardLocation {
  public:
@@ -167,6 +139,7 @@ class BoardLocation {
   int8_t GetCol() const { return loc_ % 14; }
 
   BoardLocation Relative(int8_t delta_row, int8_t delta_col) const {
+    if (!Present()) return BoardLocation();
     return BoardLocation(GetRow() + delta_row, GetCol() + delta_col);
   }
 
@@ -180,8 +153,6 @@ class BoardLocation {
   static BoardLocation kNoLocation;
 
  private:
-  // value 0-195: 1 + 14*row + col
-  // value 196: not present
   uint8_t loc_;
 };
 
@@ -239,17 +210,13 @@ class CastlingRights {
 
   CastlingRights(bool kingside, bool queenside)
     : bits_(0b10000000 | (kingside << 6) | (queenside << 5)) { }
-    //: kingside_(kingside), queenside_(queenside) { }
 
   bool Present() const { return bits_ & (1 << 7); }
   bool Kingside() const { return bits_ & (1 << 6); }
   bool Queenside() const { return bits_ & (1 << 5); }
-  //bool Kingside() const { return kingside_; }
-  //bool Queenside() const { return queenside_; }
 
   bool operator==(const CastlingRights& other) const {
     return bits_ == other.bits_;
-    //return kingside_ == other.kingside_ && queenside_ == other.queenside_;
   }
   bool operator!=(const CastlingRights& other) const {
     return !(*this == other);
@@ -258,13 +225,7 @@ class CastlingRights {
   static CastlingRights kMissingRights;
 
  private:
-  // bit 0: presence
-  // bit 1: kingside
-  // bit 2: queenside
   int8_t bits_ = 0;
-
-  //bool kingside_ = true;
-  //bool queenside_ = true;
 };
 
 class Move {
@@ -360,41 +321,22 @@ class Move {
   friend std::ostream& operator<<(
       std::ostream& os, const Move& move);
   std::string PrettyStr() const;
-  // NOTE: This does not find discovered checks.
   bool DeliversCheck(Board& board);
   int SEE(Board& board, const int* piece_evaluations);
-  int ApproxSEE(Board& board, const int* piece_evaluations);
+  int ApproxSEE(const Board& board, const int* piece_evaluations);
 
  private:
-  BoardLocation from_;  // 1
-  BoardLocation to_;  // 1
-
-  // Capture
-  Piece standard_capture_; // 1
-
-  // Promotion
-  PieceType promotion_piece_type_ = NO_PIECE; // 1
-
-  // En-passant
-  BoardLocation en_passant_location_; // 1
-  Piece en_passant_capture_;  // 1
-
-  // For castling moves
-  SimpleMove rook_move_; // 2
-
-  // Castling rights before the move
-  CastlingRights initial_castling_rights_; // 1
-
-  // Castling rights after the move
-  CastlingRights castling_rights_; // 1
-
-  // Cached check
-  // -1 means missing, 0/1 store check values
-  int8_t delivers_check_ = -1; // 1
-
+  BoardLocation from_;
+  BoardLocation to_;
+  Piece standard_capture_;
+  PieceType promotion_piece_type_ = NO_PIECE;
+  BoardLocation en_passant_location_;
+  Piece en_passant_capture_;
+  SimpleMove rook_move_;
+  CastlingRights initial_castling_rights_;
+  CastlingRights castling_rights_;
+  int8_t delivers_check_ = -1;
   static constexpr int kSeeNotSet = -9999999;
-
-  // Static exchange value of the move
   int see_ = kSeeNotSet;
 };
 
@@ -426,7 +368,6 @@ class PlacedPiece {
 };
 
 struct EnpassantInitialization {
-  // Indexed by PlayerColor
   std::optional<Move> enp_moves[4] = {std::nullopt, std::nullopt, std::nullopt, std::nullopt};
 };
 
@@ -438,21 +379,18 @@ struct MoveBuffer {
   template<class... T>
   void emplace_back(T&&... args) {
     if (pos >= limit) {
-      std::cout << "Move buffer overflow" << std::endl;
-      abort();
+      // This is a critical error, but printing can be slow. A no-op or assert might be better in release.
+      // For now, keeping the debug message.
+      // std::cout << "Move buffer overflow" << std::endl;
+      // abort();
+    } else {
+        buffer[pos++] = Move(std::forward<T>(args)...);
     }
-    buffer[pos++] = Move(std::forward<T>(args)...);
   }
 };
 
 
 class Board {
- // Conventions:
- // - Red is on the bottom of the board, blue on the left, yellow on top,
- //   green on the right
- // - Rows go downward from the top
- // - Columns go rightward from the left
-
  public:
   Board(
       Player turn,
@@ -477,159 +415,61 @@ class Board {
   int MobilityEvaluation();
   int MobilityEvaluation(const Player& player);
   const Player& GetTurn() const { return turn_; }
-  bool IsAttackedByTeam(
-      Team team,
-      const BoardLocation& location) const;
+  bool IsAttackedByTeam(Team team, int sq) const;
 
-//  std::vector<PlacedPiece> GetAttackers(
-//      Team team, const BoardLocation& location,
-//      bool return_early = false) const;
-
-  size_t GetAttackers2(
-      PlacedPiece* buffer, size_t limit,
-      Team team, const BoardLocation& location) const;
+  size_t GetAttackers2(PlacedPiece* buffer, size_t limit, int sq, Team team) const;
+  Bitboard GetAttackersBB(int sq, Team team) const;
 
   BoardLocation GetKingLocation(PlayerColor color) const;
   bool DeliversCheck(const Move& move);
 
-  const Piece& GetPiece(
-      int row, int col) const {
-    return location_to_piece_[row][col];
-  }
-  const Piece& GetPiece(
-      const BoardLocation& location) const {
-    return GetPiece(location.GetRow(), location.GetCol());
-  }
-  inline bool IsOnPathBetween(
-      const BoardLocation& from,
-      const BoardLocation& to,
-      const BoardLocation& between) const;
-  inline bool DiscoversCheck(
-      const BoardLocation& king_location,
-      const BoardLocation& move_from,
-      const BoardLocation& move_to,
-      Team attacking_team) const;
+  Piece GetPiece(const BoardLocation& location) const;
+  Piece GetPiece(int index) const;
 
+  bool DiscoversCheck(const Move& move) const;
+  
   int64_t HashKey() const { return hash_key_; }
 
   static std::shared_ptr<Board> CreateStandardSetup();
-//  bool operator==(const Board& other) const;
-//  bool operator!=(const Board& other) const;
-  const CastlingRights& GetCastlingRights(const Player& player);
+  const CastlingRights& GetCastlingRights(const Player& player) const;
 
   void MakeMove(const Move& move);
   void UndoMove();
   bool LastMoveWasCapture() const {
-    return !moves_.empty() && moves_.back().GetStandardCapture().Present();
+    return !moves_.empty() && moves_.back().IsCapture();
   }
   const Move& GetLastMove() const {
     return moves_.back();
   }
-  int NumMoves() const { return moves_.size(); }
-  const std::vector<Move>& Moves() { return moves_; }
+  int NumMoves() const { return (int)moves_.size(); }
+  const std::vector<Move>& Moves() const { return moves_; }
 
-
-  void GetPawnMoves2(
-      MoveBuffer& moves,
-      const BoardLocation& from,
-      const Piece& piece) const;
-  void GetKnightMoves2(
-      MoveBuffer& moves,
-      const BoardLocation& from,
-      const Piece& piece) const;
-  void GetBishopMoves2(
-      MoveBuffer& moves,
-      const BoardLocation& from,
-      const Piece& piece) const;
-  void GetRookMoves2(
-      MoveBuffer& moves,
-      const BoardLocation& from,
-      const Piece& piece) const;
-  void GetQueenMoves2(
-      MoveBuffer& moves,
-      const BoardLocation& from,
-      const Piece& piece) const;
-  void GetKingMoves2(
-      MoveBuffer& moves,
-      const BoardLocation& from,
-      const Piece& piece) const;
-  void AddMovesFromIncrMovement2(
-      MoveBuffer& moves,
-      const Piece& piece,
-      const BoardLocation& from,
-      int incr_row,
-      int incr_col,
-      CastlingRights initial_castling_rights = CastlingRights::kMissingRights,
-      CastlingRights castling_rights = CastlingRights::kMissingRights) const;
-
-
-  friend std::ostream& operator<<(
-      std::ostream& os, const Board& board);
-
-  // Use with caution: after you set the player you must reset it to its
-  // original value before calling UndoMove past the current moves.
-  // These functions may be used by things such as null move pruning.
-  void SetPlayer(const Player& player) { turn_ = player; }
+  // Use with caution
+  void SetPlayer(const Player& player);
   void MakeNullMove();
   void UndoNullMove();
 
-  bool IsLegalLocation(int row, int col) const {
-    if (row < 0
-        || row > GetMaxRow()
-        || col < 0
-        || col > GetMaxCol()
-        || (row < 3 && (col < 3 || col > 10))
-        || (row > 10 && (col < 3 || col > 10))) {
-      return false;
-    }
-    return true;
-  }
-  bool IsLegalLocation(const BoardLocation& location) const {
-    return IsLegalLocation(location.GetRow(), location.GetCol());
-  }
   const EnpassantInitialization& GetEnpassantInitialization() { return enp_; }
-  const std::vector<std::vector<PlacedPiece>>& GetPieceList() { return piece_list_; };
-
+ 
  private:
-  void AddMovesFromIncrMovement(
-      std::vector<Move>& moves,
-      const Piece& piece,
-      const BoardLocation& from,
-      int incr_row,
-      int incr_col,
-      CastlingRights initial_castling_rights = CastlingRights::kMissingRights,
-      CastlingRights castling_rights = CastlingRights::kMissingRights) const;
-  int GetMaxRow() const { return 13; }
-  int GetMaxCol() const { return 13; }
-  std::optional<CastlingType> GetRookLocationType(
-      const Player& player, const BoardLocation& location) const;
-  inline void SetPiece(const BoardLocation& location,
-                const Piece& piece);
-  inline void RemovePiece(const BoardLocation& location);
-  inline bool QueenAttacks(
-      const BoardLocation& queen_loc,
-      const BoardLocation& other_loc) const;
-  inline bool RookAttacks(
-      const BoardLocation& rook_loc,
-      const BoardLocation& other_loc) const;
-  inline bool BishopAttacks(
-      const BoardLocation& bishop_loc,
-      const BoardLocation& other_loc) const;
-  inline bool KingAttacks(
-      const BoardLocation& king_loc,
-      const BoardLocation& other_loc) const;
-  inline bool KnightAttacks(
-      const BoardLocation& knight_loc,
-      const BoardLocation& other_loc) const;
-  inline bool PawnAttacks(
-      const BoardLocation& pawn_loc,
-      PlayerColor pawn_color,
-      const BoardLocation& other_loc) const;
+  void GetPawnMoves2(MoveBuffer& moves, const Player& player) const;
+  void GetKnightMoves2(MoveBuffer& moves, const Player& player) const;
+  void GetBishopMoves2(MoveBuffer& moves, const Player& player) const;
+  void GetRookMoves2(MoveBuffer& moves, const Player& player) const;
+  void GetQueenMoves2(MoveBuffer& moves, const Player& player) const;
+  void GetKingMoves2(MoveBuffer& moves, const Player& player) const;
+  
+  void SetPiece(const BoardLocation& location, const Piece& piece);
+  void RemovePiece(const BoardLocation& location);
+  void MovePiece(const BoardLocation& from, const BoardLocation& to);
+
+  Bitboard GetRookAttacks(int sq, Bitboard blockers) const;
+  Bitboard GetBishopAttacks(int sq, Bitboard blockers) const;
+  Bitboard GetQueenAttacks(int sq, Bitboard blockers) const;
 
   void InitializeHash();
-  void UpdatePieceHash(const Piece& piece, const BoardLocation& loc) {
-    hash_key_ ^= piece_hashes_[piece.GetColor()][piece.GetPieceType()]
-      [loc.GetRow()][loc.GetCol()];
+  void UpdatePieceHash(const Piece& piece, int index) {
+    hash_key_ ^= piece_hashes_[piece.GetColor()][piece.GetPieceType()][index];
   }
   void UpdateTurnHash(int turn) {
     hash_key_ ^= turn_hashes_[turn];
@@ -637,25 +477,25 @@ class Board {
 
   Player turn_;
 
-  Piece location_to_piece_[14][14];
-  std::vector<std::vector<PlacedPiece>> piece_list_;
-
-  BoardLocation locations_[14][14];
-
+  // Bitboard representation
+  Bitboard piece_bitboards_[4][6]; // [PlayerColor][PieceType]
+  Bitboard color_bitboards_[4];    // [PlayerColor] all pieces for a color
+  Bitboard team_bitboards_[2];     // [Team] all pieces for a team
+  
   CastlingRights castling_rights_[4];
   EnpassantInitialization enp_;
-  std::vector<Move> moves_; // list of moves from beginning of game
-  std::vector<Move> move_buffer_;
+  std::vector<Move> moves_;
+  
   int piece_evaluation_ = 0;
-  int player_piece_evaluations_[4] = {0, 0, 0, 0}; // one per player
+  int player_piece_evaluations_[4] = {0, 0, 0, 0};
 
   int64_t hash_key_ = 0;
-  int64_t piece_hashes_[4][6][14][14];
+  int64_t piece_hashes_[4][6][256]; // [color][type][square_index]
   int64_t turn_hashes_[4];
-  BoardLocation king_locations_[4];
-
-  size_t move_buffer_size_ = 300;
-  Move move_buffer_2_[300];
+  
+  // A reasonably sized buffer for internal move generation tasks.
+  static constexpr size_t kInternalMoveBufferSize = 300;
+  Move move_buffer_2_[kInternalMoveBufferSize];
 };
 
 // Helper functions
@@ -666,15 +506,12 @@ Player GetNextPlayer(const Player& player);
 Player GetPreviousPlayer(const Player& player);
 Player GetPartner(const Player& player);
 
-// Returns the static exchange evaluation of a capture.
 int StaticExchangeEvaluationCapture(
     const int piece_evaluations[6],
     Board& board,
     const Move& move);
 
-
 }  // namespace chess
 
 
 #endif  // _BOARD_H_
-

@@ -5,7 +5,10 @@ package(default_visibility=[
 
 cc_library(
     name = "board",
-    hdrs = ["board.h"],
+    hdrs = [
+        "board.h",
+        "FastUint256.h", # <-- ADD THIS LINE
+    ],
     srcs = ["board.cc"],
 )
 
