@@ -935,13 +935,16 @@ void Board::SetPlayer(const Player& player) {
 }
 
 void Board::MakeNullMove() {
+  // This call does everything needed:
+  // 1. Updates turn_ to the next player.
+  // 2. Updates the Zobrist hash correctly.
   SetPlayer(GetNextPlayer(turn_));
-  moves_.emplace_back(); // Push a null move to keep Undo logic simple
 }
 
 void Board::UndoNullMove() {
-  assert(!moves_.empty());
-  moves_.pop_back();
+  // This call correctly reverts the state:
+  // 1. Updates turn_ back to the previous player.
+  // 2. Reverts the Zobrist hash correctly.
   SetPlayer(GetPreviousPlayer(turn_));
 }
 
