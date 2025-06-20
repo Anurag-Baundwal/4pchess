@@ -385,6 +385,8 @@ struct MoveBuffer {
   template<class... T>
   void emplace_back(T&&... args) {
     if (pos >= limit) {
+      std::cout << "Move buffer overflow" << std::endl;
+        abort();
     } else {
         buffer[pos++] = Move(std::forward<T>(args)...);
     }
