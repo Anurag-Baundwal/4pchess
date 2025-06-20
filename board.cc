@@ -1214,4 +1214,62 @@ int Move::SEE(Board& board, const int* piece_evaluations) {
   return see_;
 }
 
+namespace {
+std::string ToStr(PlayerColor color) {
+  switch (color) {
+  case RED:
+    return "RED";
+  case BLUE:
+    return "BLUE";
+  case YELLOW:
+    return "YELLOW";
+  case GREEN:
+    return "GREEN";
+  default:
+    return "UNINITIALIZED_PLAYER";
+  }
+}
+} // namespace
+
+std::ostream& operator<<(
+    std::ostream& os, const Piece& piece) {
+  if (!piece.Present()) {
+      os << "NoPiece";
+      return os;
+  }
+  os << ToStr(piece.GetColor()) << "(" << ToStr(piece.GetPieceType()) << ")";
+  return os;
+}
+
+std::ostream& operator<<(
+    std::ostream& os, const PlacedPiece& placed_piece) {
+  os << placed_piece.GetPiece() << "@" << placed_piece.GetLocation();
+  return os;
+}
+
+std::ostream& operator<<(
+    std::ostream& os, const Player& player) {
+  os << "Player(" << ToStr(player.GetColor()) << ")";
+  return os;
+}
+
+std::ostream& operator<<(
+    std::ostream& os, const BoardLocation& location) {
+  if (!location.Present()) {
+      os << "Loc(null)";
+      return os;
+  }
+  os << "Loc(" << (int)location.GetRow() << ", " << (int)location.GetCol() << ")";
+  return os;
+}
+
+std::ostream& operator<<(std::ostream& os, const Move& move) {
+  if (!move.Present()) {
+      os << "Move(null)";
+      return os;
+  }
+  os << "Move(" << move.From() << " -> " << move.To() << ")";
+  return os;
+}
+
 }  // namespace chess
