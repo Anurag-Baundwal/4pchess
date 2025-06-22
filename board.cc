@@ -213,6 +213,27 @@ void InitBitboards() {
     is_initialized = true;
 }
 
+// These correspond to the offsets for a 1-square move in that direction.
+constexpr int PUSH_N = -kBoardWidth; // -16
+constexpr int PUSH_E = 1;
+constexpr int PUSH_S = kBoardWidth;  // +16
+constexpr int PUSH_W = -1;
+constexpr int PUSH_NE = PUSH_N + PUSH_E; // -15
+constexpr int PUSH_NW = PUSH_N + PUSH_W; // -17
+constexpr int PUSH_SE = PUSH_S + PUSH_E; // +17
+constexpr int PUSH_SW = PUSH_S + PUSH_W; // +15
+
+// A generic, templated shift function, just like Stockfish.
+// This is much more efficient than a runtime-variable shift.
+template<int ShiftOffset>
+inline Bitboard shift(Bitboard b) {
+    if constexpr (ShiftOffset > 0) {
+        return b << ShiftOffset;
+    } else {
+        return b >> -ShiftOffset;
+    }
+}
+
 } // namespace BitboardImpl
 using namespace BitboardImpl;
 
@@ -531,41 +552,203 @@ void AddPawnMovesFromBB(MoveBuffer& moves, int from_idx, Bitboard to_bb, PlayerC
 }
 }
 
+
 void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
     PlayerColor color = player.GetColor();
     Team team = player.GetTeam();
-    Bitboard pawns = piece_bitboards_[color][PAWN];
-    Bitboard empty_squares = ~(team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN]);
-    Bitboard enemy_pieces = team_bitboards_[OtherTeam(team)];
 
-    Bitboard pawns_copy = pawns;
-    while (!pawns_copy.is_zero()) {
-        int from_idx = pawns_copy.ctz();
-        pawns_copy &= pawns_copy - 1;
-        
-        // --- 1. Standard Pawn Pushes ---
-        Bitboard push1_target = kPawnSinglePush[color][from_idx];
-        if (!(push1_target & empty_squares).is_zero()) {
-            AddPawnMovesFromBB(moves, from_idx, push1_target, color, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece);
+    const Bitboard my_pawns = piece_bitboards_[color][PAWN];
+    if (my_pawns.is_zero()) {
+        return;
+    }
+    
+    const Bitboard all_pieces = team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN];
+    const Bitboard empty_squares = ~all_pieces;
+    const Bitboard enemy_pieces = team_bitboards_[OtherTeam(team)];
+    const Bitboard promotion_rank = kPawnPromotionMask[color];
+
+    // =======================================================================
+    // 1. Generate Pushes (Single and Double) - CORRECTED LOGIC
+    // =======================================================================
+    
+    Bitboard single_pushes, double_pushes;
+    
+    switch (color) {
+        case RED: {
+            // 1a. All single pushes for ALL pawns
+            single_pushes = shift<PUSH_N>(my_pawns) & empty_squares;
             
-            if (kPawnStartMask[color] & IndexToBitboard(from_idx)) {
-                Bitboard push2_target = kPawnDoublePush[color][from_idx];
-                if (!(push2_target & empty_squares).is_zero()) {
-                     AddPawnMovesFromBB(moves, from_idx, push2_target, color, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece);
-                }
-            }
+            // 1b. Double pushes, which can only originate from the start rank
+            Bitboard pawns_on_start_rank = my_pawns & kPawnStartMask[RED];
+            Bitboard first_step_of_double = shift<PUSH_N>(pawns_on_start_rank) & empty_squares;
+            double_pushes = shift<PUSH_N>(first_step_of_double) & empty_squares;
+            break;
         }
-        
-        // --- 2. Standard Pawn Captures (Diagonal) ---
-        Bitboard attacks = kPawnAttacks[color][from_idx] & enemy_pieces;
-        while (!attacks.is_zero()) {
-            int to_idx = attacks.ctz();
-            attacks &= attacks - 1;
-            AddPawnMovesFromBB(moves, from_idx, IndexToBitboard(to_idx), color, GetPiece(to_idx), BoardLocation::kNoLocation, Piece::kNoPiece);
+        case BLUE: {
+            single_pushes = shift<PUSH_E>(my_pawns) & empty_squares;
+            Bitboard pawns_on_start_rank = my_pawns & kPawnStartMask[BLUE];
+            Bitboard first_step_of_double = shift<PUSH_E>(pawns_on_start_rank) & empty_squares;
+            double_pushes = shift<PUSH_E>(first_step_of_double) & empty_squares;
+            break;
+        }
+        case YELLOW: {
+            single_pushes = shift<PUSH_S>(my_pawns) & empty_squares;
+            Bitboard pawns_on_start_rank = my_pawns & kPawnStartMask[YELLOW];
+            Bitboard first_step_of_double = shift<PUSH_S>(pawns_on_start_rank) & empty_squares;
+            double_pushes = shift<PUSH_S>(first_step_of_double) & empty_squares;
+            break;
+        }
+        case GREEN: {
+            single_pushes = shift<PUSH_W>(my_pawns) & empty_squares;
+            Bitboard pawns_on_start_rank = my_pawns & kPawnStartMask[GREEN];
+            Bitboard first_step_of_double = shift<PUSH_W>(pawns_on_start_rank) & empty_squares;
+            double_pushes = shift<PUSH_W>(first_step_of_double) & empty_squares;
+            break;
+        }
+    }
+
+    // --- The rest of the logic for adding moves remains the same ---
+
+    // Add single push moves (excluding promotions, which are handled later)
+    Bitboard single_targets = single_pushes & ~promotion_rank;
+    while (!single_targets.is_zero()) {
+        int to_idx = single_targets.ctz();
+        single_targets &= single_targets - 1;
+        int from_idx;
+        switch(color) {
+            case RED:    from_idx = to_idx - PUSH_N; break;
+            case BLUE:   from_idx = to_idx - PUSH_E; break;
+            case YELLOW: from_idx = to_idx - PUSH_S; break;
+            case GREEN:  from_idx = to_idx - PUSH_W; break;
+        }
+        // A double push target can also be a single push target for another pawn.
+        // We must ensure the pawn we are moving actually existed.
+        if((my_pawns & IndexToBitboard(from_idx)).is_zero()) continue;
+        moves.emplace_back(IndexToLocation(from_idx), IndexToLocation(to_idx), Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, NO_PIECE);
+    }
+    
+    // Add double push moves
+    while (!double_pushes.is_zero()) {
+        int to_idx = double_pushes.ctz();
+        double_pushes &= double_pushes - 1;
+        int from_idx;
+        switch(color) {
+            case RED:    from_idx = to_idx - PUSH_N - PUSH_N; break;
+            case BLUE:   from_idx = to_idx - PUSH_E - PUSH_E; break;
+            case YELLOW: from_idx = to_idx - PUSH_S - PUSH_S; break;
+            case GREEN:  from_idx = to_idx - PUSH_W - PUSH_W; break;
+        }
+        moves.emplace_back(IndexToLocation(from_idx), IndexToLocation(to_idx), Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, NO_PIECE);
+    }
+    
+    // =======================================================================
+    // 2. Generate Captures (This logic was correct)
+    // =======================================================================
+    
+    constexpr int capture_offsets[4][2] = {
+        { PUSH_NW, PUSH_NE }, { PUSH_NE, PUSH_SE },
+        { PUSH_SW, PUSH_SE }, { PUSH_NW, PUSH_SW }
+    };
+    
+    Bitboard captures1, captures2;
+    switch (color) {
+        case RED:
+            captures1 = shift<capture_offsets[RED][0]>(my_pawns) & enemy_pieces;
+            captures2 = shift<capture_offsets[RED][1]>(my_pawns) & enemy_pieces;
+            break;
+        case BLUE:
+            captures1 = shift<capture_offsets[BLUE][0]>(my_pawns) & enemy_pieces;
+            captures2 = shift<capture_offsets[BLUE][1]>(my_pawns) & enemy_pieces;
+            break;
+        case YELLOW:
+            captures1 = shift<capture_offsets[YELLOW][0]>(my_pawns) & enemy_pieces;
+            captures2 = shift<capture_offsets[YELLOW][1]>(my_pawns) & enemy_pieces;
+            break;
+        case GREEN:
+            captures1 = shift<capture_offsets[GREEN][0]>(my_pawns) & enemy_pieces;
+            captures2 = shift<capture_offsets[GREEN][1]>(my_pawns) & enemy_pieces;
+            break;
+    }
+
+    Bitboard all_captures = (captures1 | captures2) & ~promotion_rank;
+    while (!all_captures.is_zero()) {
+        int to_idx = all_captures.ctz();
+        Bitboard to_bb = IndexToBitboard(to_idx);
+        all_captures &= all_captures - 1;
+
+        Bitboard from_bb;
+        switch (color) {
+            case RED:    from_bb = (shift<-capture_offsets[RED][0]>(to_bb) | shift<-capture_offsets[RED][1]>(to_bb)) & my_pawns; break;
+            case BLUE:   from_bb = (shift<-capture_offsets[BLUE][0]>(to_bb) | shift<-capture_offsets[BLUE][1]>(to_bb)) & my_pawns; break;
+            case YELLOW: from_bb = (shift<-capture_offsets[YELLOW][0]>(to_bb) | shift<-capture_offsets[YELLOW][1]>(to_bb)) & my_pawns; break;
+            case GREEN:  from_bb = (shift<-capture_offsets[GREEN][0]>(to_bb) | shift<-capture_offsets[GREEN][1]>(to_bb)) & my_pawns; break;
+        }
+
+        while (!from_bb.is_zero()) {
+            int from_idx = from_bb.ctz();
+            from_bb &= from_bb - 1;
+            moves.emplace_back(IndexToLocation(from_idx), IndexToLocation(to_idx), GetPiece(to_idx), BoardLocation::kNoLocation, Piece::kNoPiece, NO_PIECE);
         }
     }
     
-    // --- 3. CORRECTED En-Passant Logic (Forward Capture Only) ---
+    // =======================================================================
+    // 3. Generate Promotions (This logic was correct)
+    // =======================================================================
+    
+    Bitboard promo_pushes = single_pushes & promotion_rank;
+    Bitboard promo_captures = (captures1 | captures2) & promotion_rank;
+
+    // Promotion pushes...
+    while (!promo_pushes.is_zero()) {
+        int to_idx = promo_pushes.ctz();
+        promo_pushes &= promo_pushes - 1;
+        int from_idx;
+        switch(color) {
+            case RED:    from_idx = to_idx - PUSH_N; break;
+            case BLUE:   from_idx = to_idx - PUSH_E; break;
+            case YELLOW: from_idx = to_idx - PUSH_S; break;
+            case GREEN:  from_idx = to_idx - PUSH_W; break;
+        }
+        BoardLocation from = IndexToLocation(from_idx);
+        BoardLocation to = IndexToLocation(to_idx);
+        moves.emplace_back(from, to, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, QUEEN);
+        moves.emplace_back(from, to, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, ROOK);
+        moves.emplace_back(from, to, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, BISHOP);
+        moves.emplace_back(from, to, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, KNIGHT);
+    }
+    
+    // Promotion captures...
+    while (!promo_captures.is_zero()) {
+        int to_idx = promo_captures.ctz();
+        Bitboard to_bb = IndexToBitboard(to_idx);
+        promo_captures &= promo_captures - 1;
+        
+        Bitboard from_bb;
+         switch (color) {
+            case RED:    from_bb = (shift<-capture_offsets[RED][0]>(to_bb) | shift<-capture_offsets[RED][1]>(to_bb)) & my_pawns; break;
+            case BLUE:   from_bb = (shift<-capture_offsets[BLUE][0]>(to_bb) | shift<-capture_offsets[BLUE][1]>(to_bb)) & my_pawns; break;
+            case YELLOW: from_bb = (shift<-capture_offsets[YELLOW][0]>(to_bb) | shift<-capture_offsets[YELLOW][1]>(to_bb)) & my_pawns; break;
+            case GREEN:  from_bb = (shift<-capture_offsets[GREEN][0]>(to_bb) | shift<-capture_offsets[GREEN][1]>(to_bb)) & my_pawns; break;
+        }
+
+        Piece captured_piece = GetPiece(to_idx);
+        BoardLocation to = IndexToLocation(to_idx);
+
+        while (!from_bb.is_zero()) {
+            int from_idx = from_bb.ctz();
+            from_bb &= from_bb - 1;
+            BoardLocation from = IndexToLocation(from_idx);
+            moves.emplace_back(from, to, captured_piece, BoardLocation::kNoLocation, Piece::kNoPiece, QUEEN);
+            moves.emplace_back(from, to, captured_piece, BoardLocation::kNoLocation, Piece::kNoPiece, ROOK);
+            moves.emplace_back(from, to, captured_piece, BoardLocation::kNoLocation, Piece::kNoPiece, BISHOP);
+            moves.emplace_back(from, to, captured_piece, BoardLocation::kNoLocation, Piece::kNoPiece, KNIGHT);
+        }
+    }
+    
+    // =======================================================================
+    // 4. Generate En Passant (Optimized)
+    // =======================================================================
+
     auto find_relevant_move = [&](PlayerColor opponent_color) -> const Move* {
         int turns_ago = (color - opponent_color + 4) % 4;
         if (turns_ago > 0 && moves_.size() >= turns_ago) {
@@ -576,10 +759,10 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
     };
 
     const PlayerColor opponents[2] = { GetNextPlayer(player).GetColor(), GetPreviousPlayer(player).GetColor() };
-
-    constexpr int pawn_push_delta_rows[] = {-1, 0, 1, 0};
-    constexpr int pawn_push_delta_cols[] = {0, 1, 0, -1};
-
+    
+    // Define push directions for all colors for easy lookup
+    constexpr int push_offsets[] = {PUSH_N, PUSH_E, PUSH_S, PUSH_W};
+    
     for (const PlayerColor opponent_color : opponents) {
         const Move* opponent_last_move = find_relevant_move(opponent_color);
 
@@ -587,47 +770,50 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
             continue;
         }
 
-        Piece moved_piece = GetPiece(opponent_last_move->To());
+        // Check if it was a 2-square straight pawn push
         const auto& move_from = opponent_last_move->From();
         const auto& move_to = opponent_last_move->To();
+        Piece moved_piece = GetPiece(move_to);
 
-        // Check for a 2-square *straight* pawn push
-        if (moved_piece.GetPieceType() != PAWN || 
-            moved_piece.GetColor() != opponent_color || 
+        if (moved_piece.GetPieceType() != PAWN ||
+            moved_piece.GetColor() != opponent_color ||
             opponent_last_move->ManhattanDistance() != 2 ||
-            (move_from.GetRow() != move_to.GetRow() && move_from.GetCol() != move_to.GetCol())) { // <-- THE FIX
+            (move_from.GetRow() != move_to.GetRow() && move_from.GetCol() != move_to.GetCol())) {
             continue;
         }
-
-        int moved_to_idx = LocationToIndex(move_to);
         
-        Bitboard our_pawns_copy = piece_bitboards_[color][PAWN];
-        while(!our_pawns_copy.is_zero()) {
-            int our_pawn_idx = our_pawns_copy.ctz();
-            our_pawns_copy &= (our_pawns_copy - 1);
+        // --- THIS IS THE CORE OPTIMIZATION ---
+        // The opponent pawn landed on 'move_to'.
+        // Our capturing pawn must be on the square BEHIND 'move_to' (relative to our push direction).
+        // We find this square by shifting 'move_to' backwards.
+        int moved_to_idx = LocationToIndex(move_to);
+        Bitboard capturer_square_bb;
+
+        switch (color) {
+            case RED:    capturer_square_bb = shift<-PUSH_N>(IndexToBitboard(moved_to_idx)); break;
+            case BLUE:   capturer_square_bb = shift<-PUSH_E>(IndexToBitboard(moved_to_idx)); break;
+            case YELLOW: capturer_square_bb = shift<-PUSH_S>(IndexToBitboard(moved_to_idx)); break;
+            case GREEN:  capturer_square_bb = shift<-PUSH_W>(IndexToBitboard(moved_to_idx)); break;
+        }
+
+        // Now, check if one of our pawns is actually on that square.
+        Bitboard capturer_pawn = capturer_square_bb & my_pawns;
+
+        if (!capturer_pawn.is_zero()) {
+            int our_pawn_idx = capturer_pawn.ctz();
             
-            // If the square in front of our pawn is where the enemy pawn landed
-            if (LocationToIndex(IndexToLocation(our_pawn_idx).Relative(
-                    pawn_push_delta_rows[color],
-                    pawn_push_delta_cols[color]
-                )) == moved_to_idx)
-            {
-                int moved_from_idx = LocationToIndex(move_from);
-                int ep_capture_dest_idx = (moved_from_idx + moved_to_idx) / 2;
-
-                BoardLocation our_pawn_loc = IndexToLocation(our_pawn_idx);
-                BoardLocation ep_target_loc = IndexToLocation(ep_capture_dest_idx);
-
-                Piece standard_capture = GetPiece(ep_target_loc);
-                if (standard_capture.Present() && standard_capture.GetTeam() == team) {
-                    continue;
-                }
-                
-                Piece ep_capture = moved_piece;
-                BoardLocation ep_capture_loc = move_to;
-
-                AddPawnMovesFromBB(moves, our_pawn_idx, IndexToBitboard(ep_capture_dest_idx), color, standard_capture, ep_capture_loc, ep_capture);
-            }
+            // Calculate the capture destination (the square the opponent pawn skipped)
+            int moved_from_idx = LocationToIndex(move_from);
+            int ep_capture_dest_idx = (moved_from_idx + moved_to_idx) / 2;
+            
+            // Create the move. No loops needed.
+            moves.emplace_back(
+                IndexToLocation(our_pawn_idx),
+                IndexToLocation(ep_capture_dest_idx),
+                GetPiece(ep_capture_dest_idx), // Standard capture (if any)
+                move_to,                        // En-passant location
+                moved_piece                     // En-passant capture
+            );
         }
     }
 }
