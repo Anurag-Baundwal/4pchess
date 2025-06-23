@@ -487,6 +487,8 @@ class Board {
   Bitboard piece_bitboards_[4][6]; // [PlayerColor][PieceType]
   Bitboard color_bitboards_[4];    // [PlayerColor] all pieces for a color
   Bitboard team_bitboards_[2];     // [Team] all pieces for a team
+
+  Piece piece_on_square_[256];
   
   CastlingRights castling_rights_[4];
   EnpassantInitialization enp_;

@@ -310,17 +310,7 @@ void Board::InitializeHash() {
 
 Piece Board::GetPiece(int index) const {
     if (index < 0) return Piece::kNoPiece;
-    Bitboard mask = IndexToBitboard(index);
-    for (int c = 0; c < 4; ++c) {
-        if (!(color_bitboards_[c] & mask).is_zero()) {
-            for (int pt = 0; pt < 6; ++pt) {
-                if (!(piece_bitboards_[c][pt] & mask).is_zero()) {
-                    return Piece(static_cast<PlayerColor>(c), static_cast<PieceType>(pt));
-                }
-            }
-        }
-    }
-    return Piece::kNoPiece;
+    return piece_on_square_[index];
 }
 
 Piece Board::GetPiece(const BoardLocation& location) const {
@@ -345,6 +335,8 @@ void Board::SetPiece(const BoardLocation& location, const Piece& piece) {
     else piece_evaluation_ -= piece_eval;
     player_piece_evaluations_[color] += piece_eval;
 
+    piece_on_square_[index] = piece;
+
     UpdatePieceHash(piece, index);
 }
 
@@ -367,6 +359,8 @@ void Board::RemovePiece(const BoardLocation& location) {
     else piece_evaluation_ += piece_eval;
     player_piece_evaluations_[color] -= piece_eval;
     
+    piece_on_square_[index] = Piece::kNoPiece;
+
     UpdatePieceHash(piece, index);
 }
 
@@ -384,6 +378,9 @@ void Board::MovePiece(const BoardLocation& from_loc, const BoardLocation& to_loc
     piece_bitboards_[color][type] ^= move_mask;
     color_bitboards_[color] ^= move_mask;
     team_bitboards_[team] ^= move_mask;
+
+    piece_on_square_[to_idx] = piece;
+    piece_on_square_[from_idx] = Piece::kNoPiece;
 
     UpdatePieceHash(piece, from_idx);
     UpdatePieceHash(piece, to_idx);
