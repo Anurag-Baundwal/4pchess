@@ -1249,37 +1249,52 @@ std::string Move::PrettyStr() const {
 }
 
 bool Board::DiscoversCheck(const Move& move) const {
-    int from_sq = LocationToIndex(move.From());
-    int to_sq = LocationToIndex(move.To());
-    Team my_team = turn_.GetTeam();
-    Team enemy_team = OtherTeam(my_team);
+    const int from_sq = BitboardImpl::LocationToIndex(move.From());
+    const int to_sq = BitboardImpl::LocationToIndex(move.To());
+    const Team my_team = turn_.GetTeam();
+    const Team enemy_team = OtherTeam(my_team);
 
-    Bitboard my_sliders = (piece_bitboards_[turn_.GetColor()][BISHOP] | piece_bitboards_[turn_.GetColor()][ROOK] | piece_bitboards_[turn_.GetColor()][QUEEN] |
-                           piece_bitboards_[GetPartner(turn_).GetColor()][BISHOP] | piece_bitboards_[GetPartner(turn_).GetColor()][ROOK] | piece_bitboards_[GetPartner(turn_).GetColor()][QUEEN]);
-
-    PlayerColor e1 = enemy_team == RED_YELLOW ? RED : BLUE;
-    PlayerColor e2 = enemy_team == RED_YELLOW ? YELLOW : GREEN;
+    // 1. Identify all enemy kings and our own sliders (Bishops, Rooks, Queens).
+    const PlayerColor e1 = (enemy_team == RED_YELLOW) ? RED : BLUE;
+    const PlayerColor e2 = (enemy_team == RED_YELLOW) ? YELLOW : GREEN;
     Bitboard enemy_kings = piece_bitboards_[e1][KING] | piece_bitboards_[e2][KING];
 
-    Bitboard occupied = team_bitboards_[0] | team_bitboards_[1];
+    const PlayerColor f1 = (my_team == RED_YELLOW) ? RED : BLUE;
+    const PlayerColor f2 = (my_team == RED_YELLOW) ? YELLOW : GREEN;
+    const Bitboard my_sliders = piece_bitboards_[f1][BISHOP] | piece_bitboards_[f2][BISHOP] |
+                                piece_bitboards_[f1][ROOK]   | piece_bitboards_[f2][ROOK] |
+                                piece_bitboards_[f1][QUEEN]  | piece_bitboards_[f2][QUEEN];
 
-    while(!enemy_kings.is_zero()){
+    const Bitboard occupied = team_bitboards_[0] | team_bitboards_[1];
+
+    // 2. Loop through each enemy king to see if the moving piece is pinned to it.
+    while (!enemy_kings.is_zero()) {
         int king_sq = enemy_kings.ctz();
         enemy_kings &= enemy_kings - 1;
-        
-        Bitboard line = kLineBetween[king_sq][from_sq];
-        // The moving piece must be on the line between the king and a friendly slider
-        if ((line & (occupied ^ IndexToBitboard(from_sq)) & my_sliders).is_zero()) {
-            // Check if from_sq is between king and a friendly slider.
-            Bitboard attackers_on_line = GetQueenAttacks(king_sq, occupied) & my_sliders;
-            if((line & attackers_on_line).is_zero()) continue;
-        }
 
-        // If it moves off that line, it's a discovered check.
-        if((line & IndexToBitboard(to_sq)).is_zero()) {
-            return true;
+        // 3. Find all of our sliders that have a line-of-sight to this king.
+        //    This tells us which of our pieces *could* be pinning something to this king.
+        Bitboard potential_pinners = GetQueenAttacks(king_sq, occupied) & my_sliders;
+
+        // 4. For each potential pinner, check if 'from_sq' is the only piece between it and the king.
+        while (!potential_pinners.is_zero()) {
+            int slider_sq = potential_pinners.ctz();
+            potential_pinners &= potential_pinners - 1;
+            
+            // Check if the moving piece is the *only* piece on the line between the king and our slider.
+            if ((BitboardImpl::kLineBetween[king_sq][slider_sq] & occupied) == BitboardImpl::IndexToBitboard(from_sq)) {
+                // The piece at 'from_sq' is pinned to the enemy king by our slider.
+                
+                // A discovered check occurs if the piece moves OFF the pin line.
+                // If 'to_sq' is also on the line, it's a move along the pin, not a discovery.
+                if ((BitboardImpl::kLineBetween[king_sq][slider_sq] & BitboardImpl::IndexToBitboard(to_sq)).is_zero()) {
+                    return true; // The move discovers check!
+                }
+            }
         }
     }
+    
+    // No discovered checks were found.
     return false;
 }
 
