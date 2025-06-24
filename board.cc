@@ -1256,7 +1256,7 @@ std::string BoardLocation::PrettyStr() const {
 }
 std::string Move::PrettyStr() const {
   if(!Present()) return "null";
-  std::string s = from_.PrettyStr() + to_.PrettyStr();
+  std::string s = from_.PrettyStr() + "-" + to_.PrettyStr();
   if (GetPromotionPieceType() != NO_PIECE) {
     s += ToStr(GetPromotionPieceType());
   }
