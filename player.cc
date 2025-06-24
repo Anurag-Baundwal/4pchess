@@ -1125,14 +1125,21 @@ void AlphaBetaPlayer::ResetHistoryHeuristics() {
 void AlphaBetaPlayer::AgeHistoryHeuristics() {
   auto age_table = [](auto* table, size_t size_bytes) {
       int* p = reinterpret_cast<int*>(table);
-      for(size_t i = 0; i < size_bytes / sizeof(int); ++i) p[i] /= 2;
+      for(size_t i = 0; i < size_bytes / sizeof(int); ++i) {
+          p[i] >>= 1; // Use bit-shift for division by 2, it's faster.
+      }
   };
+  
   age_table(history_heuristic, sizeof(history_heuristic));
   age_table(capture_heuristic, sizeof(capture_heuristic));
-  std::memset(counter_moves, 0, sizeof(Move) * 256 * 256);
-  // FIXED: Use . instead of -> and memset instead of fill
-  for (int i = 0; i < 2; i++) for (int j = 0; j < 2; j++) {
-      std::memset(&continuation_history[i][j], 0, sizeof(continuation_history[i][j]));
+  std::memset(counter_moves, 0, sizeof(Move) * 256 * 256); // Counter moves should be reset
+
+  // --- CORRECTED LOGIC ---
+  for (int i = 0; i < 2; i++) {
+    for (int j = 0; j < 2; j++) {
+      // Age this table instead of resetting it
+      age_table(&continuation_history[i][j], sizeof(continuation_history[i][j]));
+    }
   }
 }
 
