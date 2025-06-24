@@ -8,7 +8,7 @@
 #include <limits>
 #include <optional>
 #include <tuple>
-#include <type_traits>  // IWYU pragma: keep
+#include <type_traits>
 
 #include "board.h"
 
@@ -37,10 +37,7 @@ class StatsEntry {
     void operator<<(int bonus) {
         assert(abs(bonus) <= D);  // Ensure range is [-D, D]
         static_assert(D <= std::numeric_limits<T>::max(), "D overflows T");
-
-        //entry += bonus - entry * abs(bonus) / D;
-        entry += std::min(D - entry, bonus);
-
+        entry += bonus - entry * abs(bonus) / D;
         assert(abs(entry) <= D);
     }
 };
@@ -77,11 +74,13 @@ enum StatsType {
     Captures
 };
 
-// Addressed by [piece][to]
-using PieceToHistory = Stats<int32_t, 2147483647, 7, 14, 14>;
+// Addressed by [piece][to_sq]
+using PieceToHistory = Stats<int32_t, 2147483647, 7, 256>;
 
-// Addressed by [piece_1][to_1][piece_2][to_2]
-using ContinuationHistory = Stats<PieceToHistory, NOT_USED, 7, 14, 14>;
+// Addressed by [piece_1][to_sq_1][piece_2][to_sq_2]
+// This definition is complex and driven by its usage in player.cc. It's an array of PieceToHistory tables.
+using ContinuationHistory = Stats<PieceToHistory, NOT_USED, 7, 256>;
+
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -92,15 +91,15 @@ class MovePicker {
     const std::optional<Move>& pvmove,
     Move* killers,
     const int piece_evaluations[6],
-    int history_heuristic[6][14][14][14][14],
-    int capture_heuristic[6][4][6][4][14][14],
+    int history_heuristic[6][256][256],
+    int capture_heuristic[6][4][6][4][256],
     int piece_move_order_scores[6],
     bool enable_move_order_checks,
     Move* buffer,
-    size_t buffer_size
-    ,Move* counter_moves
-    ,bool include_quiets = true
-    ,const PieceToHistory** piece_to_history = nullptr
+    size_t buffer_size,
+    Move counter_moves[256][256],
+    bool include_quiets = true,
+    const PieceToHistory** piece_to_history = nullptr
     );
 
   // If this returns nullptr then there are no more moves
@@ -128,4 +127,3 @@ class MovePicker {
 }  // namespace chess
 
 #endif  // _MOVE_PICKER_H_
-

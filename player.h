@@ -17,6 +17,11 @@
 
 namespace chess {
 
+namespace BitboardImpl {
+    extern int LocationToIndex(const BoardLocation& loc);
+    extern BoardLocation IndexToLocation(int index);
+}
+
 constexpr int kMateValue = 1000000'00;  // mate value (centipawns)
 
 class PVInfo {
@@ -89,7 +94,7 @@ struct Stack {
   Move excludedMove;
   bool tt_pv = false;
   int move_count = 0;
-  // indexed by (piece_type, row, col)
+  // indexed by [piece_type][to_sq]
   PieceToHistory* continuation_history = nullptr;
   bool in_check = false;
   Move current_move;
@@ -131,7 +136,6 @@ class ThreadState {
   Move* move_buffer_ = nullptr;
   // Id within move_buffer_
   size_t buffer_id_ = 0;
-
   int n_activated_[4] = {0, 0, 0, 0};
   int total_moves_[4] = {0, 0, 0, 0};
 
@@ -178,7 +182,7 @@ class AlphaBetaPlayer {
       NodeType node_type,
       ThreadState& thread_state,
       Board& board,
-      int depth, // called initially with depth = 0, further decreases
+      int depth,
       int alpha,
       int beta,
       bool maximizing_player,
@@ -187,6 +191,7 @@ class AlphaBetaPlayer {
 
   int GetNumLegalMoves(Board& board);
 
+  // Getter methods for stats
   int64_t GetNumEvaluations() { return num_nodes_; }
   int64_t GetNumCacheHits() { return num_cache_hits_; }
   int64_t GetNumNullMovesTried() { return num_null_moves_tried_; }
@@ -232,8 +237,8 @@ class AlphaBetaPlayer {
   void UpdateQuietStats(Stack* ss, const Move& move);
   void UpdateMobilityEvaluation(ThreadState& thread_state, Board& board, Player turn);
   void UpdateContinuationHistories(Stack* ss, const Move& move, PieceType piece_type, int bonus);
-  bool HasShield(Board& board, PlayerColor color, const BoardLocation& king_loc);
-  bool OnBackRank(const BoardLocation& king_loc);
+  bool HasShield(const Board& board, PlayerColor color, int king_sq);
+  bool OnBackRank(int king_sq);
 
   std::atomic<int64_t> num_nodes_ = 0; // debugging
   std::atomic<int64_t> num_cache_hits_ = 0;
@@ -254,7 +259,6 @@ class AlphaBetaPlayer {
   std::atomic<bool> canceled_ = false;
   int piece_move_order_scores_[6];
   PlayerOptions options_;
-  int location_evaluations_[14][14];
 
   std::unique_ptr<TranspositionTable> transposition_table_;
   PVInfo pv_info_;
@@ -270,25 +274,18 @@ class AlphaBetaPlayer {
   // For evaluation
   int king_attack_weight_[30];
   int king_attacker_values_[6];
-  // color x piece type x row x col
-  int piece_square_table_[4][6][14][14];
-  // number of moves a piece needs to have to be considered active
+  int piece_square_table_[4][6][256];
   int piece_activation_threshold_[7];
-  bool knight_to_king_[14][14][14][14];
+  bool knight_to_king_[256][256];
   Team root_team_ = NO_TEAM;
 
   // Heuristics (shared across threads)
-  // (piece_type, from_row, from_col, to_row, to_col)
-  int history_heuristic[6][14][14][14][14];
-  // (piece_type, piece_color, capture_piece_type, capture_piece_color, to_row, to_col)
-  int capture_heuristic[6][4][6][4][14][14];
-  // https://www.chessprogramming.org/Countermove_Heuristic
-  // (from_row, from_col, to_row, to_col)
-  Move* counter_moves = nullptr;
-  // indexed by (in_check, is_capture)
+  int history_heuristic[6][256][256];
+  int capture_heuristic[6][4][6][4][256];
+  Move (*counter_moves)[256] = nullptr;
   ContinuationHistory** continuation_history = nullptr;
 
-  static constexpr size_t kHeuristicMutexes = 256;
+  static constexpr size_t kHeuristicMutexes = 256 * 256 / 100; // Larger to reduce collisions
   std::unique_ptr<std::mutex[]> heuristic_mutexes_;
 };
 

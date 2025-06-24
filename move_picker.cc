@@ -5,6 +5,11 @@
 
 namespace chess {
 
+// This namespace must be accessible here for LocationToIndex
+namespace BitboardImpl {
+    extern int LocationToIndex(const BoardLocation& loc);
+}
+
 enum Stage {
   PV_MOVE = 0,
   GOOD_CAPTURE = 1,
@@ -18,15 +23,15 @@ MovePicker::MovePicker(
     const std::optional<Move>& pvmove,
     Move* killers,
     const int piece_evaluations[6],
-    int history_heuristic[6][14][14][14][14],
-    int capture_heuristic[6][4][6][4][14][14],
+    int history_heuristic[6][256][256],
+    int capture_heuristic[6][4][6][4][256],
     int piece_move_order_scores[6],
     bool enable_move_order_checks,
     Move* buffer,
-    size_t buffer_size
-    ,Move* counter_moves
-    ,bool include_quiets
-    ,const PieceToHistory** piece_to_history
+    size_t buffer_size,
+    Move counter_moves[256][256],
+    bool include_quiets,
+    const PieceToHistory** piece_to_history
     ) {
   enable_move_order_checks_ = enable_move_order_checks;
   stages_.resize(5);
@@ -40,8 +45,10 @@ MovePicker::MovePicker(
     const auto capture = move.GetCapturePiece();
     const auto piece = board.GetPiece(move.From());
     const auto piece_type = piece.GetPieceType();
-    const auto& from = move.From();
-    const auto& to = move.To();
+
+    const int from_idx = BitboardImpl::LocationToIndex(move.From());
+    const int to_idx = BitboardImpl::LocationToIndex(move.To());
+    if (from_idx < 0 || to_idx < 0) continue; // Should not happen for a valid move
 
     int score = piece_move_order_scores[piece.GetPieceType()];
     if (pvmove.has_value() && move == *pvmove) {
@@ -55,9 +62,10 @@ MovePicker::MovePicker(
       int attacker_val = piece_evaluations[piece.GetPieceType()];
       int incr_score = captured_val - attacker_val/100;
       score += incr_score;
+      // CHANGED: Use to_idx for lookup
       int history_score = capture_heuristic[piece.GetPieceType()][piece.GetColor()]
         [capture.GetPieceType()][capture.GetColor()]
-        [to.GetRow()][to.GetCol()];
+        [to_idx];
       score += history_score;
       if (attacker_val <= captured_val) {
         stages_[GOOD_CAPTURE].emplace_back(static_cast<short>(i), static_cast<float>(score));
@@ -65,16 +73,15 @@ MovePicker::MovePicker(
         stages_[BAD_CAPTURE].emplace_back(static_cast<short>(i), static_cast<float>(score));
       }
     } else if (include_quiets) {
-      score += history_heuristic[piece.GetPieceType()][from.GetRow()][from.GetCol()][to.GetRow()][to.GetCol()] / 2;
-      if (move == counter_moves[from.GetRow()*14*14*14 + from.GetCol()*14*14
-          + to.GetRow()*14 + to.GetCol()]) {
+      score += history_heuristic[piece.GetPieceType()][from_idx][to_idx] / 2;
+      if (counter_moves[from_idx][to_idx] == move) {
         score += 50;
       }
-      score += (*piece_to_history[0])[piece_type][to.GetRow()][to.GetCol()] / 2;
-      score += (*piece_to_history[1])[piece_type][to.GetRow()][to.GetCol()] / 4;
-      score += (*piece_to_history[2])[piece_type][to.GetRow()][to.GetCol()] / 4;
-      score += (*piece_to_history[3])[piece_type][to.GetRow()][to.GetCol()] / 4;
-      score += (*piece_to_history[4])[piece_type][to.GetRow()][to.GetCol()] / 4;
+      score += (*piece_to_history[0])[piece_type][to_idx] / 2;
+      score += (*piece_to_history[1])[piece_type][to_idx] / 4;
+      score += (*piece_to_history[2])[piece_type][to_idx] / 4;
+      score += (*piece_to_history[3])[piece_type][to_idx] / 4;
+      score += (*piece_to_history[4])[piece_type][to_idx] / 4;
 
       stages_[QUIET].emplace_back(static_cast<short>(i), static_cast<float>(score));
     }
