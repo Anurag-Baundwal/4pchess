@@ -457,6 +457,10 @@ class Board {
 
   const EnpassantInitialization& GetEnpassantInitialization() { return enp_; }
 
+  // Friend declaration for AlphaBetaPlayer
+  // Grant AlphaBetaPlayer direct access to private bitboards for evaluation performance.
+  friend class AlphaBetaPlayer;
+  
   // Friend declarations for SEE functions
   friend int StaticExchangeEvaluationCapture(const int[6], const Board&, const Move&);
   friend int SeeRecursive(const Board&, const int[6], int, Bitboard, Team, int);
