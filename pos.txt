@@ -1,0 +1,3 @@
+G-0,0,0,0-0,0,0,0-0,0,1,0-0,0,0,0-0-x,x,x,1,bR,yB,yK,3,yR,x,x,x/x,x,x,2,yP,5,x,x,x/x,x,x,2,bB,yP,yP,1,yP,1,x,x,x/bR,7,yP,yP,4/5,bP,8/9,gK,1,gP,gP,yB/1,bP,1,bP,6,gP,gB,2/2,bP,8,gP,2/1,bP,bN,3,rB,4,gP,2/bK,bP,3,rP,5,rN,rB,yQ/3,bP,rP,4,rP,1,gP,2/x,x,x,rP,7,x,x,x/x,x,x,3,rP,4,x,x,x/x,x,x,3,rK,1,rR,2,x,x,x
+
+G-0,0,0,0-0,0,0,0-0,0,1,0-0,0,0,0-0-x,x,x,1,bR,yB,yK,3,yR,x,x,x/x,x,x,2,yP,5,x,x,x/x,x,x,2,bB,yP,yP,1,yP,1,x,x,x/bR,7,yP,yP,4/5,bP,8/9,gK,1,gP,gP,yB/1,bP,8,gP,gB,2/2,bP,8,gP,2/1,bP,bN,3,rB,2,bP,1,gP,2/bK,bP,3,rP,5,rN,rB,yQ/3,bP,rP,4,rP,1,gP,2/x,x,x,rP,7,x,x,x/x,x,x,3,rP,4,x,x,x/x,x,x,3,rK,1,rR,2,x,x,x

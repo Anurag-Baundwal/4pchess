@@ -20,18 +20,6 @@
 
 namespace chess {
 
-// This namespace must be accessible here for the conversion helpers.
-// The definitions are in board.cc, but we need the declarations.
-namespace BitboardImpl {
-    extern int LocationToIndex(const BoardLocation& loc);
-    extern BoardLocation IndexToLocation(int index);
-    extern void InitBitboards();
-    extern Bitboard kLegalSquares;
-    extern Bitboard kRayAttacks[240][8];
-    extern Bitboard kKingAttacks[240];
-    enum RayDirection { D_NE, D_NW, D_SE, D_SW, D_N, D_E, D_S, D_W };
-}
-
 AlphaBetaPlayer::AlphaBetaPlayer(std::optional<PlayerOptions> options) {
   if (options.has_value()) {
     options_ = *options;
@@ -1078,7 +1066,7 @@ int AlphaBetaPlayer::Evaluate(
 
           if (options_.enable_pawn_shield && opponent_has_queen) {
             if (!HasShield(board, color, king_sq)) king_safety -= 75;
-            if (!OnBackRank(king_sq)) king_safety -= 50;
+            if (!OnBackRank(color, king_sq)) king_safety -= 50;
           }
 
           // RESTORED: Full king attack zone logic
@@ -1313,42 +1301,98 @@ int PVInfo::GetDepth() const {
 
 void AlphaBetaPlayer::UpdateMobilityEvaluation(
     ThreadState& thread_state, Board& board, Player player) {
-  Move* moves = thread_state.GetNextMoveBufferPartition();
+
+  // We need to temporarily set the board's turn to the player we're evaluating,
+  // because some helper functions might rely on `board.GetTurn()`.
   Player curr_player = board.GetTurn();
   board.SetPlayer(player);
-  size_t num_moves = board.GetPseudoLegalMoves2(moves, kBufferPartitionSize);
+
   int color = player.GetColor();
-  thread_state.TotalMoves()[color] = num_moves;
   
+  // --- Part 1: Calculate Total Moves and Threats ---
+  Move* moves = thread_state.GetNextMoveBufferPartition();
+  size_t num_moves = board.GetPseudoLegalMoves2(
+      moves, kBufferPartitionSize);
+  thread_state.TotalMoves()[color] = num_moves;
+
   int n_threats = 0;
-  for(size_t i = 0; i < num_moves; ++i) {
-      if (moves[i].IsCapture() && moves[i].ApproxSEE(board, kPieceEvaluations) >= 100) {
-          n_threats++;
+  for (size_t move_id = 0; move_id < num_moves; move_id++) {
+    auto& move = moves[move_id];
+    if (move.IsCapture()) {
+      if (move.ApproxSEE(board, kPieceEvaluations) >= 100) {
+        n_threats++;
       }
+    }
   }
   thread_state.n_threats[color] = n_threats;
   
+  // --- Part 2: Correctly Calculate Piece Activation ---
   if (options_.enable_piece_activation) {
+    auto piece_activated = [this](
+        int color, PieceType piece_type,
+        int from_sq, int n_moves) {
+      if (piece_type == KNIGHT) {
+        // activated so long as it's not on the back rank
+        BoardLocation location = BitboardImpl::IndexToLocation(from_sq);
+        int row = location.GetRow();
+        int col = location.GetCol();
+        bool back_rank = (color == RED && row == 13)
+                      || (color == YELLOW && row == 0)
+                      || (color == BLUE && col == 0)
+                      || (color == GREEN && col == 13);
+        return !back_rank;
+      }
+      return n_moves >= piece_activation_threshold_[piece_type];
+    };
+
     int n_pieces_activated = 0;
-    for (int pt_idx = KNIGHT; pt_idx <= QUEEN; ++pt_idx) {
-        Bitboard bb = board.piece_bitboards_[color][static_cast<PieceType>(pt_idx)];
-        while(!bb.is_zero()) {
-            int sq = bb.ctz();
-            bb &= (bb - 1);
-            if(!OnBackRank(sq)) n_pieces_activated++;
+    const Bitboard all_pieces = board.team_bitboards_[RED_YELLOW] | board.team_bitboards_[BLUE_GREEN];
+    const Bitboard friendly_pieces = board.team_bitboards_[player.GetTeam()];
+
+    Bitboard back_rank_dest_mask;
+    back_rank_dest_mask.limbs.fill(0); // Explicitly zero-initialize
+    switch (color) {
+      case RED:    for(int c=0; c<14; ++c) if (BoardLocation(12, c).Present()) back_rank_dest_mask |= BitboardImpl::IndexToBitboard(BitboardImpl::LocationToIndex({12, (int8_t)c})); break;
+      case YELLOW: for(int c=0; c<14; ++c) if (BoardLocation(1, c).Present())  back_rank_dest_mask |= BitboardImpl::IndexToBitboard(BitboardImpl::LocationToIndex({1, (int8_t)c}));  break;
+      case BLUE:   for(int r=0; r<14; ++r) if (BoardLocation(r, 1).Present())  back_rank_dest_mask |= BitboardImpl::IndexToBitboard(BitboardImpl::LocationToIndex({(int8_t)r, 1}));  break;
+      case GREEN:  for(int r=0; r<14; ++r) if (BoardLocation(r, 12).Present()) back_rank_dest_mask |= BitboardImpl::IndexToBitboard(BitboardImpl::LocationToIndex({(int8_t)r, 12})); break;
+      default: break;
+    }
+
+    const PieceType piece_types_to_check[] = {KNIGHT, BISHOP, ROOK, QUEEN};
+    for (PieceType piece_type : piece_types_to_check) {
+      Bitboard piece_bb = board.piece_bitboards_[color][piece_type];
+      
+      while (!piece_bb.is_zero()) {
+        int from_sq = piece_bb.ctz();
+        piece_bb &= (piece_bb - 1);
+
+        Bitboard attacks;
+        attacks.limbs.fill(0); // Explicitly zero-initialize
+        switch (piece_type) {
+            case KNIGHT: attacks = BitboardImpl::kKnightAttacks[from_sq]; break;
+            case BISHOP: attacks = board.GetBishopAttacks(from_sq, all_pieces); break;
+            case ROOK:   attacks = board.GetRookAttacks(from_sq, all_pieces); break;
+            case QUEEN:  attacks = board.GetQueenAttacks(from_sq, all_pieces); break;
+            default:     break;
         }
+
+        attacks &= ~friendly_pieces;
+        attacks &= ~back_rank_dest_mask;
+
+        int n_one_piece_moves = attacks.popcount();
+        
+        if (piece_activated(color, piece_type, from_sq, n_one_piece_moves)) {
+            n_pieces_activated++;
+        }
+      }
     }
     thread_state.NActivated()[color] = n_pieces_activated;
   }
 
+  // --- Cleanup ---
   board.SetPlayer(curr_player);
   thread_state.ReleaseMoveBufferPartition();
-}
-
-bool AlphaBetaPlayer::OnBackRank(int sq) {
-  if (sq < 0) return false;
-  BoardLocation loc = BitboardImpl::IndexToLocation(sq);
-  return !loc.Present() || loc.GetRow() == 0 || loc.GetRow() == 13 || loc.GetCol() == 0 || loc.GetCol() == 13;
 }
 
 bool AlphaBetaPlayer::HasShield(const Board& board, PlayerColor color, int king_sq) {
@@ -1362,6 +1406,16 @@ bool AlphaBetaPlayer::HasShield(const Board& board, PlayerColor color, int king_
   }
   return !( (shield_rays & board.piece_bitboards_[color][PAWN]).is_zero() );
 }
+
+bool AlphaBetaPlayer::OnBackRank(PlayerColor color, int king_sq) const {
+  if (king_sq < 0) {
+      return false;
+  }
+  Bitboard king_bb = BitboardImpl::IndexToBitboard(king_sq);
+  // Check if the king's bitboard intersects with the pre-calculated back rank mask
+  return !( (BitboardImpl::kBackRankMasks[color] & king_bb).is_zero() );
+}
+
 
 std::shared_ptr<PVInfo> PVInfo::Copy() const {
   std::shared_ptr<PVInfo> copy = std::make_shared<PVInfo>();

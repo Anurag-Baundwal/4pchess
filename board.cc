@@ -20,10 +20,6 @@ namespace chess {
 // ============================================================================
 namespace BitboardImpl {
 
-constexpr int kBoardWidth = 16;
-constexpr int kBoardHeight = 15;
-constexpr int kNumSquares = kBoardWidth * kBoardHeight; // 240, fits in 256-bit
-
 // Precomputed data
 Bitboard kLegalSquares;
 Bitboard kPawnStartMask[4];
@@ -37,9 +33,8 @@ Bitboard kRayAttacks[kNumSquares][8]; // 0-3: Bishop, 4-7: Rook
 Bitboard kLineBetween[kNumSquares][kNumSquares];
 Bitboard kCastlingEmptyMask[4][2]; // [color][side]
 Bitboard kCastlingAttackMask[4][2]; // [color][side]
+Bitboard kBackRankMasks[4];
 int kInitialRookSq[4][2];
-
-enum RayDirection { D_NE, D_NW, D_SE, D_SW, D_N, D_E, D_S, D_W };
 
 // Conversion helpers
 inline int LocationToIndex(const BoardLocation& loc) {
@@ -210,6 +205,26 @@ void InitBitboards() {
         kCastlingAttackMask[c][QUEENSIDE] = IndexToBitboard(king_sq) | IndexToBitboard(king_sq + push_offsets[(c+3)%4]) | IndexToBitboard(king_sq + 2*push_offsets[(c+3)%4]);
     }
     
+    // Back Rank Masks
+    for (int c = 0; c < 14; ++c) {
+        BoardLocation loc_r(13, (int8_t)c);
+        if (loc_r.Present())
+            kBackRankMasks[RED] |= IndexToBitboard(LocationToIndex(loc_r));
+        
+        BoardLocation loc_y(0, (int8_t)c);
+        if (loc_y.Present())
+            kBackRankMasks[YELLOW] |= IndexToBitboard(LocationToIndex(loc_y));
+    }
+    for (int r = 0; r < 14; ++r) {
+        BoardLocation loc_b((int8_t)r, 0);
+        if (loc_b.Present())
+            kBackRankMasks[BLUE] |= IndexToBitboard(LocationToIndex(loc_b));
+
+        BoardLocation loc_g((int8_t)r, 13);
+        if (loc_g.Present())
+            kBackRankMasks[GREEN] |= IndexToBitboard(LocationToIndex(loc_g));
+    }
+
     is_initialized = true;
 }
 

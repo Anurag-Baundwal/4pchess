@@ -17,11 +17,6 @@
 
 namespace chess {
 
-namespace BitboardImpl {
-    extern int LocationToIndex(const BoardLocation& loc);
-    extern BoardLocation IndexToLocation(int index);
-}
-
 constexpr int kMateValue = 1000000'00;  // mate value (centipawns)
 
 class PVInfo {
@@ -238,7 +233,7 @@ class AlphaBetaPlayer {
   void UpdateMobilityEvaluation(ThreadState& thread_state, Board& board, Player turn);
   void UpdateContinuationHistories(Stack* ss, const Move& move, PieceType piece_type, int bonus);
   bool HasShield(const Board& board, PlayerColor color, int king_sq);
-  bool OnBackRank(int king_sq);
+  bool OnBackRank(PlayerColor color, int king_sq) const;
 
   std::atomic<int64_t> num_nodes_ = 0; // debugging
   std::atomic<int64_t> num_cache_hits_ = 0;

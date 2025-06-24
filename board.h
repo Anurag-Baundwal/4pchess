@@ -15,9 +15,37 @@
 
 #include "FastUint256.h"
 
+// FIX: 'Bitboard' type alias is now defined before it is used.
+using Bitboard = my_math::FastUint256;
+
 namespace chess {
 
-using Bitboard = my_math::FastUint256;
+class BoardLocation; // <-- FIX: Forward-declare BoardLocation
+
+// This namespace contains helper functions and data for the bitboard implementation.
+namespace BitboardImpl {
+    // Make constants available to other files
+    constexpr int kBoardWidth = 16;
+    constexpr int kBoardHeight = 15;
+    constexpr int kNumSquares = kBoardWidth * kBoardHeight;
+
+    // Declarations of functions
+    extern int LocationToIndex(const BoardLocation& loc);
+    extern BoardLocation IndexToLocation(int index);
+    extern Bitboard IndexToBitboard(int index);
+    void InitBitboards(); 
+
+    // Declaration of the pre-computed attack tables
+    extern Bitboard kKnightAttacks[kNumSquares]; 
+    extern Bitboard kKingAttacks[kNumSquares];   
+    extern Bitboard kRayAttacks[kNumSquares][8]; 
+
+    extern Bitboard kBackRankMasks[4];
+
+    // Add this enum definition so other files can use it
+    enum RayDirection { D_NE, D_NW, D_SE, D_SW, D_N, D_E, D_S, D_W }; 
+}
+
 
 // FIX: All enums and constants are now defined BEFORE they are used in forward declarations.
 constexpr int kNumPieceTypes = 6;

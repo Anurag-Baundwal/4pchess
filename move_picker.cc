@@ -5,11 +5,6 @@
 
 namespace chess {
 
-// This namespace must be accessible here for LocationToIndex
-namespace BitboardImpl {
-    extern int LocationToIndex(const BoardLocation& loc);
-}
-
 enum Stage {
   PV_MOVE = 0,
   GOOD_CAPTURE = 1,
