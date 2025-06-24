@@ -50,8 +50,11 @@ enum Team : int8_t {
 class Board;
 class Move;
 
-int SeeRecursive(const Board& board, const int piece_evaluations[6], int sq, Team attacker_team, Bitboard occupied);
-int StaticExchangeEvaluationCapture(const int piece_evaluations[6], Board& board, const Move& move);
+// Forward declarations for SEE functions
+int StaticExchangeEvaluationCapture(const int piece_evaluations[6], const Board& board, const Move& move);
+int SeeRecursive(const Board& board, const int piece_evaluations[6], int target_sq, Bitboard occupied, Team side_to_attack, int victim_value);
+int GetLeastValuableAttacker(const Board& board, int sq, Team team, const Bitboard& occupied, PieceType& out_type);
+
 
 class Player {
  public:
@@ -454,8 +457,10 @@ class Board {
 
   const EnpassantInitialization& GetEnpassantInitialization() { return enp_; }
 
-  friend int SeeRecursive(const Board&, const int[6], int, Team, Bitboard);
-  friend int StaticExchangeEvaluationCapture(const int[6], Board&, const Move&);
+  // Friend declarations for SEE functions
+  friend int StaticExchangeEvaluationCapture(const int[6], const Board&, const Move&);
+  friend int SeeRecursive(const Board&, const int[6], int, Bitboard, Team, int);
+  friend int GetLeastValuableAttacker(const Board&, int, Team, const Bitboard&, PieceType&);
  
  private:
   void GetPawnMoves2(MoveBuffer& moves, const Player& player) const;

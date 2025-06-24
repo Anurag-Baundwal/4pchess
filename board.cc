@@ -1339,7 +1339,6 @@ bool Move::DeliversCheck(Board& board) {
   return delivers_check_;
 }
 
-// FIX 6: Added 'const' to match the declaration in board.h
 int Move::ApproxSEE(const Board& board, const int* piece_evaluations) const {
   const auto capture = GetCapturePiece();
   if(!capture.Present()) return 0;
@@ -1350,102 +1349,150 @@ int Move::ApproxSEE(const Board& board, const int* piece_evaluations) const {
   return captured_val - attacker_val;
 }
 
-int SeeRecursive(
-    const Board& board,
-    const int piece_evaluations[6],
-    int sq,
-    Team attacker_team,
-    Bitboard occupied) {
+// ============================================================================
+// Static Exchange Evaluation (SEE) Implementation - FINAL CORRECTED VERSION
+// ============================================================================
 
-    int from_sq = -1;
-    PieceType attacker_type = NO_PIECE;
-    int attacker_val = 100000; // High value to find minimum
+/**
+ * @brief Finds the square of the least valuable attacker for a given team on a square.
+ *
+ * This is a specialized helper for SEE that uses a dynamic 'occupied' bitboard
+ * to correctly calculate sliding attacks, thereby accounting for discovered attacks
+ * that arise during the simulated capture sequence.
+ *
+ * @param board The board state (used to get piece locations and attack patterns).
+ * @param sq The target square where the exchange is happening.
+ * @param team The attacking team.
+ * @param occupied The simulated bitboard of all occupied squares.
+ * @param out_type A reference to store the PieceType of the found attacker.
+ * @return The square index of the least valuable attacker, or -1 if none exists.
+ */
+int GetLeastValuableAttacker(const Board& board, int sq, Team team, const Bitboard& occupied, PieceType& out_type) {
+    // This function generates attacks from a team towards 'sq', considering 'occupied'
+    // as the set of blockers for sliding pieces.
+    Bitboard attackers = Bitboard(0);
+    const PlayerColor c1 = (team == RED_YELLOW) ? RED : BLUE;
+    const PlayerColor c2 = (team == RED_YELLOW) ? YELLOW : GREEN;
+    const Bitboard team_pieces = board.color_bitboards_[c1] | board.color_bitboards_[c2];
 
-    Bitboard attackers_bb = board.GetAttackersBB(sq, attacker_team);
-    attackers_bb &= occupied;
+    // Non-sliding pieces: their attacks are independent of other pieces on the board.
+    attackers |= (BitboardImpl::kPawnAttacks[GetPartner(Player(c1)).GetColor()][sq] & board.piece_bitboards_[c1][PAWN]);
+    attackers |= (BitboardImpl::kPawnAttacks[GetPartner(Player(c2)).GetColor()][sq] & board.piece_bitboards_[c2][PAWN]);
+    attackers |= (BitboardImpl::kKnightAttacks[sq] & (board.piece_bitboards_[c1][KNIGHT] | board.piece_bitboards_[c2][KNIGHT]));
+    attackers |= (BitboardImpl::kKingAttacks[sq] & (board.piece_bitboards_[c1][KING] | board.piece_bitboards_[c2][KING]));
 
-    if (attackers_bb.is_zero()) {
+    // Sliding pieces: these attacks depend on the dynamic 'occupied' bitboard.
+    const Bitboard rooks_and_queens = (board.piece_bitboards_[c1][ROOK] | board.piece_bitboards_[c2][ROOK] |
+                                     board.piece_bitboards_[c1][QUEEN] | board.piece_bitboards_[c2][QUEEN]);
+    attackers |= (board.GetRookAttacks(sq, occupied) & rooks_and_queens);
+    
+    const Bitboard bishops_and_queens = (board.piece_bitboards_[c1][BISHOP] | board.piece_bitboards_[c2][BISHOP] |
+                                       board.piece_bitboards_[c1][QUEEN] | board.piece_bitboards_[c2][QUEEN]);
+    attackers |= (board.GetBishopAttacks(sq, occupied) & bishops_and_queens);
+    
+    // We only care about attackers that are actually still on the board in our simulation.
+    Bitboard valid_attackers = attackers & occupied;
+
+    if (valid_attackers.is_zero()) {
+        return -1;
+    }
+
+    // Find the cheapest piece type among the valid attackers.
+    for (int pt_idx = PAWN; pt_idx <= KING; ++pt_idx) {
+        const PieceType pt = static_cast<PieceType>(pt_idx);
+        const Bitboard type_attackers = (board.piece_bitboards_[c1][pt] | board.piece_bitboards_[c2][pt]) & valid_attackers;
+        if (!type_attackers.is_zero()) {
+            out_type = pt;
+            return type_attackers.ctz(); // Return the first one found (guaranteed to be cheapest).
+        }
+    }
+    return -1; // Should be unreachable if valid_attackers is not zero.
+}
+
+
+/**
+ * @brief Recursively calculates the gain of a capture sequence on a square.
+ */
+int SeeRecursive(const Board& board, const int piece_evaluations[6], int target_sq, Bitboard occupied, Team side_to_attack, int victim_value) {
+    PieceType lva_type;
+    int lva_sq = GetLeastValuableAttacker(board, target_sq, side_to_attack, occupied, lva_type);
+
+    // Base case: If the current side has no more attackers for the square, they can't
+    // recapture, so their gain from this point is 0.
+    if (lva_sq == -1) {
         return 0;
     }
 
-    for (int pt_idx = 0; pt_idx < 6; ++pt_idx) {
-        PieceType pt = static_cast<PieceType>(pt_idx);
-        PlayerColor c1 = (attacker_team == RED_YELLOW) ? RED : BLUE;
-        PlayerColor c2 = (attacker_team == RED_YELLOW) ? YELLOW : GREEN;
-        
-        Bitboard type_attackers = (board.piece_bitboards_[c1][pt] | board.piece_bitboards_[c2][pt]) & attackers_bb;
-        
-        if (!type_attackers.is_zero()) {
-            attacker_type = pt;
-            from_sq = type_attackers.ctz();
-            attacker_val = piece_evaluations[pt];
-            break;
-        }
-    }
-    
-    if (from_sq == -1) {
-       return 0;
-    }
+    // Simulate the recapture: the least valuable attacker is now considered "off the board"
+    Bitboard next_occupied = occupied ^ BitboardImpl::IndexToBitboard(lva_sq);
 
-    Bitboard next_occupied = occupied ^ BitboardImpl::IndexToBitboard(from_sq);
-    
-    // The value of the piece on the square is needed for the next recursion
-    // The current victim is the piece on 'sq'. We need to figure out its value.
-    // The previous call gave us that. This needs to be passed in.
-    // Let's refactor SEE slightly. The caller provides the victim value.
-    
-    // Value of piece currently on 'sq' is passed from the caller.
-    // Let's assume the recursive function is "SeeGain" and it takes the victim's value.
-    // This is getting complex, let's stick to the original structure but fix the logic.
-    // In this call, the 'victim' is the piece that just moved to 'sq'. Its value is attacker_val.
-    int gain = attacker_val - SeeRecursive(board, piece_evaluations, sq, OtherTeam(attacker_team), next_occupied);
+    // The gain is the value of the piece captured, minus what the opponent gains in return.
+    int gain = victim_value - SeeRecursive(board, piece_evaluations, target_sq, next_occupied, OtherTeam(side_to_attack), piece_evaluations[lva_type]);
 
+    // A player will not continue a losing exchange ("stand pat" principle).
     return std::max(0, gain);
 }
 
-int StaticExchangeEvaluationCapture(
-    const int piece_evaluations[6],
-    Board& board,
-    const Move& move) {
-    
+/**
+ * @brief Main function to calculate the Static Exchange Evaluation for a move.
+ * This is the public-facing entry point, which sets up and starts the recursion.
+ * The board parameter should be const, as SEE is a static analysis and does not change the board.
+ */
+int StaticExchangeEvaluationCapture(const int piece_evaluations[6], const Board& board, const Move& move) {
     if (!move.IsCapture()) {
         return 0;
     }
     
-    Piece captured_piece = move.GetCapturePiece();
-    int victim_value = piece_evaluations[captured_piece.GetPieceType()];
-    
-    int from_sq = BitboardImpl::LocationToIndex(move.From());
-    int to_sq = BitboardImpl::LocationToIndex(move.To());
+    const Piece captured_piece = move.GetCapturePiece();
+    const Piece attacker_piece = board.GetPiece(move.From());
 
-    Bitboard all_pieces = board.team_bitboards_[0] | board.team_bitboards_[1];
-    Bitboard occupied_after_move = (all_pieces ^ BitboardImpl::IndexToBitboard(from_sq)) & ~BitboardImpl::IndexToBitboard(to_sq);
+    if (!captured_piece.Present() || !attacker_piece.Present()) {
+        return 0; // Should not happen for a valid capture
+    }
 
-    // After our move, the piece we moved is now the victim on that square.
-    Piece attacker_piece = board.GetPiece(move.From());
+    const int from_sq = BitboardImpl::LocationToIndex(move.From());
+    const int to_sq = BitboardImpl::LocationToIndex(move.To());
+
+    // The initial gain is simply the value of the piece we are capturing.
+    const int initial_gain = piece_evaluations[captured_piece.GetPieceType()];
     
-    // Temporarily make the move to get an accurate set of attackers.
-    board.MakeMove(move);
-    // The opponent will now recapture. Their gain is calculated by the recursive helper.
+    // The attacker now becomes the victim for the opponent's first recapture.
+    const int new_victim_value = piece_evaluations[attacker_piece.GetPieceType()];
+    
+    // === ROBUST BOARD STATE SIMULATION ===
+    // This logic now perfectly mirrors what a MakeMove/UndoMove pair would do,
+    // handling both standard and en-passant captures correctly.
+
+    Bitboard occupied_before_move = board.team_bitboards_[RED_YELLOW] | board.team_bitboards_[BLUE_GREEN];
+    
+    // Step 1: Simulate the attacker moving from its original square to the destination.
+    // This leaves the 'from' square empty and the 'to' square occupied by the attacker.
+    Bitboard occupied_after_move = (occupied_before_move & ~BitboardImpl::IndexToBitboard(from_sq)) | BitboardImpl::IndexToBitboard(to_sq);
+
+    // Step 2: If it was an en-passant capture, we must also explicitly remove the captured pawn.
+    if (move.GetEnpassantLocation().Present()) {
+        int ep_captured_sq = BitboardImpl::LocationToIndex(move.GetEnpassantLocation());
+        occupied_after_move &= ~BitboardImpl::IndexToBitboard(ep_captured_sq);
+    }
+    
+    const Team opponent_team = OtherTeam(board.GetTurn().GetTeam());
+
+    // Calculate what the opponent can gain from this new, correctly simulated board state.
     int opponent_gain = SeeRecursive(
         board,
         piece_evaluations,
         to_sq,
-        board.GetTurn().GetTeam(), // It's the opponent's turn to recapture
-        occupied_after_move | BitboardImpl::IndexToBitboard(to_sq) // The piece is now on the square
+        occupied_after_move,
+        opponent_team,
+        new_victim_value
     );
-    board.UndoMove();
 
-    return victim_value - opponent_gain;
+    return initial_gain - opponent_gain;
 }
 
 int Move::SEE(Board& board, const int* piece_evaluations) {
   if (see_ == kSeeNotSet) {
-    // A simplified SEE. The full recursive one is complex to get right.
-    // Let's use ApproxSEE for now to ensure it runs.
-    // The provided SEE implementation had some logical gaps.
-    // see_ = StaticExchangeEvaluationCapture(piece_evaluations, board, *this);
-    see_ = ApproxSEE(board, piece_evaluations);
+    see_ = StaticExchangeEvaluationCapture(piece_evaluations, board, *this);
   }
   return see_;
 }
