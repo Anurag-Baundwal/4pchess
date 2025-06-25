@@ -549,6 +549,56 @@ Player GetNextPlayer(const Player& player);
 Player GetPreviousPlayer(const Player& player);
 Player GetPartner(const Player& player);
 
+// ============================================================================
+// Inline Function Definitions
+// ============================================================================
+// These functions are defined here in the header to be properly inlined
+// across different translation units, which resolves linker errors with GCC.
+
+namespace BitboardImpl {
+
+inline int LocationToIndex(const BoardLocation& loc) {
+    if (!loc.Present()) return -1;
+    return (loc.GetRow() + 1) * kBoardWidth + (loc.GetCol() + 1);
+}
+
+inline BoardLocation IndexToLocation(int index) {
+    if (index < 0 || index >= kNumSquares) return BoardLocation::kNoLocation;
+    int r = (index / kBoardWidth) - 1;
+    int c = (index % kBoardWidth) - 1;
+    if (r < 0 || r >= 14 || c < 0 || c >= 14) return BoardLocation::kNoLocation;
+    return BoardLocation(r, c);
+}
+
+inline Bitboard IndexToBitboard(int index) {
+    if (index < 0 || index >= kNumSquares) return Bitboard(0);
+    return Bitboard(1) << index;
+}
+
+} // namespace BitboardImpl
+
+
+inline Team GetTeam(PlayerColor color) { 
+    return (color == RED || color == YELLOW) ? RED_YELLOW : BLUE_GREEN; 
+}
+
+inline Team OtherTeam(Team team) { 
+    return team == RED_YELLOW ? BLUE_GREEN : RED_YELLOW; 
+}
+
+inline Player GetNextPlayer(const Player& player) { 
+    return Player(static_cast<PlayerColor>((player.GetColor() + 1) % 4));
+}
+
+inline Player GetPreviousPlayer(const Player& player) { 
+    return Player(static_cast<PlayerColor>((player.GetColor() + 3) % 4));
+}
+
+inline Player GetPartner(const Player& player) { 
+    return Player(static_cast<PlayerColor>((player.GetColor() + 2) % 4));
+}
+
+
 }  // namespace chess
 
 

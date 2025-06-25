@@ -36,26 +36,6 @@ Bitboard kCastlingAttackMask[4][2]; // [color][side]
 Bitboard kBackRankMasks[4];
 int kInitialRookSq[4][2];
 
-// Conversion helpers
-inline int LocationToIndex(const BoardLocation& loc) {
-    if (!loc.Present()) return -1;
-    return (loc.GetRow() + 1) * kBoardWidth + (loc.GetCol() + 1);
-}
-
-inline BoardLocation IndexToLocation(int index) {
-    if (index < 0 || index >= kNumSquares) return BoardLocation::kNoLocation;
-    // Check if index corresponds to a valid board square (not padding)
-    int r = (index / kBoardWidth) - 1;
-    int c = (index % kBoardWidth) - 1;
-    if (r < 0 || r >= 14 || c < 0 || c >= 14) return BoardLocation::kNoLocation;
-    return BoardLocation(r, c);
-}
-
-inline Bitboard IndexToBitboard(int index) {
-    if (index < 0 || index >= kNumSquares) return Bitboard(0);
-    return Bitboard(1) << index;
-}
-
 void InitBitboards() {
     static bool is_initialized = false;
     if (is_initialized) return;
@@ -1238,14 +1218,6 @@ std::ostream& operator<<(std::ostream& os, const Board& board) {
   os << "Turn: " << board.GetTurn() << ", Hash: " << std::hex << board.HashKey() << std::dec << std::endl;
   return os;
 }
-
-// FIX 5: Added 'const' to match the declaration in board.h
-const CastlingRights& Board::GetCastlingRights(const Player& player) const { return castling_rights_[player.GetColor()]; }
-Team OtherTeam(Team team) { return team == RED_YELLOW ? BLUE_GREEN : RED_YELLOW; }
-inline Team GetTeam(PlayerColor color) { return (color == RED || color == YELLOW) ? RED_YELLOW : BLUE_GREEN; }
-Player GetNextPlayer(const Player& player) { return Player(static_cast<PlayerColor>((player.GetColor() + 1) % 4));}
-Player GetPreviousPlayer(const Player& player) { return Player(static_cast<PlayerColor>((player.GetColor() + 3) % 4));}
-Player GetPartner(const Player& player) { return Player(static_cast<PlayerColor>((player.GetColor() + 2) % 4));}
 
 std::string BoardLocation::PrettyStr() const {
   if (!Present()) return "null";
