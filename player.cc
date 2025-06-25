@@ -1403,15 +1403,16 @@ void AlphaBetaPlayer::UpdateMobilityEvaluation(
 }
 
 bool AlphaBetaPlayer::HasShield(const Board& board, PlayerColor color, int king_sq) {
-  Bitboard shield_rays;
-  switch (color) {
-    case RED:    shield_rays = BitboardImpl::kRayAttacks[king_sq][BitboardImpl::D_NW] | BitboardImpl::kRayAttacks[king_sq][BitboardImpl::D_N] | BitboardImpl::kRayAttacks[king_sq][BitboardImpl::D_NE]; break;
-    case BLUE:   shield_rays = BitboardImpl::kRayAttacks[king_sq][BitboardImpl::D_NE] | BitboardImpl::kRayAttacks[king_sq][BitboardImpl::D_E] | BitboardImpl::kRayAttacks[king_sq][BitboardImpl::D_SE]; break;
-    case YELLOW: shield_rays = BitboardImpl::kRayAttacks[king_sq][BitboardImpl::D_SE] | BitboardImpl::kRayAttacks[king_sq][BitboardImpl::D_S] | BitboardImpl::kRayAttacks[king_sq][BitboardImpl::D_SW]; break;
-    case GREEN:  shield_rays = BitboardImpl::kRayAttacks[king_sq][BitboardImpl::D_SW] | BitboardImpl::kRayAttacks[king_sq][BitboardImpl::D_W] | BitboardImpl::kRayAttacks[king_sq][BitboardImpl::D_NW]; break;
-    default:     return false;
-  }
-  return !( (shield_rays & board.piece_bitboards_[color][PAWN]).is_zero() );
+  // Get the bitboard representing the 8 squares immediately surrounding the king.
+  // This is much more accurate for a "pawn shield" than the previous ray-based logic.
+  Bitboard king_attack_zone = BitboardImpl::kKingAttacks[king_sq];
+
+  // Get the bitboard of this player's pawns.
+  const Bitboard& friendly_pawns = board.piece_bitboards_[color][PAWN];
+
+  // Check if any friendly pawns are on the squares surrounding the king.
+  // The .is_zero() check is slightly more efficient than checking for > 0.
+  return !( (king_attack_zone & friendly_pawns).is_zero() );
 }
 
 bool AlphaBetaPlayer::OnBackRank(PlayerColor color, int king_sq) const {
