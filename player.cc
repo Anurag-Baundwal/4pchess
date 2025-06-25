@@ -953,7 +953,7 @@ int AlphaBetaPlayer::Evaluate(
             Bitboard bb = board.piece_bitboards_[color][piece_type];
 
             if (piece_type != PAWN && piece_type != KING) {
-                n_major_ry[color] = bb.popcount();
+                n_major_ry[color] += bb.popcount();
             }
 
             while(!bb.is_zero()) {
