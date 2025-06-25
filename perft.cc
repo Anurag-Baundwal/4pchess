@@ -2,18 +2,10 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <stdexcept>
 
-#include "absl/flags/flag.h"
-#include "absl/flags/parse.h"
 #include "board.h"
 #include "utils.h"
-
-ABSL_FLAG(int, depth, 4, "The depth for the perft test.");
-ABSL_FLAG(std::string, fen, "",
-          "The FEN string for the starting position. Uses standard setup if "
-          "empty.");
-ABSL_FLAG(bool, divide, false,
-          "Show perft results for each move from the root position.");
 
 namespace chess {
 
@@ -77,11 +69,53 @@ uint64_t divide(Board& board, int depth) {
 
 }  // namespace chess
 
+void print_usage() {
+    std::cerr << "Usage: ./perft.exe [--depth <d>] [--fen <fen_string>] [--divide]\n"
+              << "  --depth <d>         : The depth for the perft test (default: 4).\n"
+              << "  --fen <fen_string>  : The FEN for the starting position.\n"
+              << "  --divide            : Show perft results for each root move.\n";
+}
+
 int main(int argc, char* argv[]) {
-  absl::ParseCommandLine(argc, argv);
+  int depth = 4;
+  std::string fen = "";
+  bool use_divide = false;
+
+  // Manual argument parsing
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg == "--depth") {
+        if (i + 1 < argc) {
+            try {
+                depth = std::stoi(argv[++i]);
+            } catch (const std::invalid_argument& e) {
+                std::cerr << "Error: Invalid number for --depth." << std::endl;
+                print_usage();
+                return 1;
+            }
+        } else {
+            std::cerr << "Error: --depth option requires one argument." << std::endl;
+            print_usage();
+            return 1;
+        }
+    } else if (arg == "--fen") {
+        if (i + 1 < argc) {
+            fen = argv[++i];
+        } else {
+            std::cerr << "Error: --fen option requires one argument." << std::endl;
+            print_usage();
+            return 1;
+        }
+    } else if (arg == "--divide") {
+        use_divide = true;
+    } else {
+        std::cerr << "Error: Unknown option " << arg << std::endl;
+        print_usage();
+        return 1;
+    }
+  }
 
   std::shared_ptr<chess::Board> board;
-  std::string fen = absl::GetFlag(FLAGS_fen);
   if (!fen.empty()) {
     board = chess::ParseBoardFromFEN(fen);
     if (board == nullptr) {
@@ -94,8 +128,6 @@ int main(int argc, char* argv[]) {
     std::cout << "Starting from standard position." << std::endl;
   }
 
-  int depth = absl::GetFlag(FLAGS_depth);
-  bool use_divide = absl::GetFlag(FLAGS_divide);
   uint64_t total_nodes = 0;
 
   auto start = std::chrono::high_resolution_clock::now();
@@ -119,3 +151,10 @@ int main(int argc, char* argv[]) {
 
   return 0;
 }
+
+// Compile:
+// g++ -std=c++17 -O3 -march=native -Wall -I . perft_standalone.cc board.cc utils.cc -o perft.exe
+
+// Run:
+// ./perft.exe --depth 1
+// ./perft.exe --depth 4 --fen "G-0,0,0,0-0,0,0,0-0,0,1,0-0,0,0,0-0-x,x,x,1,bR,yB,yK,3,yR,x,x,x/x,x,x,2,yP,5,x,x,x/x,x,x,2,bB,yP,yP,1,yP,1,x,x,x/bR,7,yP,yP,4/5,bP,8/9,gK,1,gP,gP,yB/1,bP,1,bP,6,gP,gB,2/2,bP,8,gP,2/1,bP,bN,3,rB,4,gP,2/bK,bP,3,rP,5,rN,rB,yQ/3,bP,rP,4,rP,1,gP,2/x,x,x,rP,7,x,x,x/x,x,x,3,rP,4,x,x,x/x,x,x,3,rK,1,rR,2,x,x,x" --divide
