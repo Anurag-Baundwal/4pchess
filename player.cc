@@ -1076,8 +1076,11 @@ int AlphaBetaPlayer::Evaluate(
             while(!king_zone.is_zero()) {
                 int zone_sq = king_zone.ctz();
                 king_zone &= (king_zone - 1);
+
+                Bitboard ry_attackers = board.GetAttackersBB(zone_sq, RED_YELLOW);
+                Bitboard bg_attackers = board.GetAttackersBB(zone_sq, BLUE_GREEN);
+                Bitboard attackers = ry_attackers | bg_attackers;
                 
-                Bitboard attackers = board.GetAttackersBB(zone_sq, NO_TEAM);
                 int value_of_attacks = 0, num_attackers = 0;
                 int value_of_protection = 0, num_protectors = 0;
 
@@ -1088,7 +1091,7 @@ int AlphaBetaPlayer::Evaluate(
                     if(p.GetPieceType() == KING) continue;
 
                     int val = king_attacker_values_[p.GetPieceType()];
-                    if(p.GetTeam() == team) {
+                    if(p.GetTeam() == team) { // 'team' is the king's team
                         num_protectors++;
                         value_of_protection += val;
                     } else {
