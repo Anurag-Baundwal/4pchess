@@ -1073,24 +1073,29 @@ int AlphaBetaPlayer::Evaluate(
             if (!OnBackRank(color, king_sq)) king_safety -= 50;
           }
 
-          // RESTORED: Full king attack zone logic
+          // RESTORED: Full king attack zone logic with Multi-Color Penalty FIX
           if (options_.enable_attacking_king_zone) {
+            
+            // FIX: Initialize tracking variables for multi-color attacks
+            int attacker_colors[4] = {0, 0, 0, 0};
+            int num_attacker_colors = 0;
+            int safety = 0; // The safety score calculated from attack weights
+
             Bitboard king_zone = BitboardImpl::kKingAttacks[king_sq];
-            int safety = 0;
             while(!king_zone.is_zero()) {
                 int zone_sq = king_zone.ctz();
                 king_zone &= (king_zone - 1);
 
                 Bitboard ry_attackers = board.GetAttackersBB(zone_sq, RED_YELLOW);
                 Bitboard bg_attackers = board.GetAttackersBB(zone_sq, BLUE_GREEN);
-                Bitboard attackers = ry_attackers | bg_attackers;
+                Bitboard all_zone_attackers = ry_attackers | bg_attackers;
                 
                 int value_of_attacks = 0, num_attackers = 0;
                 int value_of_protection = 0, num_protectors = 0;
 
-                while(!attackers.is_zero()) {
-                    int attacker_sq = attackers.ctz();
-                    attackers &= (attackers - 1);
+                while(!all_zone_attackers.is_zero()) {
+                    int attacker_sq = all_zone_attackers.ctz();
+                    all_zone_attackers &= (all_zone_attackers - 1);
                     Piece p = board.GetPiece(attacker_sq);
                     if(p.GetPieceType() == KING) continue;
 
@@ -1101,12 +1106,27 @@ int AlphaBetaPlayer::Evaluate(
                     } else {
                         num_attackers++;
                         value_of_attacks += val;
+                        // FIX: Track the specific color of the attacker
+                        if (val > 0) {
+                            attacker_colors[p.GetColor()]++;
+                        }
                     }
                 }
                 int attack_zone_val = value_of_attacks * king_attack_weight_[num_attackers] / 100;
                 attack_zone_val -= value_of_protection * king_attack_weight_[num_protectors] / 200;
                 safety -= std::max(0, attack_zone_val);
             }
+
+            // FIX: Count distinct attacker colors and apply the penalty
+            for (int i = 0; i < 4; i++) {
+              if (attacker_colors[i] > 0) {
+                num_attacker_colors++;
+              }
+            }
+            if (num_attacker_colors > 1) {
+              safety -= 150;
+            }
+
             if (!opponent_has_queen) safety /= 2;
             king_safety += std::min(0, safety);
           }
