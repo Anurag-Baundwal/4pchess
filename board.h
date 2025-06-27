@@ -35,6 +35,8 @@ namespace BitboardImpl {
     extern Bitboard IndexToBitboard(int index);
     void InitBitboards(); 
 
+    extern Bitboard kLegalSquares;
+    
     // Declaration of the pre-computed attack tables
     extern Bitboard kKnightAttacks[kNumSquares]; 
     extern Bitboard kKingAttacks[kNumSquares];   
