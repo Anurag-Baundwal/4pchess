@@ -43,6 +43,7 @@ namespace BitboardImpl {
     extern Bitboard kRayAttacks[kNumSquares][8]; 
 
     extern Bitboard kBackRankMasks[4];
+    extern Bitboard kSecondRankMasks[4];
     extern Bitboard kCentralMask;
 
     // Add this enum definition so other files can use it

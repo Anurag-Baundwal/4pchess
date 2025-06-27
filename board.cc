@@ -34,6 +34,7 @@ Bitboard kLineBetween[kNumSquares][kNumSquares];
 Bitboard kCastlingEmptyMask[4][2]; // [color][side]
 Bitboard kCastlingAttackMask[4][2]; // [color][side]
 Bitboard kBackRankMasks[4];
+Bitboard kSecondRankMasks[4];
 Bitboard kCentralMask;
 int kInitialRookSq[4][2];
 
@@ -204,6 +205,26 @@ void InitBitboards() {
         BoardLocation loc_g((int8_t)r, 13);
         if (loc_g.Present())
             kBackRankMasks[GREEN] |= IndexToBitboard(LocationToIndex(loc_g));
+    }
+
+    // Second-to-last Rank Masks (for mobility calculation)
+    for (int c = 0; c < 14; ++c) {
+        BoardLocation loc_r(12, (int8_t)c); // RED's 2nd rank
+        if (loc_r.Present())
+            kSecondRankMasks[RED] |= IndexToBitboard(LocationToIndex(loc_r));
+        
+        BoardLocation loc_y(1, (int8_t)c); // YELLOW's 2nd rank
+        if (loc_y.Present())
+            kSecondRankMasks[YELLOW] |= IndexToBitboard(LocationToIndex(loc_y));
+    }
+    for (int r = 0; r < 14; ++r) {
+        BoardLocation loc_b((int8_t)r, 1); // BLUE's 2nd rank
+        if (loc_b.Present())
+            kSecondRankMasks[BLUE] |= IndexToBitboard(LocationToIndex(loc_b));
+
+        BoardLocation loc_g((int8_t)r, 12); // GREEN's 2nd rank
+        if (loc_g.Present())
+            kSecondRankMasks[GREEN] |= IndexToBitboard(LocationToIndex(loc_g));
     }
 
     // Central 8x8 Mask

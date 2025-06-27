@@ -1368,15 +1368,7 @@ void AlphaBetaPlayer::UpdateMobilityEvaluation(
     const Bitboard all_pieces = board.team_bitboards_[RED_YELLOW] | board.team_bitboards_[BLUE_GREEN];
     const Bitboard friendly_pieces = board.team_bitboards_[player.GetTeam()];
 
-    Bitboard back_rank_dest_mask;
-    back_rank_dest_mask.limbs.fill(0); // Explicitly zero-initialize
-    switch (color) {
-      case RED:    for(int c=0; c<14; ++c) if (BoardLocation(12, c).Present()) back_rank_dest_mask |= BitboardImpl::IndexToBitboard(BitboardImpl::LocationToIndex({12, (int8_t)c})); break;
-      case YELLOW: for(int c=0; c<14; ++c) if (BoardLocation(1, c).Present())  back_rank_dest_mask |= BitboardImpl::IndexToBitboard(BitboardImpl::LocationToIndex({1, (int8_t)c}));  break;
-      case BLUE:   for(int r=0; r<14; ++r) if (BoardLocation(r, 1).Present())  back_rank_dest_mask |= BitboardImpl::IndexToBitboard(BitboardImpl::LocationToIndex({(int8_t)r, 1}));  break;
-      case GREEN:  for(int r=0; r<14; ++r) if (BoardLocation(r, 12).Present()) back_rank_dest_mask |= BitboardImpl::IndexToBitboard(BitboardImpl::LocationToIndex({(int8_t)r, 12})); break;
-      default: break;
-    }
+    Bitboard mobility_exclusion_mask = BitboardImpl::kBackRankMasks[color] | BitboardImpl::kSecondRankMasks[color];
 
     const PieceType piece_types_to_check[] = {KNIGHT, BISHOP, ROOK, QUEEN};
     for (PieceType piece_type : piece_types_to_check) {
@@ -1387,7 +1379,7 @@ void AlphaBetaPlayer::UpdateMobilityEvaluation(
         piece_bb &= (piece_bb - 1);
 
         Bitboard attacks;
-        attacks.limbs.fill(0); // Explicitly zero-initialize
+        attacks.limbs.fill(0);
         switch (piece_type) {
             case KNIGHT: attacks = BitboardImpl::kKnightAttacks[from_sq]; break;
             case BISHOP: attacks = board.GetBishopAttacks(from_sq, all_pieces); break;
@@ -1397,7 +1389,8 @@ void AlphaBetaPlayer::UpdateMobilityEvaluation(
         }
 
         attacks &= ~friendly_pieces;
-        attacks &= ~back_rank_dest_mask;
+        // FIX: Apply the corrected exclusion mask here.
+        attacks &= ~mobility_exclusion_mask;
 
         int n_one_piece_moves = attacks.popcount();
         
