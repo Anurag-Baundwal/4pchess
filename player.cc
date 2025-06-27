@@ -878,7 +878,7 @@ void AlphaBetaPlayer::UpdateStats(
     if (other_move != move) {
       int other_from_idx = BitboardImpl::LocationToIndex(other_move.From());
       int other_to_idx = BitboardImpl::LocationToIndex(other_move.To());
-      Piece other_piece = board.GetPiece(other_from_idx);
+      Piece other_piece = board.GetPiece(other_move.From());
 
       if (other_move.IsCapture()) {
         Piece other_captured = other_move.GetCapturePiece();
