@@ -1412,7 +1412,8 @@ bool AlphaBetaPlayer::HasShield(const Board& board, PlayerColor color, int king_
       return false; // No king, no shield.
   }
 
-  const Bitboard& friendly_pawns = board.piece_bitboards_[color][PAWN];
+  const Team team = GetTeam(color);
+  const Bitboard& friendly_pieces = board.team_bitboards_[team];
   
   // Offsets for the three 'forward' directions for each color.
   // These are relative to the king's square on a 16-wide board representation.
@@ -1438,7 +1439,7 @@ bool AlphaBetaPlayer::HasShield(const Board& board, PlayerColor color, int king_
       Bitboard b1 = BitboardImpl::IndexToBitboard(sq1);
       if ((b1 & BitboardImpl::kLegalSquares).is_zero()) {
           ray_is_blocked = true;
-      } else if (! ( (b1 & friendly_pawns).is_zero() ) ) {
+      } else if (! ( (b1 & friendly_pieces).is_zero() ) ) {
           ray_is_blocked = true;
       }
 
@@ -1451,7 +1452,7 @@ bool AlphaBetaPlayer::HasShield(const Board& board, PlayerColor color, int king_
       Bitboard b2 = BitboardImpl::IndexToBitboard(sq2);
       if ((b2 & BitboardImpl::kLegalSquares).is_zero()) {
           ray_is_blocked = true;
-      } else if (! ( (b2 & friendly_pawns).is_zero() ) ) {
+      } else if (! ( (b2 & friendly_pieces).is_zero() ) ) {
           ray_is_blocked = true;
       }
       
