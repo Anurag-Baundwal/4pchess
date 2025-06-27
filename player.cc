@@ -1035,7 +1035,6 @@ int AlphaBetaPlayer::Evaluate(
         eval += 2 * (total_moves[RED] + total_moves[YELLOW] - total_moves[BLUE] - total_moves[GREEN]);
     }
     
-    // FIXED: Piece imbalance logic now uses major piece counts
     if (options_.enable_piece_imbalance) {
       int n_major_red = n_major_ry[RED];
       int n_major_yellow = n_major_ry[YELLOW];
@@ -1073,13 +1072,11 @@ int AlphaBetaPlayer::Evaluate(
             if (!OnBackRank(color, king_sq)) king_safety -= 50;
           }
 
-          // RESTORED: Full king attack zone logic with Multi-Color Penalty FIX
           if (options_.enable_attacking_king_zone) {
             
-            // FIX: Initialize tracking variables for multi-color attacks
             int attacker_colors[4] = {0, 0, 0, 0};
             int num_attacker_colors = 0;
-            int safety = 0; // The safety score calculated from attack weights
+            int safety = 0; 
 
             Bitboard king_zone = BitboardImpl::kKingAttacks[king_sq];
             while(!king_zone.is_zero()) {
@@ -1100,13 +1097,12 @@ int AlphaBetaPlayer::Evaluate(
                     if(p.GetPieceType() == KING) continue;
 
                     int val = king_attacker_values_[p.GetPieceType()];
-                    if(p.GetTeam() == team) { // 'team' is the king's team
+                    if(p.GetTeam() == team) { 
                         num_protectors++;
                         value_of_protection += val;
                     } else {
                         num_attackers++;
                         value_of_attacks += val;
-                        // FIX: Track the specific color of the attacker
                         if (val > 0) {
                             attacker_colors[p.GetColor()]++;
                         }
@@ -1117,7 +1113,6 @@ int AlphaBetaPlayer::Evaluate(
                 safety -= std::max(0, attack_zone_val);
             }
 
-            // FIX: Count distinct attacker colors and apply the penalty
             for (int i = 0; i < 4; i++) {
               if (attacker_colors[i] > 0) {
                 num_attacker_colors++;
@@ -1142,9 +1137,7 @@ void AlphaBetaPlayer::ResetHistoryHeuristics() {
   std::memset(history_heuristic, 0, sizeof(history_heuristic));
   std::memset(capture_heuristic, 0, sizeof(capture_heuristic));
   std::memset(counter_moves, 0, sizeof(Move) * 256 * 256);
-  // FIXED: Use . instead of ->
   for (int i = 0; i < 2; i++) for (int j = 0; j < 2; j++) {
-    // We must use memset on the object, not fill on the collection of objects
     std::memset(&continuation_history[i][j], 0, sizeof(continuation_history[i][j]));
   }
 }
@@ -1157,7 +1150,6 @@ void AlphaBetaPlayer::AgeHistoryHeuristics() {
   age_table(history_heuristic, sizeof(history_heuristic));
   age_table(capture_heuristic, sizeof(capture_heuristic));
   std::memset(counter_moves, 0, sizeof(Move) * 256 * 256);
-  // FIXED: Use . instead of -> and memset instead of fill
   for (int i = 0; i < 2; i++) for (int j = 0; j < 2; j++) {
       std::memset(&continuation_history[i][j], 0, sizeof(continuation_history[i][j]));
   }
@@ -1423,16 +1415,62 @@ void AlphaBetaPlayer::UpdateMobilityEvaluation(
 }
 
 bool AlphaBetaPlayer::HasShield(const Board& board, PlayerColor color, int king_sq) {
-  // Get the bitboard representing the 8 squares immediately surrounding the king.
-  // This is much more accurate for a "pawn shield" than the previous ray-based logic.
-  Bitboard king_attack_zone = BitboardImpl::kKingAttacks[king_sq];
+  if (king_sq < 0) {
+      return false; // No king, no shield.
+  }
 
-  // Get the bitboard of this player's pawns.
   const Bitboard& friendly_pawns = board.piece_bitboards_[color][PAWN];
+  
+  // Offsets for the three 'forward' directions for each color.
+  // These are relative to the king's square on a 16-wide board representation.
+  // Format: {Forward-Left, Forward, Forward-Right}
+  // N=-16, E=1, S=16, W=-1, NE=-15, NW=-17, SE=17, SW=15
+  const int shield_offsets[4][3] = {
+      /* RED    */ { -17, -16, -15 }, // NW, N, NE
+      /* BLUE   */ { -15,   1,  17 }, // NE, E, SE
+      /* YELLOW */ {  15,  16,  17 }, // SW, S, SE
+      /* GREEN  */ { -17,  -1,  15 }  // NW, W, SW
+  };
 
-  // Check if any friendly pawns are on the squares surrounding the king.
-  // The .is_zero() check is slightly more efficient than checking for > 0.
-  return !( (king_attack_zone & friendly_pawns).is_zero() );
+  // The original logic required each of the three forward rays to be blocked
+  // by either the edge of the board or a friendly piece within two squares.
+  // We replicate this logic, but only for pawns.
+  for (int i = 0; i < 3; ++i) { // For each of the 3 forward directions
+      int offset = shield_offsets[color][i];
+      
+      bool ray_is_blocked = false;
+
+      // Check the first square on the ray
+      int sq1 = king_sq + offset;
+      Bitboard b1 = BitboardImpl::IndexToBitboard(sq1);
+      if ((b1 & BitboardImpl::kLegalSquares).is_zero()) {
+          ray_is_blocked = true;
+      } else if (! ( (b1 & friendly_pawns).is_zero() ) ) {
+          ray_is_blocked = true;
+      }
+
+      if (ray_is_blocked) {
+          continue; // This ray is blocked, check the next one.
+      }
+
+      // If not blocked, check the second square on the ray
+      int sq2 = sq1 + offset;
+      Bitboard b2 = BitboardImpl::IndexToBitboard(sq2);
+      if ((b2 & BitboardImpl::kLegalSquares).is_zero()) {
+          ray_is_blocked = true;
+      } else if (! ( (b2 & friendly_pawns).is_zero() ) ) {
+          ray_is_blocked = true;
+      }
+      
+      if (!ray_is_blocked) {
+          // If we reach here, this ray is NOT blocked by a pawn or the edge.
+          // The shield is incomplete.
+          return false;
+      }
+  }
+
+  // All 3 forward rays were successfully blocked.
+  return true;
 }
 
 bool AlphaBetaPlayer::OnBackRank(PlayerColor color, int king_sq) const {
