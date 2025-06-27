@@ -14,6 +14,7 @@ ui/bin/*
 
 # Compiled Binaries / Executables
 *.exe
+magic_tables.bin
 
 # Python cache
 __pycache__/
