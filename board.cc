@@ -34,6 +34,7 @@ Bitboard kLineBetween[kNumSquares][kNumSquares];
 Bitboard kCastlingEmptyMask[4][2]; // [color][side]
 Bitboard kCastlingAttackMask[4][2]; // [color][side]
 Bitboard kBackRankMasks[4];
+Bitboard kCentralMask;
 int kInitialRookSq[4][2];
 
 void InitBitboards() {
@@ -205,6 +206,12 @@ void InitBitboards() {
             kBackRankMasks[GREEN] |= IndexToBitboard(LocationToIndex(loc_g));
     }
 
+    // Central 8x8 Mask
+    for (int r_14 = 3; r_14 <= 10; ++r_14) {
+        for (int c_14 = 3; c_14 <= 10; ++c_14) {
+            kCentralMask |= IndexToBitboard(LocationToIndex(BoardLocation(r_14, c_14)));
+        }
+    }
     is_initialized = true;
 }
 

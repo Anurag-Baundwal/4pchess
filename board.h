@@ -36,13 +36,14 @@ namespace BitboardImpl {
     void InitBitboards(); 
 
     extern Bitboard kLegalSquares;
-    
+
     // Declaration of the pre-computed attack tables
     extern Bitboard kKnightAttacks[kNumSquares]; 
     extern Bitboard kKingAttacks[kNumSquares];   
     extern Bitboard kRayAttacks[kNumSquares][8]; 
 
     extern Bitboard kBackRankMasks[4];
+    extern Bitboard kCentralMask;
 
     // Add this enum definition so other files can use it
     enum RayDirection { D_NE, D_NW, D_SE, D_SW, D_N, D_E, D_S, D_W }; 

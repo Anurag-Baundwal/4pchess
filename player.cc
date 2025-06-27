@@ -983,19 +983,23 @@ int AlphaBetaPlayer::Evaluate(
                     eval += team_sign * bonus;
                 }
 
-                // RESTORED: Rook on open/semi-open file bonus
                 if (piece_type == ROOK) {
-                    Bitboard file_mask;
-                    if (color == RED || color == YELLOW) { // Vertical rooks
-                        file_mask = BitboardImpl::kRayAttacks[sq][BitboardImpl::D_N] | BitboardImpl::kRayAttacks[sq][BitboardImpl::D_S];
-                    } else { // Horizontal rooks
-                        file_mask = BitboardImpl::kRayAttacks[sq][BitboardImpl::D_E] | BitboardImpl::kRayAttacks[sq][BitboardImpl::D_W];
-                    }
-
-                    if ((file_mask & all_pawns).is_zero()) { // Open file
-                        eval += team_sign * 25;
-                    } else if ((file_mask & board.piece_bitboards_[color][PAWN]).is_zero()) { // Semi-open file
-                        eval += team_sign * 15;
+                    // Central Rook Bonus
+                    if (!(BitboardImpl::IndexToBitboard(sq) & BitboardImpl::kCentralMask).is_zero()) {
+                        eval += team_sign * 50; 
+                    } else {
+                        // Open/Semi-open file bonus
+                        Bitboard file_mask;
+                        if (color == RED || color == YELLOW) { // Vertical rooks
+                            file_mask = BitboardImpl::kRayAttacks[sq][BitboardImpl::D_N] | BitboardImpl::kRayAttacks[sq][BitboardImpl::D_S];
+                        } else { // Horizontal rooks
+                            file_mask = BitboardImpl::kRayAttacks[sq][BitboardImpl::D_E] | BitboardImpl::kRayAttacks[sq][BitboardImpl::D_W];
+                        }
+                        if ((file_mask & all_pawns).is_zero()) { // Open file
+                            eval += team_sign * 25;
+                        } else if ((file_mask & board.piece_bitboards_[color][PAWN]).is_zero()) { // Semi-open file
+                            eval += team_sign * 15;
+                        }
                     }
                 }
 
