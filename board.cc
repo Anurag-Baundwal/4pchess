@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 #include <random>
+#include <fstream>
 
 #include "board.h"
 
@@ -37,6 +38,85 @@ Bitboard kBackRankMasks[4];
 Bitboard kSecondRankMasks[4];
 Bitboard kCentralMask;
 int kInitialRookSq[4][2];
+
+// --- Magic Bitboard Data (loaded from file) ---
+// This struct must match the one in magic_finder.cc
+struct MagicEntry {
+    Bitboard magic;
+    Bitboard mask;
+    int shift;
+    uint32_t offset;
+};
+
+// Global tables for magic bitboards. These are populated by LoadMagicTables().
+MagicEntry kRookHorizMagics[kNumSquares];
+MagicEntry kRookVertMagics[kNumSquares];
+MagicEntry kBishopDiagMagics[kNumSquares];
+MagicEntry kBishopAntiDiagMagics[kNumSquares];
+std::vector<Bitboard> kRookHorizAttacksTable;
+std::vector<Bitboard> kRookVertAttacksTable;
+std::vector<Bitboard> kBishopDiagAttacksTable;
+std::vector<Bitboard> kBishopAntiDiagAttacksTable;
+
+// Helper function to read data for one piece type from the binary file.
+void read_piece_data_from_binary(std::ifstream& in, MagicEntry magics[kNumSquares], std::vector<Bitboard>& attacks) {
+    // 1. Read the fixed-size MagicEntry table.
+    in.read(reinterpret_cast<char*>(magics), kNumSquares * sizeof(MagicEntry));
+    if (!in) {
+        std::cerr << "FATAL: Failed to read MagicEntry table from magic_tables.bin.\n";
+        exit(1);
+    }
+
+    // 2. Read the size of the variable-sized attack table.
+    uint64_t attack_table_size = 0;
+    in.read(reinterpret_cast<char*>(&attack_table_size), sizeof(uint64_t));
+     if (!in) {
+        std::cerr << "FATAL: Failed to read attack table size from magic_tables.bin.\n";
+        exit(1);
+    }
+
+    // ----> ADD THIS DEBUGGING LINE <----
+    std::cout << "  Attempting to load attack table with " << attack_table_size << " entries." << std::endl;
+
+    if (attack_table_size > 500000) { // A sanity check, your largest table is ~140k
+        std::cerr << "FATAL: Attack table size is unreasonably large. "
+                  << "magic_tables.bin is likely corrupt or not found." << std::endl;
+        exit(1);
+    }
+    
+    // 3. Resize the vector and read the raw data of the attack table.
+    attacks.resize(attack_table_size);
+    in.read(reinterpret_cast<char*>(attacks.data()), attack_table_size * sizeof(Bitboard));
+    if (!in) {
+        std::cerr << "FATAL: Failed to read attack table data from magic_tables.bin.\n";
+        exit(1);
+    }
+}
+
+
+void LoadMagicTables() {
+    static bool is_loaded = false;
+    if (is_loaded) return;
+
+    const std::string bin_filename = "magic_tables.bin";
+    std::ifstream in(bin_filename, std::ios::binary);
+
+    if (!in) {
+        std::cerr << "\nFATAL ERROR: Could not open magic_tables.bin.\n"
+                  << "The engine cannot run without this file.\n"
+                  << "Please generate it by compiling and running the 'magic_finder' target first.\n"
+                  << "Example: bazel run -c opt //:magic_finder\n" << std::endl;
+        exit(1);
+    }
+
+    read_piece_data_from_binary(in, kRookVertMagics, kRookVertAttacksTable);
+    read_piece_data_from_binary(in, kRookHorizMagics, kRookHorizAttacksTable);
+    read_piece_data_from_binary(in, kBishopDiagMagics, kBishopDiagAttacksTable);
+    read_piece_data_from_binary(in, kBishopAntiDiagMagics, kBishopAntiDiagAttacksTable);
+    
+    in.close();
+    is_loaded = true;
+}
 
 void InitBitboards() {
     static bool is_initialized = false;
@@ -233,6 +313,12 @@ void InitBitboards() {
             kCentralMask |= IndexToBitboard(LocationToIndex(BoardLocation(r_14, c_14)));
         }
     }
+    
+    // Load magic bitboard tables from file
+    std::cout << "Loading magic bitboard tables..." << std::endl;
+    LoadMagicTables();
+    std::cout << "Magic bitboard tables loaded successfully." << std::endl;
+    
     is_initialized = true;
 }
 
@@ -417,88 +503,38 @@ BoardLocation Board::GetKingLocation(PlayerColor color) const {
     return IndexToLocation(king_bb.ctz());
 }
 
-// Corrected GetRookAttacks
+// Magic Bitboard implementation for Rook attacks
 Bitboard Board::GetRookAttacks(int sq, Bitboard blockers) const {
-    Bitboard attacks;
-    // North (indices decrease -> use MSB/clz)
-    Bitboard ray_n = kRayAttacks[sq][D_N];
-    Bitboard b_n = ray_n & blockers;
-    if (!b_n.is_zero()) {
-        int blocker_idx = 255 - b_n.clz();
-        attacks |= (ray_n ^ kRayAttacks[blocker_idx][D_N]);
-    } else {
-        attacks |= ray_n;
-    }
-    // South (indices increase -> use LSB/ctz)
-    Bitboard ray_s = kRayAttacks[sq][D_S];
-    Bitboard b_s = ray_s & blockers;
-    if (!b_s.is_zero()) {
-        int blocker_idx = b_s.ctz();
-        attacks |= (ray_s ^ kRayAttacks[blocker_idx][D_S]);
-    } else {
-        attacks |= ray_s;
-    }
-    // East (indices increase -> use LSB/ctz)
-    Bitboard ray_e = kRayAttacks[sq][D_E];
-    Bitboard b_e = ray_e & blockers;
-    if (!b_e.is_zero()) {
-        int blocker_idx = b_e.ctz();
-        attacks |= (ray_e ^ kRayAttacks[blocker_idx][D_E]);
-    } else {
-        attacks |= ray_e;
-    }
-    // West (indices decrease -> use MSB/clz)
-    Bitboard ray_w = kRayAttacks[sq][D_W];
-    Bitboard b_w = ray_w & blockers;
-    if (!b_w.is_zero()) {
-        int blocker_idx = 255 - b_w.clz();
-        attacks |= (ray_w ^ kRayAttacks[blocker_idx][D_W]);
-    } else {
-        attacks |= ray_w;
-    }
-    return attacks;
+    // Horizontal attacks (E/W)
+    const MagicEntry& horiz_entry = kRookHorizMagics[sq];
+    Bitboard horiz_product = (blockers & horiz_entry.mask) * horiz_entry.magic;
+    int horiz_index = static_cast<int>(static_cast<uint64_t>(horiz_product >> horiz_entry.shift));
+    Bitboard horiz_attacks = kRookHorizAttacksTable[horiz_entry.offset + horiz_index];
+
+    // Vertical attacks (N/S)
+    const MagicEntry& vert_entry = kRookVertMagics[sq];
+    Bitboard vert_product = (blockers & vert_entry.mask) * vert_entry.magic;
+    int vert_index = static_cast<int>(static_cast<uint64_t>(vert_product >> vert_entry.shift));
+    Bitboard vert_attacks = kRookVertAttacksTable[vert_entry.offset + vert_index];
+
+    return horiz_attacks | vert_attacks;
 }
 
-// Corrected GetBishopAttacks
+// Magic Bitboard implementation for Bishop attacks
 Bitboard Board::GetBishopAttacks(int sq, Bitboard blockers) const {
-    Bitboard attacks;
-    // Northeast (indices decrease -> use MSB/clz)
-    Bitboard ray_ne = kRayAttacks[sq][D_NE];
-    Bitboard b_ne = ray_ne & blockers;
-    if (!b_ne.is_zero()) {
-        int blocker_idx = 255 - b_ne.clz();
-        attacks |= (ray_ne ^ kRayAttacks[blocker_idx][D_NE]);
-    } else {
-        attacks |= ray_ne;
-    }
-    // Southwest (indices increase -> use LSB/ctz)
-    Bitboard ray_sw = kRayAttacks[sq][D_SW];
-    Bitboard b_sw = ray_sw & blockers;
-    if (!b_sw.is_zero()) {
-        int blocker_idx = b_sw.ctz();
-        attacks |= (ray_sw ^ kRayAttacks[blocker_idx][D_SW]);
-    } else {
-        attacks |= ray_sw;
-    }
-    // Northwest (indices decrease -> use MSB/clz)
-    Bitboard ray_nw = kRayAttacks[sq][D_NW];
-    Bitboard b_nw = ray_nw & blockers;
-    if (!b_nw.is_zero()) {
-        int blocker_idx = 255 - b_nw.clz();
-        attacks |= (ray_nw ^ kRayAttacks[blocker_idx][D_NW]);
-    } else {
-        attacks |= ray_nw;
-    }
-    // Southeast (indices increase -> use LSB/ctz)
-    Bitboard ray_se = kRayAttacks[sq][D_SE];
-    Bitboard b_se = ray_se & blockers;
-    if (!b_se.is_zero()) {
-        int blocker_idx = b_se.ctz();
-        attacks |= (ray_se ^ kRayAttacks[blocker_idx][D_SE]);
-    } else {
-        attacks |= ray_se;
-    }
-    return attacks;
+    // Diagonal attacks (NE/SW)
+    const MagicEntry& diag_entry = kBishopDiagMagics[sq];
+    Bitboard diag_product = (blockers & diag_entry.mask) * diag_entry.magic;
+    int diag_index = static_cast<int>(static_cast<uint64_t>(diag_product >> diag_entry.shift));
+    Bitboard diag_attacks = kBishopDiagAttacksTable[diag_entry.offset + diag_index];
+
+    // Anti-diagonal attacks (NW/SE)
+    const MagicEntry& anti_diag_entry = kBishopAntiDiagMagics[sq];
+    Bitboard anti_diag_product = (blockers & anti_diag_entry.mask) * anti_diag_entry.magic;
+    int anti_diag_index = static_cast<int>(static_cast<uint64_t>(anti_diag_product >> anti_diag_entry.shift));
+    Bitboard anti_diag_attacks = kBishopAntiDiagAttacksTable[anti_diag_entry.offset + anti_diag_index];
+
+    return diag_attacks | anti_diag_attacks;
 }
 
 Bitboard Board::GetQueenAttacks(int sq, Bitboard blockers) const {
