@@ -1,40 +1,36 @@
 /**
- * @file magic_finder.cc
- * @brief A utility program to find magic numbers for 4-player chess sliding piece attacks.
+ * @file pext_table_generator.cc (Formerly magic_finder.cc)
+ * @brief A utility program to generate tables for PEXT-based sliding piece attacks.
  *
- * This program finds magic numbers for "half-pieces" on the 14x14 4-player board.
+ * This program generates tables for "half-pieces" on the 14x14 4-player board.
  * - Vertical Rooks (North/South)
  * - Horizontal Rooks (East/West)
  * - Diagonal Bishops (Northeast/Southwest)
  * - Anti-Diagonal Bishops (Northwest/Southeast)
  *
+ * It uses the PDEP instruction (the inverse of PEXT) to generate every possible
+ * blocker combination for a given mask and stores the pre-calculated attack for each.
+ * This requires the generator to be compiled with BMI2 support.
+ *
  * The output is a single binary file, 'magic_tables.bin', containing the
- * pre-computed magic numbers and attack tables. This binary file should be
- * loaded by the chess engine at startup.
+ * pre-computed masks and attack tables.
  *
  * The binary file format is a simple concatenation of the data for each piece type:
- * [Rook Vert Magics] [Rook Vert Attacks] [Rook Horiz Magics] [Rook Horiz Attacks] ...
+ * [Rook Vert PextEntries] [Rook Vert Attacks] [Rook Horiz PextEntries] [Rook Horiz Attacks] ...
  *
- * - Each MagicEntry table is a fixed-size block: kNumSquares * sizeof(MagicEntry)
+ * - Each PextEntry table is a fixed-size block: kNumSquares * sizeof(PextEntry)
  * - Each Attack table is prefixed by a uint64_t indicating its size (number of Bitboards),
  *   followed by the raw Bitboard data.
  *
- * To compile and run with Bazel:
- * 1. Add this target to your BUILD file:
- *    cc_binary(
- *        name = "magic_finder",
- *        srcs = ["magic_finder.cc"],
- *        copts = ["-O3"],
- *        deps = [":board"],
- *    )
- * 2. Build: bazel build -c opt //:magic_finder
- * 3. Run:   ./bazel-bin/magic_finder
- * 
- * To compile and run with gcc:
- * 1. Command: g++ -std=c++17 -O3 -march=native -o magic_finder_gcc magic_finder.cc board.cc
- * 2. Run:     ./magic_finder_gcc
+ * To compile and run with Bazel (assuming the .bazelrc change is made):
+ * 1. Build: bazel build -c opt --config=bmi2 //:magic_finder
+ * 2. Run:   ./bazel-bin/magic_finder
+ *
+ * To compile and run with g++:
+ * 1. Command: g++ -std=c++17 -O3 -mbmi2 -o pext_generator pext_table_generator.cc board.cc
+ * 2. Run:     ./pext_generator
  */
-
+#include <immintrin.h> // For _pdep_u64
 #include <iostream>
 #include <vector>
 #include <random>
@@ -42,63 +38,38 @@
 #include <array>
 #include <string>
 #include <chrono>
-#include <fstream> // Required for binary file output
+#include <fstream>
 
 #include "board.h"
 #include "FastUint256.h"
 
+// PEXT requires BMI2, PDEP is also in BMI2
+#if !defined(__BMI2__)
+#error "This generator must be compiled with BMI2 support (e.g., -mbmi2 or /arch:AVX2)"
+#endif
+
 namespace chess {
-namespace magic {
+namespace pext {
 
 using namespace BitboardImpl;
 
-// Struct to hold all data needed for a magic lookup for one square
+// Struct to hold all data needed for a PEXT lookup for one square.
+// This is much simpler than a MagicEntry.
 // NOTE: This must be a POD (Plain Old Data) type for easy binary writing.
-struct MagicEntry {
-    Bitboard magic;
+struct PextEntry {
     Bitboard mask;
-    int shift;
     uint32_t offset; // Offset into the global attack table for this piece type
 };
 
 // --- Forward Declarations ---
-Bitboard get_blocker_config(int i, Bitboard mask);
 Bitboard calculate_attacks(int sq, Bitboard blockers, RayDirection d1, RayDirection d2);
-void find_magics_for_square(int sq, RayDirection d1, RayDirection d2, MagicEntry& magic_entry, std::vector<Bitboard>& global_attack_table, uint32_t& current_offset);
-void write_piece_data_to_binary(std::ofstream& out, const MagicEntry magics[kNumSquares], const std::vector<Bitboard>& attacks);
+void generate_tables_for_square(int sq, RayDirection d1, RayDirection d2, PextEntry& pext_entry, std::vector<Bitboard>& global_attack_table, uint32_t& current_offset);
+void write_piece_data_to_binary(std::ofstream& out, const PextEntry pext_entries[kNumSquares], const std::vector<Bitboard>& attacks);
 
-
-// --- Helper Functions ---
-
-std::mt19937_64 rng(0xDEADBEEFCAFEFULL);
-
-Bitboard random_bitboard() {
-    return Bitboard(rng(), rng(), rng(), rng());
-}
-
-Bitboard random_sparse_bitboard() {
-    return random_bitboard() & random_bitboard() & random_bitboard();
-}
-
-Bitboard get_blocker_config(uint64_t i, Bitboard mask) {
-    Bitboard result(0);
-    Bitboard temp_mask = mask;
-    while (!temp_mask.is_zero()) {
-        int sq = temp_mask.ctz();
-        temp_mask &= temp_mask - 1;
-        if (i & 1) {
-            result |= IndexToBitboard(sq);
-        }
-        i >>= 1;
-    }
-    return result;
-}
-
-// --- CORRECTED ATTACK CALCULATION ---
 
 // This function correctly calculates the attacks for a single ray,
-// including the blocking piece itself, which is required for magic bitboard tables.
-Bitboard get_ray_attack_magic(int sq, RayDirection dir, const Bitboard& blockers) {
+// including the blocking piece itself, which is required for lookup tables.
+Bitboard get_ray_attack_pext(int sq, RayDirection dir, const Bitboard& blockers) {
     Bitboard ray = kRayAttacks[sq][dir];
     Bitboard b = ray & blockers;
     if (!b.is_zero()) {
@@ -113,30 +84,47 @@ Bitboard get_ray_attack_magic(int sq, RayDirection dir, const Bitboard& blockers
         else {
             blocker_idx = 255 - b.clz();
         }
-
-        // The attack set is all squares on the ray up to the blocker,
-        // and we remove any squares on the ray that are "behind" the blocker.
-        // This correctly includes the blocker square in the attack set.
         return ray & ~kRayAttacks[blocker_idx][dir];
     }
-    // If no blockers, the attack set is the entire ray.
     return ray;
 }
 
 Bitboard calculate_attacks(int sq, Bitboard blockers, RayDirection d1, RayDirection d2) {
-    return get_ray_attack_magic(sq, d1, blockers) | get_ray_attack_magic(sq, d2, blockers);
+    return get_ray_attack_pext(sq, d1, blockers) | get_ray_attack_pext(sq, d2, blockers);
 }
 
 
-// --- Main Magic Finding Logic ---
+// --- Main PEXT Table Generation Logic ---
 
-void find_magics_for_square(int sq, RayDirection d1, RayDirection d2, MagicEntry& magic_entry, std::vector<Bitboard>& global_attack_table, uint32_t& current_offset) {
-    if ((BitboardImpl::kLegalSquares & IndexToBitboard(sq)).is_zero()) {
-        magic_entry = {Bitboard(0), Bitboard(0), 0, 0};
+// Helper function to perform PDEP on our 256-bit bitboard
+Bitboard pdep_256(uint64_t source, Bitboard mask) {
+    Bitboard result = {};
+    uint64_t current_source = source;
+
+    for (int i = 0; i < 4; ++i) {
+        // The number of bits to take from the source is the popcount of the mask's current limb.
+        int bits_in_limb_mask = __builtin_popcountll(mask.limbs[i]);
+        
+        // Take that many bits from the current source
+        uint64_t source_chunk = current_source & ((1ULL << bits_in_limb_mask) - 1);
+
+        // Deposit them into the result limb
+        result.limbs[i] = _pdep_u64(source_chunk, mask.limbs[i]);
+
+        // Shift the source to prepare for the next limb
+        current_source >>= bits_in_limb_mask;
+    }
+    return result;
+}
+
+
+void generate_tables_for_square(int sq, RayDirection d1, RayDirection d2, PextEntry& pext_entry, std::vector<Bitboard>& global_attack_table, uint32_t& current_offset) {
+    if ((kLegalSquares & IndexToBitboard(sq)).is_zero()) {
+        pext_entry = {Bitboard(0), 0};
         return;
     }
 
-    // --- Mask Generation ---
+    // --- Mask Generation (same as magic finder) ---
     Bitboard mask = (kRayAttacks[sq][d1] | kRayAttacks[sq][d2]);
     Bitboard ray1 = kRayAttacks[sq][d1];
     Bitboard ray2 = kRayAttacks[sq][d2];
@@ -153,73 +141,32 @@ void find_magics_for_square(int sq, RayDirection d1, RayDirection d2, MagicEntry
     }
     // --- End Mask Generation ---
 
-    magic_entry.mask = mask;
+    pext_entry.mask = mask;
     int bits = mask.popcount();
-    std::cerr << "  -> Trying sq=" << sq << ", mask bits=" << bits << std::endl;
-    magic_entry.shift = 256 - bits;
     
     uint64_t num_configs = 1ULL << bits;
-    std::vector<Bitboard> blockers(num_configs);
-    std::vector<Bitboard> attacks(num_configs);
+    std::vector<Bitboard> local_attack_table(num_configs);
 
+    // Generate all blocker configurations and their attacks
     for (uint64_t i = 0; i < num_configs; ++i) {
-        blockers[i] = get_blocker_config(i, mask);
-        attacks[i] = calculate_attacks(sq, blockers[i], d1, d2);
+        // Use PDEP to create the blocker pattern from the index 'i'
+        Bitboard blockers = pdep_256(i, mask);
+        local_attack_table[i] = calculate_attacks(sq, blockers, d1, d2);
     }
     
-    std::vector<Bitboard> temp_attack_table(num_configs);
-    
-    for (int attempts = 0; attempts < 100000000; ++attempts) {
-        Bitboard magic = random_sparse_bitboard();
-        
-        // Don't use magics that could have issues with the mask. This is a common optimization.
-        if ((magic & Bitboard(0xFF)).is_zero()) {
-             continue;
-        }
-        
-        std::fill(temp_attack_table.begin(), temp_attack_table.end(), Bitboard(0));
-        bool success = true;
+    // Add the generated local table to the global table
+    pext_entry.offset = current_offset;
+    global_attack_table.insert(global_attack_table.end(), local_attack_table.begin(), local_attack_table.end());
+    current_offset += num_configs;
 
-        for (uint64_t i = 0; i < num_configs; ++i) {
-            // 1. Use the standard 256x256->256 bit multiplication.
-            Bitboard product = blockers[i] * magic;
-
-            // 2. Shift the 256-bit result to get the index.
-            //    This takes the top 'bits' of the 256-bit product.
-            int index = static_cast<int>(static_cast<uint64_t>(product >> magic_entry.shift));
-
-            if (temp_attack_table[index].is_zero()) {
-                temp_attack_table[index] = attacks[i];
-            } else if (temp_attack_table[index] != attacks[i]) {
-                success = false;
-                break;
-            }
-        }
-
-        if (success) {
-            magic_entry.magic = magic;
-            magic_entry.offset = current_offset;
-            global_attack_table.insert(global_attack_table.end(), temp_attack_table.begin(), temp_attack_table.end());
-            current_offset += num_configs;
-            return;
-        }
-    }
-
-    std::cerr << "\nERROR: Failed to find magic for square " << sq << " after max attempts.\n";
-    exit(1);
+    std::cerr << "  -> sq=" << sq << ", mask bits=" << bits << ", table size=" << num_configs << std::endl;
 }
 
 // --- Binary Output Function ---
 
-/**
- * @brief Writes the data for one piece type to an open binary file stream.
- * @param out The output file stream, opened in binary mode.
- * @param magics The array of MagicEntry structs to write.
- * @param attacks The vector of Bitboard attacks to write.
- */
-void write_piece_data_to_binary(std::ofstream& out, const MagicEntry magics[kNumSquares], const std::vector<Bitboard>& attacks) {
-    // 1. Write the fixed-size MagicEntry table.
-    out.write(reinterpret_cast<const char*>(magics), kNumSquares * sizeof(MagicEntry));
+void write_piece_data_to_binary(std::ofstream& out, const PextEntry pext_entries[kNumSquares], const std::vector<Bitboard>& attacks) {
+    // 1. Write the fixed-size PextEntry table.
+    out.write(reinterpret_cast<const char*>(pext_entries), kNumSquares * sizeof(PextEntry));
 
     // 2. Write the size of the variable-sized attack table.
     uint64_t attack_table_size = attacks.size();
@@ -235,22 +182,22 @@ void write_piece_data_to_binary(std::ofstream& out, const MagicEntry magics[kNum
 }
 
 
-} // namespace magic
+} // namespace pext
 } // namespace chess
 
 // --- Main Program ---
 int main() {
     using namespace chess;
-    using namespace chess::magic;
+    using namespace chess::pext;
 
     auto start_time = std::chrono::high_resolution_clock::now();
 
     InitBitboards();
 
-    MagicEntry rook_vert_magics[kNumSquares];
-    MagicEntry rook_horiz_magics[kNumSquares];
-    MagicEntry bishop_diag_magics[kNumSquares];
-    MagicEntry bishop_anti_diag_magics[kNumSquares];
+    PextEntry rook_vert_pext[kNumSquares];
+    PextEntry rook_horiz_pext[kNumSquares];
+    PextEntry bishop_diag_pext[kNumSquares];
+    PextEntry bishop_anti_diag_pext[kNumSquares];
 
     std::vector<Bitboard> rook_vert_attacks;
     std::vector<Bitboard> rook_horiz_attacks;
@@ -259,41 +206,37 @@ int main() {
 
     uint32_t current_offset;
 
-    // --- Find Horizontal Rook Magics (East/West) ---
+    // --- Generate Horizontal Rook Tables (East/West) ---
     current_offset = 0;
-    std::cerr << "Finding magics for Horizontal Rooks (E/W)..." << std::endl;
+    std::cerr << "Generating tables for Horizontal Rooks (E/W)..." << std::endl;
     for (int sq = 0; sq < kNumSquares; ++sq) {
-        find_magics_for_square(sq, D_E, D_W, rook_horiz_magics[sq], rook_horiz_attacks, current_offset);
-        if ((sq+1) % 16 == 0) { std::cerr << "." << std::flush; }
+        generate_tables_for_square(sq, D_E, D_W, rook_horiz_pext[sq], rook_horiz_attacks, current_offset);
     }
-    std::cerr << "\nDone. Total attack table size: " << rook_horiz_attacks.size() << "\n\n";
+    std::cerr << "Done. Total attack table size: " << rook_horiz_attacks.size() << "\n\n";
 
-    // --- Find Vertical Rook Magics (North/South) ---
+    // --- Generate Vertical Rook Tables (North/South) ---
     current_offset = 0;
-    std::cerr << "Finding magics for Vertical Rooks (N/S)..." << std::endl;
+    std::cerr << "Generating tables for Vertical Rooks (N/S)..." << std::endl;
     for (int sq = 0; sq < kNumSquares; ++sq) {
-        find_magics_for_square(sq, D_N, D_S, rook_vert_magics[sq], rook_vert_attacks, current_offset);
-        if ((sq+1) % 16 == 0) { std::cerr << "." << std::flush; }
+        generate_tables_for_square(sq, D_N, D_S, rook_vert_pext[sq], rook_vert_attacks, current_offset);
     }
-    std::cerr << "\nDone. Total attack table size: " << rook_vert_attacks.size() << "\n\n";
+    std::cerr << "Done. Total attack table size: " << rook_vert_attacks.size() << "\n\n";
 
-    // --- Find Diagonal Bishop Magics (NE/SW) ---
+    // --- Generate Diagonal Bishop Tables (NE/SW) ---
     current_offset = 0;
-    std::cerr << "Finding magics for Diagonal Bishops (NE/SW)..." << std::endl;
+    std::cerr << "Generating tables for Diagonal Bishops (NE/SW)..." << std::endl;
     for (int sq = 0; sq < kNumSquares; ++sq) {
-        find_magics_for_square(sq, D_NE, D_SW, bishop_diag_magics[sq], bishop_diag_attacks, current_offset);
-        if ((sq+1) % 16 == 0) { std::cerr << "." << std::flush; }
+        generate_tables_for_square(sq, D_NE, D_SW, bishop_diag_pext[sq], bishop_diag_attacks, current_offset);
     }
-    std::cerr << "\nDone. Total attack table size: " << bishop_diag_attacks.size() << "\n\n";
+    std::cerr << "Done. Total attack table size: " << bishop_diag_attacks.size() << "\n\n";
 
-    // --- Find Anti-Diagonal Bishop Magics (NW/SE) ---
+    // --- Generate Anti-Diagonal Bishop Tables (NW/SE) ---
     current_offset = 0;
-    std::cerr << "Finding magics for Anti-Diagonal Bishops (NW/SE)..." << std::endl;
+    std::cerr << "Generating tables for Anti-Diagonal Bishops (NW/SE)..." << std::endl;
     for (int sq = 0; sq < kNumSquares; ++sq) {
-        find_magics_for_square(sq, D_NW, D_SE, bishop_anti_diag_magics[sq], bishop_anti_diag_attacks, current_offset);
-        if ((sq+1) % 16 == 0) { std::cerr << "." << std::flush; }
+        generate_tables_for_square(sq, D_NW, D_SE, bishop_anti_diag_pext[sq], bishop_anti_diag_attacks, current_offset);
     }
-    std::cerr << "\nDone. Total attack table size: " << bishop_anti_diag_attacks.size() << "\n\n";
+    std::cerr << "Done. Total attack table size: " << bishop_anti_diag_attacks.size() << "\n\n";
 
     // --- Write all generated data to a single binary file ---
     const std::string bin_filename = "magic_tables.bin";
@@ -305,10 +248,10 @@ int main() {
         return 1;
     }
 
-    write_piece_data_to_binary(out, rook_vert_magics, rook_vert_attacks);
-    write_piece_data_to_binary(out, rook_horiz_magics, rook_horiz_attacks);
-    write_piece_data_to_binary(out, bishop_diag_magics, bishop_diag_attacks);
-    write_piece_data_to_binary(out, bishop_anti_diag_magics, bishop_anti_diag_attacks);
+    write_piece_data_to_binary(out, rook_vert_pext, rook_vert_attacks);
+    write_piece_data_to_binary(out, rook_horiz_pext, rook_horiz_attacks);
+    write_piece_data_to_binary(out, bishop_diag_pext, bishop_diag_attacks);
+    write_piece_data_to_binary(out, bishop_anti_diag_pext, bishop_anti_diag_attacks);
 
     out.close();
     std::cerr << "Successfully wrote all tables to " << bin_filename << "\n";

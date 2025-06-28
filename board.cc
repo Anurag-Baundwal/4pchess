@@ -12,6 +12,11 @@
 #include <random>
 #include <fstream>
 
+// For PEXT intrinsics
+#if defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER)
+#include <immintrin.h>
+#endif
+
 #include "board.h"
 
 namespace chess {
@@ -39,31 +44,29 @@ Bitboard kSecondRankMasks[4];
 Bitboard kCentralMask;
 int kInitialRookSq[4][2];
 
-// --- Magic Bitboard Data (loaded from file) ---
-// This struct must match the one in magic_finder.cc
-struct MagicEntry {
-    Bitboard magic;
+// --- PEXT Bitboard Data (loaded from file) ---
+// This struct must match the one in the new magic_finder.cc (pext_table_generator.cc)
+struct PextEntry {
     Bitboard mask;
-    int shift;
     uint32_t offset;
 };
 
-// Global tables for magic bitboards. These are populated by LoadMagicTables().
-MagicEntry kRookHorizMagics[kNumSquares];
-MagicEntry kRookVertMagics[kNumSquares];
-MagicEntry kBishopDiagMagics[kNumSquares];
-MagicEntry kBishopAntiDiagMagics[kNumSquares];
+// Global tables for PEXT bitboards. These are populated by LoadPextTables().
+PextEntry kRookHorizPext[kNumSquares];
+PextEntry kRookVertPext[kNumSquares];
+PextEntry kBishopDiagPext[kNumSquares];
+PextEntry kBishopAntiDiagPext[kNumSquares];
 std::vector<Bitboard> kRookHorizAttacksTable;
 std::vector<Bitboard> kRookVertAttacksTable;
 std::vector<Bitboard> kBishopDiagAttacksTable;
 std::vector<Bitboard> kBishopAntiDiagAttacksTable;
 
 // Helper function to read data for one piece type from the binary file.
-void read_piece_data_from_binary(std::ifstream& in, MagicEntry magics[kNumSquares], std::vector<Bitboard>& attacks) {
-    // 1. Read the fixed-size MagicEntry table.
-    in.read(reinterpret_cast<char*>(magics), kNumSquares * sizeof(MagicEntry));
+void read_piece_data_from_binary(std::ifstream& in, PextEntry pext_entries[kNumSquares], std::vector<Bitboard>& attacks) {
+    // 1. Read the fixed-size PextEntry table.
+    in.read(reinterpret_cast<char*>(pext_entries), kNumSquares * sizeof(PextEntry));
     if (!in) {
-        std::cerr << "FATAL: Failed to read MagicEntry table from magic_tables.bin.\n";
+        std::cerr << "FATAL: Failed to read PextEntry table from magic_tables.bin.\n";
         exit(1);
     }
 
@@ -74,9 +77,6 @@ void read_piece_data_from_binary(std::ifstream& in, MagicEntry magics[kNumSquare
         std::cerr << "FATAL: Failed to read attack table size from magic_tables.bin.\n";
         exit(1);
     }
-
-    // ----> ADD THIS DEBUGGING LINE <----
-    std::cout << "  Attempting to load attack table with " << attack_table_size << " entries." << std::endl;
 
     if (attack_table_size > 500000) { // A sanity check, your largest table is ~140k
         std::cerr << "FATAL: Attack table size is unreasonably large. "
@@ -93,8 +93,7 @@ void read_piece_data_from_binary(std::ifstream& in, MagicEntry magics[kNumSquare
     }
 }
 
-
-void LoadMagicTables() {
+void LoadPextTables() {
     static bool is_loaded = false;
     if (is_loaded) return;
 
@@ -104,18 +103,58 @@ void LoadMagicTables() {
     if (!in) {
         std::cerr << "\nFATAL ERROR: Could not open magic_tables.bin.\n"
                   << "The engine cannot run without this file.\n"
-                  << "Please generate it by compiling and running the 'magic_finder' target first.\n"
-                  << "Example: bazel run -c opt //:magic_finder\n" << std::endl;
+                  << "Please generate it by compiling and running the 'magic_finder' target with BMI2 enabled.\n"
+                  << "Example: bazel run -c opt --config=bmi2 //:magic_finder\n" << std::endl;
         exit(1);
     }
 
-    read_piece_data_from_binary(in, kRookVertMagics, kRookVertAttacksTable);
-    read_piece_data_from_binary(in, kRookHorizMagics, kRookHorizAttacksTable);
-    read_piece_data_from_binary(in, kBishopDiagMagics, kBishopDiagAttacksTable);
-    read_piece_data_from_binary(in, kBishopAntiDiagMagics, kBishopAntiDiagAttacksTable);
+    read_piece_data_from_binary(in, kRookVertPext, kRookVertAttacksTable);
+    read_piece_data_from_binary(in, kRookHorizPext, kRookHorizAttacksTable);
+    read_piece_data_from_binary(in, kBishopDiagPext, kBishopDiagAttacksTable);
+    read_piece_data_from_binary(in, kBishopAntiDiagPext, kBishopAntiDiagAttacksTable);
     
     in.close();
     is_loaded = true;
+}
+
+
+// We keep the old magic bitboard loading logic for the fallback path
+namespace magics {
+    struct MagicEntry {
+        Bitboard magic;
+        Bitboard mask;
+        int shift;
+        uint32_t offset;
+    };
+    MagicEntry kRookHorizMagics[kNumSquares];
+    MagicEntry kRookVertMagics[kNumSquares];
+    MagicEntry kBishopDiagMagics[kNumSquares];
+    MagicEntry kBishopAntiDiagMagics[kNumSquares];
+    void read_piece_data_from_binary_magic(std::ifstream& in, MagicEntry magics[kNumSquares], std::vector<Bitboard>& attacks) {
+        in.read(reinterpret_cast<char*>(magics), kNumSquares * sizeof(MagicEntry));
+        if (!in) exit(1);
+        uint64_t attack_table_size = 0;
+        in.read(reinterpret_cast<char*>(&attack_table_size), sizeof(uint64_t));
+        if (!in || attack_table_size > 500000) exit(1);
+        attacks.resize(attack_table_size);
+        in.read(reinterpret_cast<char*>(attacks.data()), attack_table_size * sizeof(Bitboard));
+        if (!in) exit(1);
+    }
+    void LoadMagicTables() {
+        static bool is_loaded_magic = false;
+        if (is_loaded_magic) return;
+        std::ifstream in("magic_tables.bin", std::ios::binary);
+        if(!in) {
+            std::cerr << "FATAL: Could not open magic_tables.bin for fallback magic bitboards.\n";
+            exit(1);
+        }
+        read_piece_data_from_binary_magic(in, kRookVertMagics, kRookVertAttacksTable);
+        read_piece_data_from_binary_magic(in, kRookHorizMagics, kRookHorizAttacksTable);
+        read_piece_data_from_binary_magic(in, kBishopDiagMagics, kBishopDiagAttacksTable);
+        read_piece_data_from_binary_magic(in, kBishopAntiDiagMagics, kBishopAntiDiagAttacksTable);
+        in.close();
+        is_loaded_magic = true;
+    }
 }
 
 void InitBitboards() {
@@ -314,10 +353,16 @@ void InitBitboards() {
         }
     }
     
-    // Load magic bitboard tables from file
-    std::cout << "Loading magic bitboard tables..." << std::endl;
-    LoadMagicTables();
-    std::cout << "Magic bitboard tables loaded successfully." << std::endl;
+    // Load bitboard tables from file
+    #if defined(__BMI2__)
+        std::cout << "Loading PEXT bitboard tables..." << std::endl;
+        LoadPextTables();
+        std::cout << "PEXT bitboard tables loaded successfully." << std::endl;
+    #else
+        std::cout << "Loading magic bitboard tables (fallback)..." << std::endl;
+        magics::LoadMagicTables(); // Use the namespaced version
+        std::cout << "Magic bitboard tables loaded successfully." << std::endl;
+    #endif
     
     is_initialized = true;
 }
@@ -503,38 +548,81 @@ BoardLocation Board::GetKingLocation(PlayerColor color) const {
     return IndexToLocation(king_bb.ctz());
 }
 
-// Magic Bitboard implementation for Rook attacks
+#if defined(__BMI2__)
+// Helper function to perform PEXT on our 256-bit bitboard
+uint64_t pext_256(Bitboard source, Bitboard mask) {
+    uint64_t result = 0;
+    int current_shift = 0;
+
+    for (int i = 0; i < 4; ++i) {
+        uint64_t extracted = _pext_u64(source.limbs[i], mask.limbs[i]);
+        result |= (extracted << current_shift);
+        current_shift += __builtin_popcountll(mask.limbs[i]);
+    }
+    return result;
+}
+#endif
+
+// PEXT/Magic Bitboard implementation for Rook attacks
 Bitboard Board::GetRookAttacks(int sq, Bitboard blockers) const {
-    // Horizontal attacks (E/W)
-    const MagicEntry& horiz_entry = kRookHorizMagics[sq];
+#if defined(__BMI2__)
+    // Horizontal attacks (E/W) with PEXT
+    const PextEntry& horiz_entry = kRookHorizPext[sq];
+    uint64_t horiz_index = pext_256(blockers, horiz_entry.mask);
+    Bitboard horiz_attacks = kRookHorizAttacksTable[horiz_entry.offset + horiz_index];
+
+    // Vertical attacks (N/S) with PEXT
+    const PextEntry& vert_entry = kRookVertPext[sq];
+    uint64_t vert_index = pext_256(blockers, vert_entry.mask);
+    Bitboard vert_attacks = kRookVertAttacksTable[vert_entry.offset + vert_index];
+
+    return horiz_attacks | vert_attacks;
+#else
+    // Horizontal attacks (E/W) with Magic Bitboards (FALLBACK)
+    const magics::MagicEntry& horiz_entry = magics::kRookHorizMagics[sq];
     Bitboard horiz_product = (blockers & horiz_entry.mask) * horiz_entry.magic;
     int horiz_index = static_cast<int>(static_cast<uint64_t>(horiz_product >> horiz_entry.shift));
     Bitboard horiz_attacks = kRookHorizAttacksTable[horiz_entry.offset + horiz_index];
 
-    // Vertical attacks (N/S)
-    const MagicEntry& vert_entry = kRookVertMagics[sq];
+    // Vertical attacks (N/S) with Magic Bitboards (FALLBACK)
+    const magics::MagicEntry& vert_entry = magics::kRookVertMagics[sq];
     Bitboard vert_product = (blockers & vert_entry.mask) * vert_entry.magic;
     int vert_index = static_cast<int>(static_cast<uint64_t>(vert_product >> vert_entry.shift));
     Bitboard vert_attacks = kRookVertAttacksTable[vert_entry.offset + vert_index];
 
     return horiz_attacks | vert_attacks;
+#endif
 }
 
-// Magic Bitboard implementation for Bishop attacks
+// PEXT/Magic Bitboard implementation for Bishop attacks
 Bitboard Board::GetBishopAttacks(int sq, Bitboard blockers) const {
-    // Diagonal attacks (NE/SW)
-    const MagicEntry& diag_entry = kBishopDiagMagics[sq];
+#if defined(__BMI2__)
+    // Diagonal attacks (NE/SW) with PEXT
+    const PextEntry& diag_entry = kBishopDiagPext[sq];
+    uint64_t diag_index = pext_256(blockers, diag_entry.mask);
+    Bitboard diag_attacks = kBishopDiagAttacksTable[diag_entry.offset + diag_index];
+
+    // Anti-diagonal attacks (NW/SE) with PEXT
+    const PextEntry& anti_diag_entry = kBishopAntiDiagPext[sq];
+    uint64_t anti_diag_index = pext_256(blockers, anti_diag_entry.mask);
+    Bitboard anti_diag_attacks = kBishopAntiDiagAttacksTable[anti_diag_entry.offset + anti_diag_index];
+    
+    return diag_attacks | anti_diag_attacks;
+#else
+    // Diagonal attacks (NE/SW) with Magic Bitboards (FALLBACK)
+    const magics::MagicEntry& diag_entry = magics::kBishopDiagMagics[sq];
     Bitboard diag_product = (blockers & diag_entry.mask) * diag_entry.magic;
     int diag_index = static_cast<int>(static_cast<uint64_t>(diag_product >> diag_entry.shift));
     Bitboard diag_attacks = kBishopDiagAttacksTable[diag_entry.offset + diag_index];
 
-    // Anti-diagonal attacks (NW/SE)
-    const MagicEntry& anti_diag_entry = kBishopAntiDiagMagics[sq];
+    // Anti-diagonal attacks (NW/SE) with Magic Bitboards (FALLBACK)
+    const magics::MagicEntry& anti_diag_entry = magics::kBishopAntiDiagMagics[sq];
     Bitboard anti_diag_product = (blockers & anti_diag_entry.mask) * anti_diag_entry.magic;
     int anti_diag_index = static_cast<int>(static_cast<uint64_t>(anti_diag_product >> anti_diag_entry.shift));
     Bitboard anti_diag_attacks = kBishopAntiDiagAttacksTable[anti_diag_entry.offset + anti_diag_index];
 
     return diag_attacks | anti_diag_attacks;
+#endif
 }
 
 Bitboard Board::GetQueenAttacks(int sq, Bitboard blockers) const {
