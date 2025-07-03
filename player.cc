@@ -134,6 +134,27 @@ AlphaBetaPlayer::AlphaBetaPlayer(std::optional<PlayerOptions> options) {
         }
     }
   }
+  for (int c = 0; c < 4; ++c) {
+    PlayerColor color = static_cast<PlayerColor>(c);
+    for (int sq = 0; sq < 256; ++sq) {
+        pawn_advancement_bonus_[color][sq] = 0;
+        BoardLocation loc = BitboardImpl::IndexToLocation(sq);
+        if (!loc.Present()) continue;
+
+        int row = loc.GetRow();
+        int col = loc.GetCol();
+        int advancement = 0;
+        switch (color) {
+            case RED:    advancement = 12 - row; break;
+            case YELLOW: advancement = row - 1;  break;
+            case BLUE:   advancement = col - 1;  break;
+            case GREEN:  advancement = 12 - col; break;
+            default: break;
+        }
+        // The bonus formula from the original Evaluate function
+        pawn_advancement_bonus_[color][sq] = 2 * advancement * advancement + std::max(0, 150 * (advancement - 5));
+    }
+  }
 }
 
 AlphaBetaPlayer::~AlphaBetaPlayer() {
@@ -969,18 +990,7 @@ int AlphaBetaPlayer::Evaluate(
                 }
                 
                 if (piece_type == PAWN) {
-                    BoardLocation loc = BitboardImpl::IndexToLocation(sq);
-                    int row = loc.GetRow(); int col = loc.GetCol();
-                    int advancement = 0;
-                    switch (color) {
-                        case RED:    advancement = 12 - row; break;
-                        case YELLOW: advancement = row - 1;  break;
-                        case BLUE:   advancement = col - 1;  break;
-                        case GREEN:  advancement = 12 - col; break;
-                        default: break;
-                    }
-                    int bonus = 2 * advancement * advancement + std::max(0, 150 * (advancement - 5));
-                    eval += team_sign * bonus;
+                    eval += team_sign * pawn_advancement_bonus_[color][sq];
                 }
 
                 if (piece_type == ROOK) {

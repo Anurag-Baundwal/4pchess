@@ -272,6 +272,7 @@ class AlphaBetaPlayer {
   int piece_square_table_[4][6][256];
   int piece_activation_threshold_[7];
   bool knight_to_king_[256][256];
+  int pawn_advancement_bonus_[4][256];
   Team root_team_ = NO_TEAM;
 
   // Heuristics (shared across threads)
