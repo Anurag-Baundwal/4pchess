@@ -228,7 +228,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
         && std::chrono::system_clock::now() >= *deadline)) {
     return std::nullopt;
   }
-  num_nodes_++;
+  thread_state.GetNodeCount()++;
   bool is_root_node = ply == 1;
 
   bool is_pv_node = node_type != NonPV;
@@ -651,7 +651,7 @@ AlphaBetaPlayer::QSearch(
     return std::nullopt;
   }
   if (depth < 0) {
-    num_nodes_++;
+    thread_state.GetNodeCount()++;
   }
 
   bool is_pv_node = node_type != NonPV;
@@ -1140,6 +1140,7 @@ int AlphaBetaPlayer::Evaluate(
       }
     }
   }
+  // w.r.t. maximizing player
   return maximizing_player ? eval : -eval;
 }
 
@@ -1230,6 +1231,12 @@ AlphaBetaPlayer::MakeMove(
   for (auto& thread : threads) {
     thread->join();
   }
+
+  int64_t total_nodes_this_search = 0;
+  for (const auto& state : thread_states) {
+    total_nodes_this_search += state.GetNodeCount();
+  }
+  num_nodes_ += total_nodes_this_search;
 
   if (res.has_value()) {
       pv_info_ = thread_states[0].GetPVInfo();

@@ -119,6 +119,9 @@ class ThreadState {
   PVInfo& GetPVInfo() { return pv_info_; }
   const Board& GetRootBoard() { return root_board_; }
 
+  int64_t& GetNodeCount() { return node_count_; }
+  int64_t GetNodeCount() const { return node_count_; }
+
   int n_threats[4] = {0, 0, 0, 0};
 
  private:
@@ -133,7 +136,7 @@ class ThreadState {
   size_t buffer_id_ = 0;
   int n_activated_[4] = {0, 0, 0, 0};
   int total_moves_[4] = {0, 0, 0, 0};
-
+  int64_t node_count_ = 0;
 };
 
 class AlphaBetaPlayer {
@@ -235,7 +238,7 @@ class AlphaBetaPlayer {
   bool HasShield(const Board& board, PlayerColor color, int king_sq);
   bool OnBackRank(PlayerColor color, int king_sq) const;
 
-  std::atomic<int64_t> num_nodes_ = 0; // debugging
+  int64_t num_nodes_ = 0; // debugging
   std::atomic<int64_t> num_cache_hits_ = 0;
   std::atomic<int64_t> num_null_moves_tried_ = 0;
   std::atomic<int64_t> num_null_moves_pruned_ = 0;
