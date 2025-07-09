@@ -107,15 +107,11 @@ class Board : public MyObjectWrap {
 class Player : public MyObjectWrap {
  public:
   Player(v8::Isolate* isolate);
-  ~Player() {
-    RemoveFromGlobalObjList(this);
-  }
+  ~Player() = default;
 
   static void Init(v8::Local<v8::Object> exports);
   static void DeleteInstance(void* data) {
-    Player* p = static_cast<Player*>(data);
-    RemoveFromGlobalObjList(p);
-    delete p;
+    delete static_cast<Player*>(data);
   }
 
   std::shared_ptr<chess::AlphaBetaPlayer> GetPlayer() {
@@ -130,23 +126,11 @@ class Player : public MyObjectWrap {
   static void MakeMove(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void CancelEvaluation(const v8::FunctionCallbackInfo<v8::Value>& args);
 
-  // nuclear option: kill all other requests when a new obj is created
-  static std::mutex mutex_;
-  static std::vector<Player*> players_;
-
-  // keep track of the last player & its board to reuse it and save time on
-  // consecutive searches.
-  static std::shared_ptr<chess::AlphaBetaPlayer> last_player_;
-  static int64_t last_board_hash_;
-
-  static void AddToGlobalObjList(Player* obj);
-  static void RemoveFromGlobalObjList(Player* obj);
   static void CancelAllEvaluations();
-  static void SetLatestPlayer(std::shared_ptr<chess::AlphaBetaPlayer> player,
-                              int64_t board_hash);
-  static std::shared_ptr<chess::AlphaBetaPlayer> GetLatestPlayer(
-      int64_t board_hash);
 
+  static std::mutex mutex_;
+  static std::shared_ptr<chess::AlphaBetaPlayer> shared_player_instance_;
+  
   std::shared_ptr<chess::AlphaBetaPlayer> player_;
 };
 
