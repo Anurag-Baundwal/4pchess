@@ -34,9 +34,7 @@ using v8::Value;
 
 
 std::mutex Player::mutex_;
-std::vector<Player*> Player::players_;
-std::shared_ptr<chess::AlphaBetaPlayer> Player::last_player_;
-int64_t Player::last_board_hash_;
+std::shared_ptr<chess::AlphaBetaPlayer> Player::shared_player_instance_;
 
 
 PlacedPiece::PlacedPiece(v8::Isolate* isolate, int row, int col, int piece_type, int player_color)
@@ -345,20 +343,22 @@ void Player::MakeMove(const v8::FunctionCallbackInfo<v8::Value>& args) {
   Board* board_wrap = MyObjectWrap::Unwrap<Board>(
       args[0]->ToObject(context).ToLocalChecked());
   chess::Board* board = board_wrap->GetBoard();
-  int64_t board_hash = board->HashKey();
 
-  std::shared_ptr<chess::AlphaBetaPlayer> player_ptr = player_wrap->GetPlayer();
-  if (player_ptr == nullptr) {
-    player_ptr = GetLatestPlayer(board_hash);
-    if (player_ptr == nullptr) {
-      player_ptr = std::make_shared<chess::AlphaBetaPlayer>();
-    }
-    player_wrap->SetPlayer(player_ptr);
+  // Get or create the single shared AlphaBetaPlayer instance
+  std::shared_ptr<chess::AlphaBetaPlayer> player_ptr;
+  {
+      std::lock_guard lock(mutex_);
+      if (!shared_player_instance_) {
+          shared_player_instance_ = std::make_shared<chess::AlphaBetaPlayer>();
+      }
+      player_ptr = shared_player_instance_;
   }
+  
+  // The JS Player object now holds a reference to the shared C++ player instance
+  player_wrap->SetPlayer(player_ptr);
 
   chess::AlphaBetaPlayer& player = *player_ptr;
-  SetLatestPlayer(player_ptr, board_hash);
-  player_ptr->SetCanceled(false);
+  player.SetCanceled(false);
 
   // for debugging
   int zero_move_evaluation = player.StaticEvaluation(*board);
@@ -371,7 +371,6 @@ void Player::MakeMove(const v8::FunctionCallbackInfo<v8::Value>& args) {
     time_limit = std::chrono::milliseconds(1000 * secs.FromJust());
   }
   
-  //std::chrono::milliseconds time_limit(10'000);
   auto move_res = player.MakeMove(*board, time_limit, depth);
 
   if (move_res.has_value()) {
@@ -447,7 +446,7 @@ void Player::MakeMove(const v8::FunctionCallbackInfo<v8::Value>& args) {
       // Set "to"
       const auto& loc_to = move.To();
       Local<Object> to = Object::New(isolate);
-      to->Set(context, String::NewFromUtf8Literal(isolate, "row"),
+to->Set(context, String::NewFromUtf8Literal(isolate, "row"),
               v8::Integer::New(isolate, loc_to.GetRow())).Check();
       to->Set(context, String::NewFromUtf8Literal(isolate, "col"),
               v8::Integer::New(isolate, loc_to.GetCol())).Check();
@@ -477,53 +476,18 @@ void Player::CancelEvaluation(const v8::FunctionCallbackInfo<v8::Value>& args) {
 }
 
 Player::Player(v8::Isolate* isolate) {
+  // When a new JS player object is created, cancel any ongoing searches
+  // from the single C++ player instance.
   CancelAllEvaluations();
-  AddToGlobalObjList(this);
   // Register to delete the object.
   node::AddEnvironmentCleanupHook(isolate, Player::DeleteInstance, this);
 }
 
-void Player::AddToGlobalObjList(Player* obj) {
-  std::lock_guard lock(mutex_);
-  players_.push_back(obj);
-}
-
-void Player::RemoveFromGlobalObjList(Player* obj) {
-  std::lock_guard lock(mutex_);
-  auto it = std::find(players_.begin(), players_.end(), obj);
-  if (it != players_.end()) {
-    players_.erase(it);
-  }
-}
-
 void Player::CancelAllEvaluations() {
   std::lock_guard lock(mutex_);
-  for (Player* obj : players_) {
-    auto player = obj->GetPlayer();
-    if (player != nullptr) {
-      player->CancelEvaluation();
-    }
+  if (shared_player_instance_) {
+      shared_player_instance_->CancelEvaluation();
   }
 }
-
-
-void Player::SetLatestPlayer(std::shared_ptr<chess::AlphaBetaPlayer> player,
-    int64_t board_hash) {
-  std::lock_guard lock(mutex_);
-  if (last_player_ == nullptr || last_board_hash_ != board_hash) {
-    last_player_ = player;
-    last_board_hash_ = board_hash;
-  }
-}
-
-std::shared_ptr<chess::AlphaBetaPlayer> Player::GetLatestPlayer(
-    int64_t board_hash) {
-  std::lock_guard lock(mutex_);
-  if (last_board_hash_ == board_hash) {
-    return last_player_;
-  }
-  return nullptr;
-}
-
 
 }  // namespace board_wrapper
