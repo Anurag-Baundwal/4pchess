@@ -111,7 +111,7 @@ std::string PlacedPiece::ToStr() const {
 void PlacedPiece::DebugString(const v8::FunctionCallbackInfo<v8::Value>& args) {
   Isolate* isolate = args.GetIsolate();
 
-  PlacedPiece* obj = MyObjectWrap::Unwrap<PlacedPiece>(args.Holder());
+  PlacedPiece* obj = MyObjectWrap::Unwrap<PlacedPiece>(args.This());
 
   std::string s = obj->ToStr();
   MaybeLocal<String> local_s = String::NewFromUtf8(isolate, s.data());
@@ -189,7 +189,7 @@ std::string CastlingRights::ToStr() const {
 void CastlingRights::DebugString(const v8::FunctionCallbackInfo<v8::Value>& args) {
   Isolate* isolate = args.GetIsolate();
 
-  CastlingRights* obj = MyObjectWrap::Unwrap<CastlingRights>(args.Holder());
+  CastlingRights* obj = MyObjectWrap::Unwrap<CastlingRights>(args.This());
 
   std::string s = obj->ToStr();
   MaybeLocal<String> local_s = String::NewFromUtf8(isolate, s.data());
@@ -283,7 +283,7 @@ std::string Board::ToStr() const {
 void Board::DebugString(const v8::FunctionCallbackInfo<v8::Value>& args) {
   Isolate* isolate = args.GetIsolate();
 
-  Board* obj = MyObjectWrap::Unwrap<Board>(args.Holder());
+  Board* obj = MyObjectWrap::Unwrap<Board>(args.This());
 
   std::string s = obj->ToStr();
   MaybeLocal<String> local_s = String::NewFromUtf8(isolate, s.data());
@@ -339,7 +339,7 @@ void Player::MakeMove(const v8::FunctionCallbackInfo<v8::Value>& args) {
   Isolate* isolate = args.GetIsolate();
   Local<Context> context = isolate->GetCurrentContext();
 
-  Player* player_wrap = MyObjectWrap::Unwrap<Player>(args.Holder());
+  Player* player_wrap = MyObjectWrap::Unwrap<Player>(args.This());
   Board* board_wrap = MyObjectWrap::Unwrap<Board>(
       args[0]->ToObject(context).ToLocalChecked());
   chess::Board* board = board_wrap->GetBoard();
@@ -468,7 +468,7 @@ to->Set(context, String::NewFromUtf8Literal(isolate, "row"),
 }
 
 void Player::CancelEvaluation(const v8::FunctionCallbackInfo<v8::Value>& args) {
-  Player* obj = MyObjectWrap::Unwrap<Player>(args.Holder());
+  Player* obj = MyObjectWrap::Unwrap<Player>(args.This());
   auto player = obj->GetPlayer();
   if (player != nullptr) {
     player->CancelEvaluation();
