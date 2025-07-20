@@ -1,0 +1,11 @@
+opencv-python
+pyautogui
+numpy
+Pillow
+pygetwindow
+cairosvg
+Flask 
+pygetwindow
+selenium 
+webdriver-manager
+pywin32

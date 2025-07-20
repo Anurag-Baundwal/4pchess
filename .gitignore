@@ -39,6 +39,9 @@ api_key*.txt
 nohup*
 todo.txt
 stuff.txt
+chess_cookies.pkl
+game_state.json
+game_state.json.tmp
 
 # --- Project-Specific Data and Directories ---
 # These are directories for local data, models, etc., not to be committed.
