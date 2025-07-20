@@ -11,6 +11,7 @@ ui/build
 ui/build/*
 ui/bin
 ui/bin/*
+ui/package-lock.json
 
 # Compiled Binaries / Executables
 *.exe
@@ -50,3 +51,4 @@ models
 nnue
 cli
 code*
+old_code/
