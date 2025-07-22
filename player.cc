@@ -1149,6 +1149,25 @@ int AlphaBetaPlayer::Evaluate(
           int col = loc.GetCol();
 
           if (piece_type == QUEEN) {
+            if ((color == RED && row == 13) || (color == YELLOW && row == 0)) {
+              eval -= 30;
+            }
+            else if ((color == BLUE && col == 0) || (color == GREEN && col == 13)) {
+              eval += 30;
+            }
+            // Queen infiltration bonus: 50cp for entering enemy territory.
+            if (color == RED || color == YELLOW) {
+              // A Red/Yellow queen in Blue/Green territory (cols 0-1 or 12-13).
+              if ((row >= 3 && row <= 10) && (col <= 1 || col >= 12)) {
+                eval += 25;
+              }
+            } else { // BLUE or GREEN
+              // A Blue/Green queen in Red/Yellow territory (rows 0-1 or 12-13).
+              if ((col >= 3 && col <= 10) && (row <= 1 || row >= 12)) {
+                eval -= 25;
+              }
+            }
+
             if (color == RED || color == YELLOW) {
               n_queen_ry++;
             } else {
