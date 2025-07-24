@@ -434,6 +434,71 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     // this has to be called before the move is made
     bool delivers_check = move.DeliversCheck(board);
 
+    int e = 0;  // extension
+    
+    // Singular extension search
+    // Note: This needs some more work before it can be enabled.
+    if (options_.enable_singular_extensions
+        && !is_root_node
+        && tt_move.has_value() && move == *tt_move
+        && !ss->excludedMove.Present()
+        && depth >= 6 // Only for reasonably deep searches
+        && tte != nullptr && tte->score != value_none_tt && std::abs(tte->score) < kMateValue
+        && tte->bound == LOWER_BOUND // The TT move was a fail-high
+        && tte->depth >= depth - 3
+        )
+    {
+      num_singular_extension_searches_.fetch_add(1, std::memory_order_relaxed);
+
+      // Calculate the term used for beta thresholds.
+      int depth_term = (58 + 76 * (ss->tt_pv && node_type == NonPV)) * depth / 57;
+
+      // Beta for a single (1-ply) extension.
+      int singular_beta_single = tte->score - depth_term * 2;
+      
+      // A more aggressive beta for a double (2-ply) extension.
+      int singular_beta_double = tte->score - depth_term * 4;
+
+      int singular_depth = (depth-1) / 2;
+
+      ss->excludedMove = move; // Exclude the current move for the sub-search
+
+      PVInfo singular_pvinfo;
+      // The verification search is performed on the CURRENT board state.
+      // We search against the more aggressive beta for the double extension.
+      auto singular_res = Search(ss, NonPV, thread_state, board, ply, singular_depth,
+                                singular_beta_double - 1, singular_beta_double,
+                                maximizing_player, expanded, deadline, singular_pvinfo, null_moves, is_cut_node);
+
+      ss->excludedMove = Move(); // Reset for the main search
+
+      if (singular_res.has_value()) {
+        int singular_score = std::get<0>(*singular_res);
+        
+        // If the search fails low against the aggressive beta, the move is very singular.
+        if (singular_score < singular_beta_double) {
+          // Grant a 2-ply extension.
+          num_singular_extensions_.fetch_add(1, std::memory_order_relaxed);
+          e = 2; 
+        }
+        // Otherwise, check if it fails low against the normal beta.
+        else if (singular_score < singular_beta_single) {
+          // Grant a 1-ply extension.
+          num_singular_extensions_.fetch_add(1, std::memory_order_relaxed);
+          e = 1;
+        }
+      }
+    }
+
+    // check extensions at early moves.
+    if (options_.enable_check_extensions
+        && delivers_check
+        && move_count < 6
+        && expanded < 3) {
+      num_check_extensions_++;
+      e = 1;
+    }
+    
     bool lmr =
       options_.enable_late_move_reduction
       && depth > 1
@@ -554,54 +619,6 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       child_pvinfo = pvinfo.GetChild();
     } else {
       child_pvinfo = std::make_shared<PVInfo>();
-    }
-
-    int e = 0;  // extension
-
-    // Singular extension search
-    if (options_.enable_singular_extensions
-        && !is_root_node
-        && tt_move.has_value() && move == *tt_move
-        && !ss->excludedMove.Present()
-        && depth >= 9 // Only for reasonably deep searches
-        && tte != nullptr && tte->score != value_none_tt && std::abs(tte->score) < kMateValue
-        && tte->bound == LOWER_BOUND // The TT move was a fail-high
-        && tte->depth >= depth - 3
-        )
-    {
-      num_singular_extension_searches_.fetch_add(1, std::memory_order_relaxed);
-      
-      // Search again, but excluding the strong TT move.
-      // The beta for this search is based on the TT score, with a margin.
-      int singular_beta = tte->score - (58 + 76 * (ss->tt_pv && node_type == NonPV)) * depth / 57;
-      int singular_depth = (depth - 1) / 2;
-
-      ss->excludedMove = move; // Exclude the current move for the sub-search
-
-      PVInfo singular_pvinfo;
-      auto singular_res = Search(ss, NonPV, thread_state, board, ply, singular_depth,
-                                 singular_beta - 1, singular_beta,
-                                 maximizing_player, expanded, deadline, singular_pvinfo, null_moves, is_cut_node);
-      
-      ss->excludedMove = Move(); // Reset for the main search
-
-      if (singular_res.has_value()) {
-        int singular_score = std::get<0>(*singular_res);
-        // If the search without the TT move fails low, the move is singular.
-        if (singular_score < singular_beta) {
-          num_singular_extensions_.fetch_add(1, std::memory_order_relaxed);
-          e = 1; // Grant a 1-ply extension
-        }
-      }
-    }
-
-    // check extensions at early moves.
-    if (options_.enable_check_extensions
-        && delivers_check
-        && move_count < 6
-        && expanded < 3) {
-      num_check_extensions_++;
-      e = 1;
     }
 
     if (lmr) {
@@ -1947,4 +1964,4 @@ std::shared_ptr<PVInfo> PVInfo::Copy() const {
   return copy;
 }
 
-}  // namespace chess
+} // namespace chesss
