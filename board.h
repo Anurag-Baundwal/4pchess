@@ -79,33 +79,6 @@ struct std::hash<chess::Player>
 
 namespace chess {
 
-//class Piece {
-// public:
-//  Piece() : piece_type_(NO_PIECE) { }
-//
-//  Piece(Player player, PieceType piece_type)
-//    : player_(std::move(player)),
-//      piece_type_(piece_type)
-//  { }
-//
-//  const Player& GetPlayer() const { return player_; }
-//  PieceType GetPieceType() const { return piece_type_; }
-//  Team GetTeam() const { return GetPlayer().GetTeam(); }
-//  PlayerColor GetColor() const { return GetPlayer().GetColor(); }
-//  bool operator==(const Piece& other) const {
-//    return player_ == other.player_ && piece_type_ == other.piece_type_;
-//  }
-//  bool operator!=(const Piece& other) const {
-//    return !(*this == other);
-//  }
-//  friend std::ostream& operator<<(
-//      std::ostream& os, const Piece& piece);
-//
-// private:
-//  Player player_;
-//  PieceType piece_type_;
-//};
-
 class Piece {
  public:
   Piece() : Piece(false, RED, NO_PIECE) { }
@@ -149,9 +122,6 @@ class Piece {
   // bit 3-5: piece type
   int8_t bits_;
 };
-
-//extern const Piece* kPieceSet[4][6];
-
 
 class BoardLocation {
  public:
@@ -239,17 +209,13 @@ class CastlingRights {
 
   CastlingRights(bool kingside, bool queenside)
     : bits_(0b10000000 | (kingside << 6) | (queenside << 5)) { }
-    //: kingside_(kingside), queenside_(queenside) { }
 
   bool Present() const { return bits_ & (1 << 7); }
   bool Kingside() const { return bits_ & (1 << 6); }
   bool Queenside() const { return bits_ & (1 << 5); }
-  //bool Kingside() const { return kingside_; }
-  //bool Queenside() const { return queenside_; }
 
   bool operator==(const CastlingRights& other) const {
     return bits_ == other.bits_;
-    //return kingside_ == other.kingside_ && queenside_ == other.queenside_;
   }
   bool operator!=(const CastlingRights& other) const {
     return !(*this == other);
@@ -262,9 +228,6 @@ class CastlingRights {
   // bit 1: kingside
   // bit 2: queenside
   int8_t bits_ = 0;
-
-  //bool kingside_ = true;
-  //bool queenside_ = true;
 };
 
 class Move {
@@ -481,10 +444,6 @@ class Board {
       Team team,
       const BoardLocation& location) const;
 
-//  std::vector<PlacedPiece> GetAttackers(
-//      Team team, const BoardLocation& location,
-//      bool return_early = false) const;
-
   size_t GetAttackers2(
       PlacedPiece* buffer, size_t limit,
       Team team, const BoardLocation& location) const;
@@ -513,8 +472,6 @@ class Board {
   int64_t HashKey() const { return hash_key_; }
 
   static std::shared_ptr<Board> CreateStandardSetup();
-//  bool operator==(const Board& other) const;
-//  bool operator!=(const Board& other) const;
   const CastlingRights& GetCastlingRights(const Player& player);
 
   void MakeMove(const Move& move);
@@ -675,6 +632,18 @@ int StaticExchangeEvaluationCapture(
 
 }  // namespace chess
 
+// NEW HASH FUNCTION FOR MOVE
+template <>
+struct std::hash<chess::Move>
+{
+  std::size_t operator()(const chess::Move& m) const
+  {
+    std::size_t h1 = std::hash<chess::BoardLocation>()(m.From());
+    std::size_t h2 = std::hash<chess::BoardLocation>()(m.To());
+    std::size_t h3 = std::hash<int>()(m.GetPromotionPieceType());
+    // Combine the hashes using XOR and bit shifts
+    return h1 ^ (h2 << 1) ^ (h3 << 2);
+  }
+};
 
 #endif  // _BOARD_H_
-

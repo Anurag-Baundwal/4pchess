@@ -106,11 +106,18 @@ enum NodeType {
 constexpr size_t kBufferPartitionSize = 300; // number of elements per buffer partition
 constexpr size_t kBufferNumPartitions = 200; // number of recursive calls
 
+struct AspirationState {
+  int average_root_eval_ = 0;
+  int asp_nobs_ = 0;
+  int asp_sum_sq_ = 0;
+  int asp_sum_ = 0;
+};
+
 // Manages state of worker threads during search
 class ThreadState {
  public:
   ThreadState(
-      PlayerOptions options, const Board& board, const PVInfo& pv_info);
+      PlayerOptions options, const Board& board, const PVInfo& pv_info, AspirationState& asp_state);
   ~ThreadState();
   Move* GetNextMoveBufferPartition();
   void ReleaseMoveBufferPartition();
@@ -123,6 +130,8 @@ class ThreadState {
   int64_t GetNodeCount() const { return node_count_; }
 
   int n_threats[4] = {0, 0, 0, 0};
+
+  AspirationState& asp_state_;
 
  private:
   PlayerOptions options_;
@@ -137,6 +146,7 @@ class ThreadState {
 
   int n_activated_[4] = {0, 0, 0, 0};
   int total_moves_[4] = {0, 0, 0, 0};
+
   int64_t node_count_ = 0;
 };
 
@@ -238,6 +248,8 @@ class AlphaBetaPlayer {
   bool HasShield(Board& board, PlayerColor color, const BoardLocation& king_loc);
   bool OnBackRank(const BoardLocation& king_loc);
 
+  std::vector<AspirationState> thread_aspiration_states_;
+
   int64_t num_nodes_ = 0; // debugging
   std::atomic<int64_t> num_cache_hits_ = 0;
   std::atomic<int64_t> num_null_moves_tried_ = 0;
@@ -264,10 +276,6 @@ class AlphaBetaPlayer {
 
   bool enable_debug_ = false;
 
-  int average_root_eval_ = 0;
-  int asp_nobs_ = 0;
-  int asp_sum_sq_ = 0;
-  int asp_sum_ = 0;
   int64_t last_board_key_ = 0;
 
   // For evaluation
