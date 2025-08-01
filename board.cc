@@ -10,6 +10,12 @@
 #include <utility>
 #include <vector>
 
+#ifdef _MSC_VER
+#include <intrin.h>
+#else
+#include <immintrin.h>
+#endif
+
 #include "board.h"
 
 namespace chess {
@@ -677,7 +683,60 @@ size_t Board::GetAttackers2(
     }
   }
 
-  // Knights
+#ifdef __AVX2__
+  // Knights (SIMD version)
+  {
+    alignas(32) static const int32_t knight_d_row[8] = {1, 1, -1, -1, 2, 2, -2, -2};
+    alignas(32) static const int32_t knight_d_col[8] = {2, -2, 2, -2, 1, -1, 1, -1};
+
+    __m256i v_loc_row = _mm256_set1_epi32(loc_row);
+    __m256i v_loc_col = _mm256_set1_epi32(loc_col);
+
+    __m256i v_d_row = _mm256_load_si256((__m256i const*)knight_d_row);
+    __m256i v_d_col = _mm256_load_si256((__m256i const*)knight_d_col);
+
+    __m256i v_target_rows = _mm256_add_epi32(v_loc_row, v_d_row);
+    __m256i v_target_cols = _mm256_add_epi32(v_loc_col, v_d_col);
+
+    // Legality check
+    __m256i v_3 = _mm256_set1_epi32(3);
+    __m256i v_10 = _mm256_set1_epi32(10);
+    
+    __m256i rows_ok = _mm256_and_si256(_mm256_cmpgt_epi32(v_target_rows, _mm256_set1_epi32(-1)), _mm256_cmpgt_epi32(_mm256_set1_epi32(14), v_target_rows));
+    __m256i cols_ok = _mm256_and_si256(_mm256_cmpgt_epi32(v_target_cols, _mm256_set1_epi32(-1)), _mm256_cmpgt_epi32(_mm256_set1_epi32(14), v_target_cols));
+    __m256i bounds_ok = _mm256_and_si256(rows_ok, cols_ok);
+
+    __m256i row_lt_3 = _mm256_cmpgt_epi32(v_3, v_target_rows);
+    __m256i row_gt_10 = _mm256_cmpgt_epi32(v_target_rows, v_10);
+    __m256i col_lt_3 = _mm256_cmpgt_epi32(v_3, v_target_cols);
+    __m256i col_gt_10 = _mm256_cmpgt_epi32(v_target_cols, v_10);
+    __m256i corner1 = _mm256_and_si256(row_lt_3, _mm256_or_si256(col_lt_3, col_gt_10));
+    __m256i corner2 = _mm256_and_si256(row_gt_10, _mm256_or_si256(col_lt_3, col_gt_10));
+    __m256i is_corner = _mm256_or_si256(corner1, corner2);
+    
+    __m256i legal_mask_vec = _mm256_andnot_si256(is_corner, bounds_ok);
+
+    int legal_mask = _mm256_movemask_epi8(legal_mask_vec);
+    if (legal_mask != 0) {
+      alignas(32) int32_t target_rows[8];
+      alignas(32) int32_t target_cols[8];
+      _mm256_store_si256((__m256i*)target_rows, v_target_rows);
+      _mm256_store_si256((__m256i*)target_cols, v_target_cols);
+
+      for (int i = 0; i < 8; ++i) {
+        if ((legal_mask >> (i * 4)) & 1) {
+          const auto piece = GetPiece(target_rows[i], target_cols[i]);
+          if (piece.Present()
+              && (piece.GetTeam() == team || no_team)
+              && piece.GetPieceType() == KNIGHT) {
+            ADD_ATTACKER(target_rows[i], target_cols[i], piece);
+          }
+        }
+      }
+    }
+  }
+#else
+  // Knights (Original scalar version)
   for (int row_less = 0; row_less < 2; ++row_less) {
     for (int pos_row = 0; pos_row < 2; ++pos_row) {
       int row = loc_row + (row_less ? (pos_row ? 1 : -1) : (pos_row ? 2: -2));
@@ -694,6 +753,7 @@ size_t Board::GetAttackers2(
       }
     }
   }
+#endif
 
   // Pawns
   for (int pos_row = 0; pos_row < 2; ++pos_row) {
@@ -743,7 +803,60 @@ size_t Board::GetAttackers2(
     }
   }
 
-  // Kings
+#ifdef __AVX2__
+  // Kings (SIMD version)
+  {
+      alignas(32) static const int32_t king_d_row[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+      alignas(32) static const int32_t king_d_col[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+
+      __m256i v_loc_row = _mm256_set1_epi32(loc_row);
+      __m256i v_loc_col = _mm256_set1_epi32(loc_col);
+
+      __m256i v_d_row = _mm256_load_si256((__m256i const*)king_d_row);
+      __m256i v_d_col = _mm256_load_si256((__m256i const*)king_d_col);
+
+      __m256i v_target_rows = _mm256_add_epi32(v_loc_row, v_d_row);
+      __m256i v_target_cols = _mm256_add_epi32(v_loc_col, v_d_col);
+
+      // Legality check
+      __m256i v_3 = _mm256_set1_epi32(3);
+      __m256i v_10 = _mm256_set1_epi32(10);
+      
+      __m256i rows_ok = _mm256_and_si256(_mm256_cmpgt_epi32(v_target_rows, _mm256_set1_epi32(-1)), _mm256_cmpgt_epi32(_mm256_set1_epi32(14), v_target_rows));
+      __m256i cols_ok = _mm256_and_si256(_mm256_cmpgt_epi32(v_target_cols, _mm256_set1_epi32(-1)), _mm256_cmpgt_epi32(_mm256_set1_epi32(14), v_target_cols));
+      __m256i bounds_ok = _mm256_and_si256(rows_ok, cols_ok);
+
+      __m256i row_lt_3 = _mm256_cmpgt_epi32(v_3, v_target_rows);
+      __m256i row_gt_10 = _mm256_cmpgt_epi32(v_target_rows, v_10);
+      __m256i col_lt_3 = _mm256_cmpgt_epi32(v_3, v_target_cols);
+      __m256i col_gt_10 = _mm256_cmpgt_epi32(v_target_cols, v_10);
+      __m256i corner1 = _mm256_and_si256(row_lt_3, _mm256_or_si256(col_lt_3, col_gt_10));
+      __m256i corner2 = _mm256_and_si256(row_gt_10, _mm256_or_si256(col_lt_3, col_gt_10));
+      __m256i is_corner = _mm256_or_si256(corner1, corner2);
+      
+      __m256i legal_mask_vec = _mm256_andnot_si256(is_corner, bounds_ok);
+
+      int legal_mask = _mm256_movemask_epi8(legal_mask_vec);
+      if (legal_mask != 0) {
+          alignas(32) int32_t target_rows[8];
+          alignas(32) int32_t target_cols[8];
+          _mm256_store_si256((__m256i*)target_rows, v_target_rows);
+          _mm256_store_si256((__m256i*)target_cols, v_target_cols);
+
+          for (int i = 0; i < 8; ++i) {
+              if ((legal_mask >> (i * 4)) & 1) {
+                  const auto piece = GetPiece(target_rows[i], target_cols[i]);
+                  if (piece.Present()
+                      && (piece.GetTeam() == team || no_team)
+                      && piece.GetPieceType() == KING) {
+                      ADD_ATTACKER(target_rows[i], target_cols[i], piece);
+                  }
+              }
+          }
+      }
+  }
+#else
+  // Kings (Original scalar version)
   for (int delta_row = -1; delta_row < 2; ++delta_row) {
     int row = loc_row + delta_row;
     for (int delta_col = -1; delta_col < 2; ++delta_col) {
@@ -761,6 +874,7 @@ size_t Board::GetAttackers2(
       }
     }
   }
+#endif
 
 #undef ADD_ATTACKER
 
@@ -1714,4 +1828,3 @@ int StaticExchangeEvaluationCapture(
 
 
 }  // namespace chess
-
