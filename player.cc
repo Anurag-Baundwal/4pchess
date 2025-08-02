@@ -1221,7 +1221,7 @@ int AlphaBetaPlayer::Evaluate(
             int rook_bonus = 0;
             constexpr int kRookBonus1 = 50;
             constexpr int kRookBonus2 = 25;
-            if (col >= 4 && col <= 10 && row >= 4 && row <= 10) {
+            if (col >= 4 && col <= 9 && row >= 4 && row <= 9) {
               rook_bonus = kRookBonus1;
             } else {
               int delta_row = color == RED ? -1 : color == YELLOW ? 1 : 0;
