@@ -25,6 +25,9 @@ AlphaBetaPlayer::AlphaBetaPlayer(std::optional<PlayerOptions> options) {
     options_ = *options;
   }
 
+  // Allocate per-thread aspiration state containers
+  thread_aspiration_states_.resize(options_.num_threads);
+
   // This must be called once globally to initialize bitboard attack tables.
   BitboardImpl::InitBitboards();
 
@@ -166,8 +169,8 @@ AlphaBetaPlayer::~AlphaBetaPlayer() {
 }
 
 ThreadState::ThreadState(
-    PlayerOptions options, const Board& board, const PVInfo& pv_info)
-  : options_(options), root_board_(board), pv_info_(pv_info) {
+    PlayerOptions options, const Board& board, const PVInfo& pv_info, AspirationState& asp_state)
+  : options_(options), root_board_(board), pv_info_(pv_info), asp_state_(asp_state) {
   move_buffer_ = new Move[kBufferPartitionSize * kBufferNumPartitions];
 }
 
@@ -1224,7 +1227,8 @@ void AlphaBetaPlayer::ResetMobilityScores(ThreadState& thread_state, Board& boar
 
 int AlphaBetaPlayer::StaticEvaluation(Board& board) {
   auto pv_copy = pv_info_.Copy();
-  ThreadState thread_state(options_, board, *pv_copy);
+  AspirationState dummy_asp;
+  ThreadState thread_state(options_, board, *pv_copy, dummy_asp);
   ResetMobilityScores(thread_state, board);
   return Evaluate(thread_state, board, true, -kMateValue, kMateValue);
 }
@@ -1235,13 +1239,13 @@ AlphaBetaPlayer::MakeMove(
     std::optional<std::chrono::milliseconds> time_limit,
     int max_depth) {
   root_team_ = board.GetTurn().GetTeam();
-  if (board.HashKey() != last_board_key_) {
-    average_root_eval_ = 0;
-    asp_nobs_ = 0;
-    asp_sum_ = 0;
-    asp_sum_sq_ = 0;
+  int64_t key = board.HashKey();
+  if (key != last_board_key_) {
+    for (auto& s : thread_aspiration_states_) {
+      s = AspirationState(); // reset each thread’s aspiration window stats
+    }
   }
-  last_board_key_ = board.HashKey();
+  last_board_key_ = key;
 
   SetCanceled(false);
   std::optional<std::chrono::time_point<std::chrono::system_clock>> deadline;
@@ -1259,7 +1263,7 @@ AlphaBetaPlayer::MakeMove(
   thread_states.reserve(num_threads);
   for (int i = 0; i < num_threads; i++) {
     auto pv_copy = pv_info_.Copy();
-    thread_states.emplace_back(options_, board, *pv_copy);
+    thread_states.emplace_back(options_, board, *pv_copy, thread_aspiration_states_[i]);
     ResetMobilityScores(thread_states.back(), board);
   }
 
@@ -1272,25 +1276,119 @@ AlphaBetaPlayer::MakeMove(
     }));
   }
 
-  auto res = MakeMoveSingleThread(0, thread_states[0], deadline, max_depth);
+  // --- Collect each thread's result (score, move, depth) ---
+  std::vector<std::optional<std::tuple<int, std::optional<Move>, int>>> results(num_threads);
+  std::mutex results_mutex;
 
-  SetCanceled(true);
-  for (auto& thread : threads) {
-    thread->join();
+  // Launch helper threads
+  for (size_t i = 1; i < num_threads; i++) {
+    threads.push_back(std::make_unique<std::thread> (
+      [this, i, &thread_states, deadline, max_depth, &results, &results_mutex] {
+        auto res_i = MakeMoveSingleThread(i, thread_states[i], deadline, max_depth);
+        std::lock_guard<std::mutex> lock(results_mutex);
+        results[i] = res_i;
+      }
+    ));
   }
 
+  // Run main thread
+  auto main_res = MakeMoveSingleThread(0, thread_states[0], deadline, max_depth);
+  {
+    std::lock_guard<std::mutex> lock(results_mutex);
+    results[0] = main_res;
+  }
+
+  SetCanceled(true);
+  for (auto& th : threads) th->join();
+
+  // Accumulate node counts
   int64_t total_nodes_this_search = 0;
   for (const auto& state : thread_states) {
     total_nodes_this_search += state.GetNodeCount();
   }
   num_nodes_ += total_nodes_this_search;
 
-  if (res.has_value()) {
-      pv_info_ = thread_states[0].GetPVInfo();
+  // --- Voting: 1) find worst score among threads ---
+  int worst_score = kMateValue;
+  for (const auto& res_opt : results) {
+    if (res_opt) {
+      worst_score = std::min(worst_score, std::get<0>(*res_opt));
+    }
+  }
+
+  // --- Voting: 2) sum votes per move: (score - worst_score) * depth ---
+  std::unordered_map<Move, int64_t> vote_map;
+  for (const auto& res_opt : results) {
+    if (!res_opt) continue;
+    const auto& [score, move_opt, depth] = *res_opt;
+    if (!move_opt) continue;
+    int64_t v = static_cast<int64_t>(score - worst_score) * static_cast<int64_t>(depth);
+    vote_map[*move_opt] += v;
+  }
+
+  // --- Voting: 3) pick best thread with hierarchy ---
+  // Best = mate > non-mate; among mates larger score is better (faster)
+  // else higher total vote; if tie, higher (score - worst)*depth from that thread
+  int best_thread_idx = -1;
+  int64_t best_vote_score = std::numeric_limits<int64_t>::min();
+  int best_score = -2 * kMateValue; // strictly worse than any legal score
+
+  for (size_t i = 0; i < results.size(); ++i) {
+    if (!results[i]) continue;
+    auto [cur_score, cur_move_opt, cur_depth] = *results[i];
+    if (!cur_move_opt) continue;
+
+    int64_t cur_vote = vote_map[*cur_move_opt];
+    bool cur_is_mate = std::abs(cur_score) == kMateValue;
+
+    if (best_thread_idx == -1) {
+      best_thread_idx = static_cast<int>(i);
+      best_score = cur_score;
+      best_vote_score = cur_vote;
+      continue;
+    }
+
+    bool best_is_mate = std::abs(best_score) == kMateValue;
+
+    if (best_is_mate) {
+      if (cur_is_mate && cur_score > best_score) {
+        best_thread_idx = static_cast<int>(i);
+        best_score = cur_score;
+        best_vote_score = cur_vote;
+      }
+      // else keep current best mate
+    } else if (cur_is_mate) {
+      best_thread_idx = static_cast<int>(i);
+      best_score = cur_score;
+      best_vote_score = cur_vote;
+    } else {
+      if (cur_vote > best_vote_score) {
+        best_thread_idx = static_cast<int>(i);
+        best_score = cur_score;
+        best_vote_score = cur_vote;
+      } else if (cur_vote == best_vote_score) {
+        // tie-breaker: larger individual weighted value
+        auto [best_s, best_move_opt, best_d] = *results[best_thread_idx];
+        int64_t cur_thread_value  = static_cast<int64_t>(cur_score  - worst_score) * static_cast<int64_t>(cur_depth);
+        int64_t best_thread_value = static_cast<int64_t>(best_s     - worst_score) * static_cast<int64_t>(best_d);
+        if (cur_thread_value > best_thread_value) {
+          best_thread_idx = static_cast<int>(i);
+          best_score = cur_score;
+          best_vote_score = cur_vote;
+        }
+      }
+    }
+  }
+
+  // Build final result from winner
+  std::optional<std::tuple<int, std::optional<Move>, int>> final_result;
+  if (best_thread_idx != -1) {
+    final_result = results[best_thread_idx];
+    pv_info_ = thread_states[best_thread_idx].GetPVInfo();
   }
 
   SetCanceled(false);
-  return res;
+  return final_result;
 }
 
 std::optional<std::tuple<int, std::optional<Move>, int>>
@@ -1317,39 +1415,57 @@ AlphaBetaPlayer::MakeMoveSingleThread(
   if (options_.enable_aspiration_window) {
     while (next_depth <= max_depth) {
       std::optional<std::tuple<int, std::optional<Move>>> move_and_value;
-      if (thread_id == 0) {
-          int prev = average_root_eval_;
-          int delta = 50;
-          if (asp_nobs_ > 0) delta = 50 + std::sqrt((asp_sum_sq_ - asp_sum_*asp_sum_/(double)asp_nobs_)/asp_nobs_);
-          alpha = std::max(prev - delta, -kMateValue);
-          beta = std::min(prev + delta, kMateValue);
-          int fail_cnt = 0;
 
-          while (true) {
-            move_and_value = Search(ss, Root, thread_state, board, 1, next_depth, alpha, beta, maximizing_player, 0, deadline, pv_info);
-            if (!move_and_value.has_value()) break;
-            int evaluation = std::get<0>(*move_and_value);
-            if (asp_nobs_ == 0) average_root_eval_ = evaluation;
-            else average_root_eval_ = (2 * evaluation + average_root_eval_) / 3;
-            asp_nobs_++;
-            asp_sum_ += evaluation;
-            asp_sum_sq_ += evaluation * evaluation;
-
-            if (std::abs(evaluation) == kMateValue) break;
-            if (evaluation <= alpha) {
-              beta = (alpha + beta) / 2;
-              alpha = std::max(evaluation - delta, -kMateValue);
-              ++fail_cnt;
-            } else if (evaluation >= beta) {
-              beta = std::min(evaluation + delta, kMateValue);
-              ++fail_cnt;
-            } else break;
-            if (fail_cnt >= 5) { alpha = -kMateValue; beta = kMateValue; }
-            delta += delta / 3;
-          }
-      } else {
-          move_and_value = Search(ss, Root, thread_state, board, 1, next_depth, -kMateValue, kMateValue, maximizing_player, 0, deadline, pv_info);
+      // All threads use their own aspiration window
+      int prev = thread_state.asp_state_.average_root_eval_;
+      int delta = 50;
+      if (thread_state.asp_state_.asp_nobs_ > 0) {
+        double n = static_cast<double>(thread_state.asp_state_.asp_nobs_);
+        double mean_sq = static_cast<double>(thread_state.asp_state_.asp_sum_sq_) / n;
+        double mean = static_cast<double>(thread_state.asp_state_.asp_sum_) / n;
+        double variance = std::max(0.0, mean_sq - mean * mean);
+        delta = 50 + static_cast<int>(std::sqrt(variance));
       }
+      alpha = std::max(prev - delta, -kMateValue);
+      beta  = std::min(prev + delta,  kMateValue);
+      int fail_cnt = 0;
+
+      while (true) {
+        move_and_value = Search(ss, Root, thread_state, board, 1, next_depth,
+                                alpha, beta, maximizing_player, 0, deadline, pv_info);
+        if (!move_and_value.has_value()) break;
+
+        int evaluation = std::get<0>(*move_and_value);
+        if (thread_state.asp_state_.asp_nobs_ == 0) {
+          thread_state.asp_state_.average_root_eval_ = evaluation;
+        } else {
+          thread_state.asp_state_.average_root_eval_ =
+              (2 * evaluation + thread_state.asp_state_.average_root_eval_) / 3;
+        }
+        thread_state.asp_state_.asp_nobs_++;
+        thread_state.asp_state_.asp_sum_     += evaluation;
+        thread_state.asp_state_.asp_sum_sq_  += evaluation * evaluation;
+
+        if (std::abs(evaluation) == kMateValue) break;
+
+        if (evaluation <= alpha) {
+          beta = (alpha + beta) / 2;
+          alpha = std::max(evaluation - delta, -kMateValue);
+          ++fail_cnt;
+        } else if (evaluation >= beta) {
+          beta = std::min(evaluation + delta, kMateValue);
+          ++fail_cnt;
+        } else {
+          break;
+        }
+
+        if (fail_cnt >= 5) {
+          alpha = -kMateValue;
+          beta  =  kMateValue;
+        }
+        delta += delta / 3;
+      }
+
       if (!move_and_value.has_value()) break;
       res = move_and_value;
       searched_depth = next_depth;
@@ -1358,7 +1474,8 @@ AlphaBetaPlayer::MakeMoveSingleThread(
     }
   } else {
     while (next_depth <= max_depth) {
-      auto move_and_value = Search(ss, Root, thread_state, board, 1, next_depth, alpha, beta, maximizing_player, 0, deadline, pv_info);
+      auto move_and_value =
+          Search(ss, Root, thread_state, board, 1, next_depth, alpha, beta, maximizing_player, 0, deadline, pv_info);
       if (!move_and_value.has_value()) break;
       res = move_and_value;
       searched_depth = next_depth;

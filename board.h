@@ -605,5 +605,18 @@ inline Player GetPartner(const Player& player) {
 
 }  // namespace chess
 
+// NEW HASH FUNCTION FOR MOVE
+template <>
+struct std::hash<chess::Move>
+{
+  std::size_t operator()(const chess::Move& m) const
+  {
+    std::size_t h1 = std::hash<chess::BoardLocation>()(m.From());
+    std::size_t h2 = std::hash<chess::BoardLocation>()(m.To());
+    std::size_t h3 = std::hash<int>()(static_cast<int>(m.GetPromotionPieceType()));
+    // Combine the hashes using XOR and bit shifts
+    return h1 ^ (h2 << 1) ^ (h3 << 2);
+  }
+};
 
 #endif  // _BOARD_H_
