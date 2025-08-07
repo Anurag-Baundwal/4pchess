@@ -1239,13 +1239,14 @@ AlphaBetaPlayer::MakeMove(
     std::optional<std::chrono::milliseconds> time_limit,
     int max_depth) {
   root_team_ = board.GetTurn().GetTeam();
-  int64_t key = board.HashKey();
-  if (key != last_board_key_) {
-    for (auto& s : thread_aspiration_states_) {
-      s = AspirationState(); // reset each thread’s aspiration window stats
+  int64_t hash_key = board.HashKey();
+  if (hash_key != last_board_key_) {
+    // If the board has changed, reset all aspiration window states.
+    for (auto& state : thread_aspiration_states_) {
+        state = AspirationState(); // Reset to default values
     }
   }
-  last_board_key_ = key;
+  last_board_key_ = hash_key;
 
   SetCanceled(false);
   std::optional<std::chrono::time_point<std::chrono::system_clock>> deadline;
@@ -1267,48 +1268,42 @@ AlphaBetaPlayer::MakeMove(
     ResetMobilityScores(thread_states.back(), board);
   }
 
-  std::vector<std::unique_ptr<std::thread>> threads;
-  for (size_t i = 1; i < num_threads; i++) {
-    threads.push_back(std::make_unique<std::thread>([
-      this, i, &thread_states, deadline, max_depth] {
-      MakeMoveSingleThread(i, thread_states[i], deadline,
-          max_depth);
-    }));
-  }
-
-  // --- Collect each thread's result (score, move, depth) ---
+  // --- MODIFICATION START: Collect results from all threads ---
   std::vector<std::optional<std::tuple<int, std::optional<Move>, int>>> results(num_threads);
   std::mutex results_mutex;
 
-  // Launch helper threads
+  std::vector<std::unique_ptr<std::thread>> threads;
   for (size_t i = 1; i < num_threads; i++) {
-    threads.push_back(std::make_unique<std::thread> (
-      [this, i, &thread_states, deadline, max_depth, &results, &results_mutex] {
-        auto res_i = MakeMoveSingleThread(i, thread_states[i], deadline, max_depth);
-        std::lock_guard<std::mutex> lock(results_mutex);
-        results[i] = res_i;
-      }
-    ));
+    threads.push_back(std::make_unique<std::thread>([
+      this, i, &thread_states, deadline, max_depth, &results, &results_mutex] {
+      auto res = MakeMoveSingleThread(i, thread_states[i], deadline,
+          max_depth);
+      std::lock_guard<std::mutex> lock(results_mutex);
+      results[i] = res;
+    }));
   }
 
-  // Run main thread
   auto main_res = MakeMoveSingleThread(0, thread_states[0], deadline, max_depth);
   {
-    std::lock_guard<std::mutex> lock(results_mutex);
-    results[0] = main_res;
+      std::lock_guard<std::mutex> lock(results_mutex);
+      results[0] = main_res;
   }
+  // --- MODIFICATION END ---
 
   SetCanceled(true);
-  for (auto& th : threads) th->join();
+  for (auto& thread : threads) {
+    thread->join();
+  }
 
-  // Accumulate node counts
   int64_t total_nodes_this_search = 0;
   for (const auto& state : thread_states) {
     total_nodes_this_search += state.GetNodeCount();
   }
   num_nodes_ += total_nodes_this_search;
 
-  // --- Voting: 1) find worst score among threads ---
+  // --- NEW BEST THREAD SELECTION LOGIC (INSPIRED BY BERSERK) ---
+
+  // Step 1: Find the worst score among all threads for normalization
   int worst_score = kMateValue;
   for (const auto& res_opt : results) {
     if (res_opt) {
@@ -1316,76 +1311,93 @@ AlphaBetaPlayer::MakeMove(
     }
   }
 
-  // --- Voting: 2) sum votes per move: (score - worst_score) * depth ---
+  // Step 2: Tally votes for each move.
+  // The vote value is (score - worst_score) * depth.
   std::unordered_map<Move, int64_t> vote_map;
   for (const auto& res_opt : results) {
-    if (!res_opt) continue;
-    const auto& [score, move_opt, depth] = *res_opt;
-    if (!move_opt) continue;
-    int64_t v = static_cast<int64_t>(score - worst_score) * static_cast<int64_t>(depth);
-    vote_map[*move_opt] += v;
+    if (res_opt) {
+      auto [score, move_or, depth] = *res_opt;
+      if (move_or) {
+          int64_t thread_value = static_cast<int64_t>(score - worst_score) * depth;
+          vote_map[*move_or] += thread_value;
+      }
+    }
   }
-
-  // --- Voting: 3) pick best thread with hierarchy ---
-  // Best = mate > non-mate; among mates larger score is better (faster)
-  // else higher total vote; if tie, higher (score - worst)*depth from that thread
+  
+  // Step 3: Select the best thread based on a hierarchical decision model.
   int best_thread_idx = -1;
-  int64_t best_vote_score = std::numeric_limits<int64_t>::min();
-  int best_score = -2 * kMateValue; // strictly worse than any legal score
+  int64_t best_vote_score = -1;
+  int best_score = -kMateValue * 2; // Worse than any possible score
 
   for (size_t i = 0; i < results.size(); ++i) {
-    if (!results[i]) continue;
-    auto [cur_score, cur_move_opt, cur_depth] = *results[i];
-    if (!cur_move_opt) continue;
-
-    int64_t cur_vote = vote_map[*cur_move_opt];
-    bool cur_is_mate = std::abs(cur_score) == kMateValue;
-
-    if (best_thread_idx == -1) {
-      best_thread_idx = static_cast<int>(i);
-      best_score = cur_score;
-      best_vote_score = cur_vote;
+    if (!results[i].has_value()) {
       continue;
     }
 
-    bool best_is_mate = std::abs(best_score) == kMateValue;
+    auto [current_score, current_move_or, current_depth] = *results[i];
+    if (!current_move_or) {
+      continue;
+    }
 
-    if (best_is_mate) {
-      if (cur_is_mate && cur_score > best_score) {
-        best_thread_idx = static_cast<int>(i);
-        best_score = cur_score;
-        best_vote_score = cur_vote;
+    int64_t current_vote_score = vote_map[*current_move_or];
+
+    if (best_thread_idx == -1) {
+      best_thread_idx = i;
+      best_score = current_score;
+      best_vote_score = current_vote_score;
+      continue;
+    }
+
+    bool is_current_mate = std::abs(current_score) == kMateValue;
+    bool is_best_mate = std::abs(best_score) == kMateValue;
+
+    // Hierarchy:
+    // 1. Mates are always preferred over non-mates.
+    // 2. Faster mates (higher score) are better.
+    // 3. For non-mates, the move with the highest total vote is best.
+    // 4. If votes are tied, the thread with the higher individual weighted score is better.
+
+    if (is_best_mate) {
+      if (is_current_mate && current_score > best_score) {
+        // A faster mate was found.
+        best_thread_idx = i;
+        best_score = current_score;
+        best_vote_score = current_vote_score;
       }
-      // else keep current best mate
-    } else if (cur_is_mate) {
-      best_thread_idx = static_cast<int>(i);
-      best_score = cur_score;
-      best_vote_score = cur_vote;
+      // Otherwise, the current best (a mate) is better than the new one.
+    } else if (is_current_mate) {
+      // The new result is a mate, the old one wasn't. This is always better.
+      best_thread_idx = i;
+      best_score = current_score;
+      best_vote_score = current_vote_score;
     } else {
-      if (cur_vote > best_vote_score) {
-        best_thread_idx = static_cast<int>(i);
-        best_score = cur_score;
-        best_vote_score = cur_vote;
-      } else if (cur_vote == best_vote_score) {
-        // tie-breaker: larger individual weighted value
-        auto [best_s, best_move_opt, best_d] = *results[best_thread_idx];
-        int64_t cur_thread_value  = static_cast<int64_t>(cur_score  - worst_score) * static_cast<int64_t>(cur_depth);
-        int64_t best_thread_value = static_cast<int64_t>(best_s     - worst_score) * static_cast<int64_t>(best_d);
-        if (cur_thread_value > best_thread_value) {
-          best_thread_idx = static_cast<int>(i);
-          best_score = cur_score;
-          best_vote_score = cur_vote;
+      // Neither result is a mate. Compare votes.
+      if (current_vote_score > best_vote_score) {
+        best_thread_idx = i;
+        best_score = current_score;
+        best_vote_score = current_vote_score;
+      } else if (current_vote_score == best_vote_score) {
+        // Tie-break with individual thread's weighted score.
+        auto [best_s, _, best_d] = *results[best_thread_idx];
+        int64_t current_thread_value = static_cast<int64_t>(current_score - worst_score) * current_depth;
+        int64_t best_thread_value = static_cast<int64_t>(best_s - worst_score) * best_d;
+
+        if (current_thread_value > best_thread_value) {
+          best_thread_idx = i;
+          best_score = current_score;
+          best_vote_score = current_vote_score;
         }
       }
     }
   }
 
-  // Build final result from winner
   std::optional<std::tuple<int, std::optional<Move>, int>> final_result;
   if (best_thread_idx != -1) {
     final_result = results[best_thread_idx];
     pv_info_ = thread_states[best_thread_idx].GetPVInfo();
   }
+  
+  // --- END OF NEW LOGIC ---
 
   SetCanceled(false);
   return final_result;
@@ -1444,7 +1456,7 @@ AlphaBetaPlayer::MakeMoveSingleThread(
         }
         thread_state.asp_state_.asp_nobs_++;
         thread_state.asp_state_.asp_sum_     += evaluation;
-        thread_state.asp_state_.asp_sum_sq_  += evaluation * evaluation;
+        thread_state.asp_state_.asp_sum_sq_  += static_cast<int64_t>(evaluation) * evaluation;
 
         if (std::abs(evaluation) == kMateValue) break;
 
