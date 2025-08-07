@@ -1033,6 +1033,33 @@ int AlphaBetaPlayer::Evaluate(
                 
                 if (piece_type == QUEEN) {
                     if (team == RED_YELLOW) n_queen_ry++; else n_queen_bg++;
+                    
+                    BoardLocation qloc = BitboardImpl::IndexToLocation(sq);
+                    if (qloc.Present()) {
+                        int row = qloc.GetRow();
+                        int col = qloc.GetCol();
+
+                        // Penalty for queen on back rank
+                        if ((color == RED    && row == 13) ||
+                            (color == YELLOW && row == 0)) {
+                            eval -= 30;
+                        } else if ((color == BLUE  && col == 0) ||
+                                  (color == GREEN && col == 13)) {
+                            eval += 30;
+                        }
+
+                        // Queen infiltration bonus: +25cp when entering opponent's edge corridor
+                        bool ry_queen = (color == RED || color == YELLOW);
+                        if (ry_queen) {
+                            if (row >= 3 && row <= 10 && (col <= 1 || col >= 12)) {
+                                eval += 25;
+                            }
+                        } else { // BLUE or GREEN
+                            if (col >= 3 && col <= 10 && (row <= 1 || row >= 12)) {
+                                eval -= 25;
+                            }
+                        }
+                    }
                 }
 
                 if (options_.enable_piece_square_table) {
