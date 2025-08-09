@@ -1588,7 +1588,7 @@ void AlphaBetaPlayer::UpdateMobilityEvaluation(
     const Bitboard all_pieces = board.team_bitboards_[RED_YELLOW] | board.team_bitboards_[BLUE_GREEN];
     const Bitboard friendly_pieces = board.team_bitboards_[player.GetTeam()];
 
-    Bitboard mobility_exclusion_mask = BitboardImpl::kBackRankMasks[color] | BitboardImpl::kSecondRankMasks[color];
+    Bitboard mobility_exclusion_mask = BitboardImpl::kBackRankMasks[color];
 
     const PieceType piece_types_to_check[] = {KNIGHT, BISHOP, ROOK, QUEEN};
     for (PieceType piece_type : piece_types_to_check) {
