@@ -1128,6 +1128,62 @@ int AlphaBetaPlayer::Evaluate(
         eval += 2 * (total_moves[RED] + total_moves[YELLOW] - total_moves[BLUE] - total_moves[GREEN]);
     }
     
+    constexpr int kAsymmetricQueenBonus = 0;
+    constexpr int kStartEvaluation =
+      16 * kPieceEvaluations[PAWN]
+      + 4 * kPieceEvaluations[KNIGHT]
+      + 4 * kPieceEvaluations[BISHOP]
+      + 4 * kPieceEvaluations[ROOK]
+      + 2 * kPieceEvaluations[QUEEN]
+      + 2 * kPieceEvaluations[KING]
+      ;
+    constexpr float kAsymmetricPieceEvalFactor = 0.05f;
+    constexpr float kAsymmetricActivationEvalFactor = 0.00;
+    constexpr int kAsymmetricQueenBonus2 = 0.5 * kAsymmetricPieceEvalFactor * kPieceEvaluations[QUEEN];
+
+    auto asym_eval = [&](
+        int n_moves,
+        int n_queen,
+        int activation_eval,
+        int player1_eval,
+        int player2_eval) {
+      int asym_eval = 0;
+      asym_eval += n_queen * kAsymmetricQueenBonus;
+      if (n_queen >= 2) {
+        asym_eval += kAsymmetricQueenBonus2;
+      }
+      asym_eval += kAsymmetricActivationEvalFactor * activation_eval;
+      asym_eval += kAsymmetricPieceEvalFactor * (player1_eval + player2_eval);
+      asym_eval += n_moves/2;
+      // subtract constant to make the score even at the start position
+      asym_eval -= kAsymmetricQueenBonus * 2 + kAsymmetricQueenBonus2;
+      asym_eval -= kAsymmetricPieceEvalFactor * kStartEvaluation;
+      return asym_eval;
+    };
+
+    if ((options_.engine_team == RED_YELLOW)
+        || (options_.engine_team == CURRENT_TEAM
+            && root_team_ == RED_YELLOW)) {
+      eval += asym_eval(total_moves[RED] + total_moves[YELLOW],
+          n_queen_ry, activation_ry,
+          board.PieceEvaluation(RED), board.PieceEvaluation(YELLOW));
+    } else if ((options_.engine_team == BLUE_GREEN)
+               || (options_.engine_team == CURRENT_TEAM
+                   && root_team_ == BLUE_GREEN)) {
+      eval -= asym_eval(total_moves[BLUE] + total_moves[GREEN],
+          n_queen_bg, activation_bg,
+          board.PieceEvaluation(BLUE), board.PieceEvaluation(GREEN));
+    }
+
+    // double queen bonus
+    constexpr int kMultiQueenBonus = 200;
+    if (n_queen_ry >= 2) {
+      eval += kMultiQueenBonus;
+    }
+    if (n_queen_bg >= 2) {
+      eval -= kMultiQueenBonus;
+    }
+
     if (options_.enable_piece_imbalance) {
       int n_major_red = n_major_ry[RED];
       int n_major_yellow = n_major_ry[YELLOW];
