@@ -52,10 +52,10 @@ AlphaBetaPlayer::AlphaBetaPlayer(std::optional<PlayerOptions> options) {
 
   heuristic_mutexes_ = std::make_unique<std::mutex[]>(kHeuristicMutexes);
   counter_moves = new Move[256][256];
-  continuation_history = new ContinuationHistory*[2];
-  for (int i = 0; i < 2; i++) {
-    continuation_history[i] = new ContinuationHistory[2];
-  }
+  // --- CHANGE START ---
+  // Allocate a single, large ContinuationHistory object instead of an array of arrays.
+  continuation_history = new ContinuationHistory();
+  // --- CHANGE END ---
   ResetHistoryHeuristics();
 
   king_attack_weight_[0] = 0;
@@ -162,10 +162,10 @@ AlphaBetaPlayer::AlphaBetaPlayer(std::optional<PlayerOptions> options) {
 
 AlphaBetaPlayer::~AlphaBetaPlayer() {
     delete[] counter_moves;
-    for (int i = 0; i < 2; i++) {
-        delete[] continuation_history[i];
-    }
-    delete[] continuation_history;
+    // --- CHANGE START ---
+    // Delete the single ContinuationHistory object.
+    delete continuation_history;
+    // --- CHANGE END ---
 }
 
 ThreadState::ThreadState(
@@ -333,7 +333,10 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       && !partner_checked
       ) {
     num_null_moves_tried_++;
-    ss->continuation_history = &continuation_history[0][0][NO_PIECE][0];
+    // --- CHANGE START ---
+    // Update indexing to work with the single continuation_history object.
+    ss->continuation_history = &(*continuation_history)[0][0][NO_PIECE][0];
+    // --- CHANGE END ---
     ss->current_move = Move();
     board.MakeNullMove();
 
@@ -816,7 +819,10 @@ AlphaBetaPlayer::QSearch(
     int to_idx = BitboardImpl::LocationToIndex(move.To());
 
     ss->current_move = move;
-    ss->continuation_history = &continuation_history[ss->in_check][move.IsCapture()][piece_type][to_idx];
+    // --- CHANGE START ---
+    // Update indexing to work with the single continuation_history object.
+    ss->continuation_history = &(*continuation_history)[ss->in_check][move.IsCapture()][piece_type][to_idx];
+    // --- CHANGE END ---
     
     bool delivers_check = move.DeliversCheck(board);
     board.MakeMove(move);
@@ -1225,9 +1231,21 @@ void AlphaBetaPlayer::ResetHistoryHeuristics() {
   std::memset(history_heuristic, 0, sizeof(history_heuristic));
   std::memset(capture_heuristic, 0, sizeof(capture_heuristic));
   std::memset(counter_moves, 0, sizeof(Move) * 256 * 256);
-  for (int i = 0; i < 2; i++) for (int j = 0; j < 2; j++) {
-    std::memset(&continuation_history[i][j], 0, sizeof(continuation_history[i][j]));
+  // // --- CHANGE START ---
+  // // Reset the single continuation_history object using its fill method.
+  // if (continuation_history) {
+  //   continuation_history->fill(0);
+  // }
+  // // --- CHANGE END ---
+  // --- FIX START ---
+  // The call to `fill(0)` was incorrect because the compiler cannot convert
+  // an `int` to the expected `PieceToHistory` object.
+  // The correct and most efficient way to zero out this large, contiguous
+  // block of POD-like data is to use `std::memset`.
+  if (continuation_history) {
+    std::memset(continuation_history, 0, sizeof(ContinuationHistory));
   }
+  // --- FIX END ---
 }
 
 void AlphaBetaPlayer::AgeHistoryHeuristics() {
@@ -1238,9 +1256,22 @@ void AlphaBetaPlayer::AgeHistoryHeuristics() {
   age_table(history_heuristic, sizeof(history_heuristic));
   age_table(capture_heuristic, sizeof(capture_heuristic));
   std::memset(counter_moves, 0, sizeof(Move) * 256 * 256);
-  for (int i = 0; i < 2; i++) for (int j = 0; j < 2; j++) {
-      std::memset(&continuation_history[i][j], 0, sizeof(continuation_history[i][j]));
+  
+  // --- CHANGE START ---
+  // The original bitboard code had a bug here, resetting histories to 0 instead of aging them.
+  // This new implementation correctly ages the single, contiguous continuation_history table
+  // by halving all its integer values, matching the logic from the mailbox version.
+  if (continuation_history) {
+      // The base type of the entire ContinuationHistory structure is int32_t. We can
+      // safely cast the whole object to an array of its base entries and halve each one.
+      using entry_t = StatsEntry<int32_t, 2147483647>;
+      entry_t* p_start = reinterpret_cast<entry_t*>(continuation_history);
+      constexpr size_t num_entries = sizeof(ContinuationHistory) / sizeof(entry_t);
+      for (size_t i = 0; i < num_entries; ++i) {
+          p_start[i] = static_cast<int32_t>(p_start[i]) >> 1;
+      }
   }
+  // --- CHANGE END ---
 }
 
 void AlphaBetaPlayer::ResetMobilityScores(ThreadState& thread_state, Board& board) {
@@ -1447,9 +1478,12 @@ AlphaBetaPlayer::MakeMoveSingleThread(
   int searched_depth = 0;
   Stack stack[kMaxPly + 10];
   Stack* ss = stack + 7;
+  // --- CHANGE START ---
+  // Update initialization to use the new single continuation_history object.
   for (int i = 7; i > 0; i--) {
-    (ss-i)->continuation_history = &continuation_history[0][0][NO_PIECE][0];
+    (ss-i)->continuation_history = &(*continuation_history)[0][0][NO_PIECE][0];
   }
+  // --- CHANGE END ---
 
   if (options_.enable_aspiration_window) {
     while (next_depth <= max_depth) {

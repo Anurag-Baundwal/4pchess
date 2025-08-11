@@ -289,7 +289,12 @@ class AlphaBetaPlayer {
   int history_heuristic[6][256][256];
   int capture_heuristic[6][4][6][4][256];
   Move (*counter_moves)[256] = nullptr;
-  ContinuationHistory** continuation_history = nullptr;
+  // --- CHANGE START ---
+  // Changed from `ContinuationHistory**` to a single `ContinuationHistory*`.
+  // This will now point to one large, contiguous block of memory holding all
+  // continuation history tables for all contexts ([in_check][is_capture]).
+  ContinuationHistory* continuation_history = nullptr;
+  // --- CHANGE END ---
 
   static constexpr size_t kHeuristicMutexes = 256 * 256 / 100; // Larger to reduce collisions
   std::unique_ptr<std::mutex[]> heuristic_mutexes_;

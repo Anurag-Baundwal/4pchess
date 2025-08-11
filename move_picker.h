@@ -77,9 +77,16 @@ enum StatsType {
 // Addressed by [piece][to_sq]
 using PieceToHistory = Stats<int32_t, 2147483647, 7, 256>;
 
-// Addressed by [piece_1][to_sq_1][piece_2][to_sq_2]
-// This definition is complex and driven by its usage in player.cc. It's an array of PieceToHistory tables.
-using ContinuationHistory = Stats<PieceToHistory, NOT_USED, 7, 256>;
+// --- CHANGE START ---
+// The full continuation history table.
+// A given move (prev_move) is characterized by its context (in_check, is_capture),
+// the piece that moved (prev_piece), and its destination (prev_to_sq).
+// This table stores a pointer to a PieceToHistory table for each such characterization.
+// The PieceToHistory table is then used to score the *following* move (current_move).
+//
+// Full indexing: [in_check][is_capture][prev_piece][prev_to_sq] -> returns a PieceToHistory table.
+using ContinuationHistory = Stats<PieceToHistory, NOT_USED, 2, 2, 7, 256>;
+// --- CHANGE END ---
 
 
 ////////////////////////////////////////////////////////////////////////////////
