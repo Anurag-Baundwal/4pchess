@@ -1016,9 +1016,10 @@ int AlphaBetaPlayer::Evaluate(
 
     int n_queen_ry = 0;
     int n_queen_bg = 0;
-    int n_major_ry[4] = {0,0,0,0}; // Count major pieces for each color
+    int n_major_pieces[4] = {0,0,0,0};
     
-    Bitboard all_pawns = board.piece_bitboards_[0][PAWN] | board.piece_bitboards_[1][PAWN] | board.piece_bitboards_[2][PAWN] | board.piece_bitboards_[3][PAWN];
+    Bitboard all_pawns = board.piece_bitboards_[RED][PAWN] | board.piece_bitboards_[YELLOW][PAWN] 
+                       | board.piece_bitboards_[BLUE][PAWN] | board.piece_bitboards_[GREEN][PAWN];
 
     for (int color_idx = 0; color_idx < 4; ++color_idx) {
         PlayerColor color = static_cast<PlayerColor>(color_idx);
@@ -1030,12 +1031,13 @@ int AlphaBetaPlayer::Evaluate(
             Bitboard bb = board.piece_bitboards_[color][piece_type];
 
             if (piece_type != PAWN && piece_type != KING) {
-                n_major_ry[color] += bb.popcount();
+                n_major_pieces[color] += bb.popcount();
             }
 
-            while(!bb.is_zero()) {
-                int sq = bb.ctz();
-                bb &= (bb - 1);
+            Bitboard processing_bb = bb;
+            while(!processing_bb.is_zero()) {
+                int sq = processing_bb.ctz();
+                processing_bb &= (processing_bb - 1);
                 
                 if (piece_type == QUEEN) {
                     if (team == RED_YELLOW) n_queen_ry++; else n_queen_bg++;
@@ -1044,26 +1046,15 @@ int AlphaBetaPlayer::Evaluate(
                     if (qloc.Present()) {
                         int row = qloc.GetRow();
                         int col = qloc.GetCol();
-
-                        // Penalty for queen on back rank
-                        if ((color == RED    && row == 13) ||
-                            (color == YELLOW && row == 0)) {
+                        if ((color == RED && row == 13) || (color == YELLOW && row == 0)) {
                             eval -= 30;
-                        } else if ((color == BLUE  && col == 0) ||
-                                  (color == GREEN && col == 13)) {
+                        } else if ((color == BLUE && col == 0) || (color == GREEN && col == 13)) {
                             eval += 30;
                         }
-
-                        // Queen infiltration bonus: +25cp when entering opponent's edge corridor
-                        bool ry_queen = (color == RED || color == YELLOW);
-                        if (ry_queen) {
-                            if (row >= 3 && row <= 10 && (col <= 1 || col >= 12)) {
-                                eval += 25;
-                            }
-                        } else { // BLUE or GREEN
-                            if (col >= 3 && col <= 10 && (row <= 1 || row >= 12)) {
-                                eval -= 25;
-                            }
+                        if (color == RED || color == YELLOW) {
+                            if (row >= 3 && row <= 10 && (col <= 1 || col >= 12)) eval += 25;
+                        } else {
+                            if (col >= 3 && col <= 10 && (row <= 1 || row >= 12)) eval -= 25;
                         }
                     }
                 }
@@ -1077,23 +1068,25 @@ int AlphaBetaPlayer::Evaluate(
                 }
 
                 if (piece_type == ROOK) {
-                    // Central Rook Bonus
+                    int rook_bonus = 0;
                     if (!(BitboardImpl::IndexToBitboard(sq) & BitboardImpl::kCentralMask).is_zero()) {
-                        eval += team_sign * 50; 
+                        rook_bonus = 50;
                     } else {
-                        // Open/Semi-open file bonus
-                        Bitboard file_mask;
-                        if (color == RED || color == YELLOW) { // Vertical rooks
-                            file_mask = BitboardImpl::kRayAttacks[sq][BitboardImpl::D_N] | BitboardImpl::kRayAttacks[sq][BitboardImpl::D_S];
-                        } else { // Horizontal rooks
-                            file_mask = BitboardImpl::kRayAttacks[sq][BitboardImpl::D_E] | BitboardImpl::kRayAttacks[sq][BitboardImpl::D_W];
+                        // ** CORRECTED ROOK LOGIC **
+                        // Use only the FORWARD ray for each color to match mailbox logic
+                        Bitboard forward_ray;
+                        switch (color) {
+                            case RED:    forward_ray = BitboardImpl::kRayAttacks[sq][BitboardImpl::D_N]; break;
+                            case YELLOW: forward_ray = BitboardImpl::kRayAttacks[sq][BitboardImpl::D_S]; break;
+                            case BLUE:   forward_ray = BitboardImpl::kRayAttacks[sq][BitboardImpl::D_E]; break;
+                            case GREEN:  forward_ray = BitboardImpl::kRayAttacks[sq][BitboardImpl::D_W]; break;
+                            default:     forward_ray.limbs.fill(0); break;
                         }
-                        if ((file_mask & all_pawns).is_zero()) { // Open file
-                            eval += team_sign * 25;
-                        } else if ((file_mask & board.piece_bitboards_[color][PAWN]).is_zero()) { // Semi-open file
-                            eval += team_sign * 15;
+                        if ((forward_ray & all_pawns).is_zero()) {
+                           rook_bonus = 25; // Equivalent to !blocked_by_pawn in old code
                         }
                     }
+                    eval += team_sign * rook_bonus;
                 }
 
                 if (options_.enable_knight_bonus && piece_type == KNIGHT) {
@@ -1128,78 +1121,45 @@ int AlphaBetaPlayer::Evaluate(
         eval += 2 * (total_moves[RED] + total_moves[YELLOW] - total_moves[BLUE] - total_moves[GREEN]);
     }
     
+    // ** ASYMMETRIC EVALUATION BLOCK (CORRECTLY PLACED) **
     constexpr int kAsymmetricQueenBonus = 0;
-    constexpr int kStartEvaluation =
-      16 * kPieceEvaluations[PAWN]
-      + 4 * kPieceEvaluations[KNIGHT]
-      + 4 * kPieceEvaluations[BISHOP]
-      + 4 * kPieceEvaluations[ROOK]
-      + 2 * kPieceEvaluations[QUEEN]
-      + 2 * kPieceEvaluations[KING]
-      ;
+    constexpr int kStartEvaluation = 16 * kPieceEvaluations[PAWN] + 4 * kPieceEvaluations[KNIGHT] + 4 * kPieceEvaluations[BISHOP] + 4 * kPieceEvaluations[ROOK] + 2 * kPieceEvaluations[QUEEN] + 2 * kPieceEvaluations[KING];
     constexpr float kAsymmetricPieceEvalFactor = 0.05f;
     constexpr float kAsymmetricActivationEvalFactor = 0.00;
     constexpr int kAsymmetricQueenBonus2 = 0.5 * kAsymmetricPieceEvalFactor * kPieceEvaluations[QUEEN];
 
-    auto asym_eval = [&](
-        int n_moves,
-        int n_queen,
-        int activation_eval,
-        int player1_eval,
-        int player2_eval) {
-      int asym_eval = 0;
-      asym_eval += n_queen * kAsymmetricQueenBonus;
-      if (n_queen >= 2) {
-        asym_eval += kAsymmetricQueenBonus2;
-      }
+    auto asym_eval = [&](int n_moves, int n_queen, int activation_eval, int p1_eval, int p2_eval) {
+      int asym_eval = n_queen * kAsymmetricQueenBonus;
+      if (n_queen >= 2) asym_eval += kAsymmetricQueenBonus2;
       asym_eval += kAsymmetricActivationEvalFactor * activation_eval;
-      asym_eval += kAsymmetricPieceEvalFactor * (player1_eval + player2_eval);
+      asym_eval += kAsymmetricPieceEvalFactor * (p1_eval + p2_eval);
       asym_eval += n_moves/2;
-      // subtract constant to make the score even at the start position
       asym_eval -= kAsymmetricQueenBonus * 2 + kAsymmetricQueenBonus2;
       asym_eval -= kAsymmetricPieceEvalFactor * kStartEvaluation;
       return asym_eval;
     };
 
-    if ((options_.engine_team == RED_YELLOW)
-        || (options_.engine_team == CURRENT_TEAM
-            && root_team_ == RED_YELLOW)) {
-      eval += asym_eval(total_moves[RED] + total_moves[YELLOW],
-          n_queen_ry, activation_ry,
-          board.PieceEvaluation(RED), board.PieceEvaluation(YELLOW));
-    } else if ((options_.engine_team == BLUE_GREEN)
-               || (options_.engine_team == CURRENT_TEAM
-                   && root_team_ == BLUE_GREEN)) {
-      eval -= asym_eval(total_moves[BLUE] + total_moves[GREEN],
-          n_queen_bg, activation_bg,
-          board.PieceEvaluation(BLUE), board.PieceEvaluation(GREEN));
+    if ((options_.engine_team == RED_YELLOW) || (options_.engine_team == CURRENT_TEAM && root_team_ == RED_YELLOW)) {
+      eval += asym_eval(total_moves[RED] + total_moves[YELLOW], n_queen_ry, activation_ry, board.PieceEvaluation(RED), board.PieceEvaluation(YELLOW));
+    } else if ((options_.engine_team == BLUE_GREEN) || (options_.engine_team == CURRENT_TEAM && root_team_ == BLUE_GREEN)) {
+      eval -= asym_eval(total_moves[BLUE] + total_moves[GREEN], n_queen_bg, activation_bg, board.PieceEvaluation(BLUE), board.PieceEvaluation(GREEN));
     }
 
-    // double queen bonus
     constexpr int kMultiQueenBonus = 200;
-    if (n_queen_ry >= 2) {
-      eval += kMultiQueenBonus;
-    }
-    if (n_queen_bg >= 2) {
-      eval -= kMultiQueenBonus;
-    }
+    if (n_queen_ry >= 2) eval += kMultiQueenBonus;
+    if (n_queen_bg >= 2) eval -= kMultiQueenBonus;
+    // ** END OF ASYMMETRIC BLOCK **
 
     if (options_.enable_piece_imbalance) {
-      int n_major_red = n_major_ry[RED];
-      int n_major_yellow = n_major_ry[YELLOW];
-      int n_major_blue = n_major_ry[BLUE];
-      int n_major_green = n_major_ry[GREEN];
-
-      int diff_ry = std::abs(n_major_red - n_major_yellow);
-      int diff_bg = std::abs(n_major_blue - n_major_green);
-      
+      int diff_ry = std::abs(n_major_pieces[RED] - n_major_pieces[YELLOW]);
+      int diff_bg = std::abs(n_major_pieces[BLUE] - n_major_pieces[GREEN]);
       eval += kPieceImbalanceTable[diff_ry] - kPieceImbalanceTable[diff_bg];
     }
 
     constexpr int kKingSafetyMargin = 600;
     if (options_.enable_lazy_eval) {
         int re = maximizing_player ? eval : -eval;
-        if (re + kKingSafetyMargin <= alpha || re >= beta + kKingSafetyMargin) {
+        if (re + kKingSafetyMargin <= alpha || re - kKingSafetyMargin >= beta) {
             num_lazy_eval_++;
             return re;
         }
@@ -1212,39 +1172,37 @@ int AlphaBetaPlayer::Evaluate(
         BoardLocation king_location = board.GetKingLocation(color);
         if (king_location.Present()) {
           int king_sq = BitboardImpl::LocationToIndex(king_location);
+          if (king_sq < 0) continue;
           int team_sign = (team == RED_YELLOW) ? 1 : -1;
           int king_safety = 0;
           bool opponent_has_queen = (team == RED_YELLOW && n_queen_bg > 0) || (team == BLUE_GREEN && n_queen_ry > 0);
 
           if (options_.enable_pawn_shield && opponent_has_queen) {
-            if (!HasShield(board, color, king_sq)) king_safety -= 75;
-            if (!OnBackRank(color, king_sq)) king_safety -= 50;
+            bool has_shield = HasShield(board, color, king_sq);
+            bool on_back_rank = OnBackRank(color, king_sq);
+            if (!has_shield) king_safety -= 75;
+            if (!on_back_rank) king_safety -= 50;
+            if (!has_shield && !on_back_rank) king_safety -= 50;
           }
 
           if (options_.enable_attacking_king_zone) {
-            
             int attacker_colors[4] = {0, 0, 0, 0};
             int num_attacker_colors = 0;
             int safety = 0; 
-
             Bitboard king_zone = BitboardImpl::kKingAttacks[king_sq];
             while(!king_zone.is_zero()) {
                 int zone_sq = king_zone.ctz();
                 king_zone &= (king_zone - 1);
-
                 Bitboard ry_attackers = board.GetAttackersBB(zone_sq, RED_YELLOW);
                 Bitboard bg_attackers = board.GetAttackersBB(zone_sq, BLUE_GREEN);
                 Bitboard all_zone_attackers = ry_attackers | bg_attackers;
-                
                 int value_of_attacks = 0, num_attackers = 0;
                 int value_of_protection = 0, num_protectors = 0;
-
                 while(!all_zone_attackers.is_zero()) {
                     int attacker_sq = all_zone_attackers.ctz();
                     all_zone_attackers &= (all_zone_attackers - 1);
                     Piece p = board.GetPiece(attacker_sq);
                     if(p.GetPieceType() == KING) continue;
-
                     int val = king_attacker_values_[p.GetPieceType()];
                     if(p.GetTeam() == team) { 
                         num_protectors++;
@@ -1252,9 +1210,7 @@ int AlphaBetaPlayer::Evaluate(
                     } else {
                         num_attackers++;
                         value_of_attacks += val;
-                        if (val > 0) {
-                            attacker_colors[p.GetColor()]++;
-                        }
+                        if (val > 0) attacker_colors[p.GetColor()]++;
                     }
                 }
                 int attack_zone_val = value_of_attacks * king_attack_weight_[num_attackers] / 100;
@@ -1263,14 +1219,9 @@ int AlphaBetaPlayer::Evaluate(
             }
 
             for (int i = 0; i < 4; i++) {
-              if (attacker_colors[i] > 0) {
-                num_attacker_colors++;
-              }
+              if (attacker_colors[i] > 0) num_attacker_colors++;
             }
-            if (num_attacker_colors > 1) {
-              safety -= 150;
-            }
-
+            if (num_attacker_colors > 1) safety -= 150;
             if (!opponent_has_queen) safety /= 2;
             king_safety += std::min(0, safety);
           }
@@ -1279,7 +1230,6 @@ int AlphaBetaPlayer::Evaluate(
       }
     }
   }
-  // w.r.t. maximizing player
   return maximizing_player ? eval : -eval;
 }
 
