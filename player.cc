@@ -519,13 +519,13 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     r -= move.IsCapture() && move.ApproxSEE(board, kPieceEvaluations) > 0;
     if (!move.IsCapture()) {
       int history_score = history_heuristic[piece.GetPieceType()][from_idx][to_idx];
-      r -= std::clamp((history_score - 4000) / 10000, -3, 3);
+      r -= std::clamp((history_score - 2353) / 5882, -3, 3);
     } else {
       Piece captured = move.GetCapturePiece();
       int history_score = capture_heuristic[piece.GetPieceType()][piece.GetColor()]
         [captured.GetPieceType()][captured.GetColor()]
         [to_idx];
-      r -= std::clamp((history_score - 4000) / 10000, -3, 3);
+      r -= std::clamp((history_score - 2353) / 5882, -3, 3);
     }
 
     r = std::max(ply >= ss->root_depth * 1.0 ? 0 : -1, r);
@@ -552,7 +552,10 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     }
 
     ss->current_move = move;
-    ss->continuation_history = &continuation_history[ss->in_check][move.IsCapture()][piece_type][to_idx];
+    // --- CHANGE START ---
+    // Update indexing to work with the single continuation_history object.
+    ss->continuation_history = &(*continuation_history)[ss->in_check][move.IsCapture()][piece_type][to_idx];
+    // --- CHANGE END ---
 
     board.MakeMove(move);
 
