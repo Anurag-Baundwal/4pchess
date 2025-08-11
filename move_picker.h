@@ -74,19 +74,11 @@ enum StatsType {
     Captures
 };
 
-// Addressed by [piece][to_sq]
-using PieceToHistory = Stats<int32_t, 2147483647, 7, 256>;
+// Addressed by [piece][to]
+using PieceToHistory = Stats<int32_t, 2147483647, 7, 14, 14>;
 
-// --- CHANGE START ---
-// The full continuation history table.
-// A given move (prev_move) is characterized by its context (in_check, is_capture),
-// the piece that moved (prev_piece), and its destination (prev_to_sq).
-// This table stores a pointer to a PieceToHistory table for each such characterization.
-// The PieceToHistory table is then used to score the *following* move (current_move).
-//
-// Full indexing: [in_check][is_capture][prev_piece][prev_to_sq] -> returns a PieceToHistory table.
-using ContinuationHistory = Stats<PieceToHistory, NOT_USED, 2, 2, 7, 256>;
-// --- CHANGE END ---
+// Addressed by [piece_1][to_1][piece_2][to_2]
+using ContinuationHistory = Stats<PieceToHistory, NOT_USED, 7, 14, 14>;
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -98,13 +90,13 @@ class MovePicker {
     const std::optional<Move>& pvmove,
     Move* killers,
     const int piece_evaluations[6],
-    int history_heuristic[6][256][256],
-    int capture_heuristic[6][4][6][4][256],
+    int history_heuristic[6][14][14][14][14],
+    int capture_heuristic[6][4][6][4][14][14],
     int piece_move_order_scores[6],
     bool enable_move_order_checks,
     Move* buffer,
     size_t buffer_size,
-    Move counter_moves[256][256],
+    Move* counter_moves,
     bool include_quiets = true,
     const PieceToHistory** piece_to_history = nullptr
     );

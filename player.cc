@@ -51,11 +51,11 @@ AlphaBetaPlayer::AlphaBetaPlayer(std::optional<PlayerOptions> options) {
   }
 
   heuristic_mutexes_ = std::make_unique<std::mutex[]>(kHeuristicMutexes);
-  counter_moves = new Move[256][256];
-  // --- CHANGE START ---
-  // Allocate a single, large ContinuationHistory object instead of an array of arrays.
-  continuation_history = new ContinuationHistory();
-  // --- CHANGE END ---
+  counter_moves = new Move[14*14*14*14];
+  continuation_history = new ContinuationHistory*[2];
+  for (int i = 0; i < 2; i++) {
+    continuation_history[i] = new ContinuationHistory[2];
+  }
   ResetHistoryHeuristics();
 
   king_attack_weight_[0] = 0;
@@ -162,10 +162,10 @@ AlphaBetaPlayer::AlphaBetaPlayer(std::optional<PlayerOptions> options) {
 
 AlphaBetaPlayer::~AlphaBetaPlayer() {
     delete[] counter_moves;
-    // --- CHANGE START ---
-    // Delete the single ContinuationHistory object.
-    delete continuation_history;
-    // --- CHANGE END ---
+    for (int i = 0; i < 2; i++) {
+        delete[] continuation_history[i];
+    }
+    delete[] continuation_history;
 }
 
 ThreadState::ThreadState(
@@ -333,10 +333,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       && !partner_checked
       ) {
     num_null_moves_tried_++;
-    // --- CHANGE START ---
-    // Update indexing to work with the single continuation_history object.
-    ss->continuation_history = &(*continuation_history)[0][0][NO_PIECE][0];
-    // --- CHANGE END ---
+    ss->continuation_history = &continuation_history[0][0][NO_PIECE][0][0];
     ss->current_move = Move();
     board.MakeNullMove();
 
@@ -411,6 +408,8 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       continue;
     }
 
+    const auto& from = move.From();
+    const auto& to = move.To();
     Piece piece = board.GetPiece(move.From());
     PieceType piece_type = piece.GetPieceType();
     int from_idx = BitboardImpl::LocationToIndex(move.From());
@@ -518,14 +517,15 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     r -= is_pv_node;
     r -= move.IsCapture() && move.ApproxSEE(board, kPieceEvaluations) > 0;
     if (!move.IsCapture()) {
-      int history_score = history_heuristic[piece.GetPieceType()][from_idx][to_idx];
-      r -= std::clamp((history_score - 2353) / 5882, -3, 3);
+      int history_score = history_heuristic[piece.GetPieceType()][from.GetRow()][from.GetCol()]
+          [to.GetRow()][to.GetCol()];
+      r -= std::clamp((history_score - 4000) / 10000, -3, 3);
     } else {
       Piece captured = move.GetCapturePiece();
       int history_score = capture_heuristic[piece.GetPieceType()][piece.GetColor()]
         [captured.GetPieceType()][captured.GetColor()]
-        [to_idx];
-      r -= std::clamp((history_score - 2353) / 5882, -3, 3);
+        [to.GetRow()][to.GetCol()];
+      r -= std::clamp((history_score - 4000) / 10000, -3, 3);
     }
 
     r = std::max(ply >= ss->root_depth * 1.0 ? 0 : -1, r);
@@ -552,10 +552,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     }
 
     ss->current_move = move;
-    // --- CHANGE START ---
-    // Update indexing to work with the single continuation_history object.
-    ss->continuation_history = &(*continuation_history)[ss->in_check][move.IsCapture()][piece_type][to_idx];
-    // --- CHANGE END ---
+    ss->continuation_history = &continuation_history[ss->in_check][move.IsCapture()][piece_type][move.To().GetRow()][move.To().GetCol()];
 
     board.MakeMove(move);
 
@@ -822,10 +819,7 @@ AlphaBetaPlayer::QSearch(
     int to_idx = BitboardImpl::LocationToIndex(move.To());
 
     ss->current_move = move;
-    // --- CHANGE START ---
-    // Update indexing to work with the single continuation_history object.
-    ss->continuation_history = &(*continuation_history)[ss->in_check][move.IsCapture()][piece_type][to_idx];
-    // --- CHANGE END ---
+    ss->continuation_history = &continuation_history[ss->in_check][move.IsCapture()][piece_type][move.To().GetRow()][move.To().GetCol()];
     
     bool delivers_check = move.DeliversCheck(board);
     board.MakeMove(move);
@@ -929,48 +923,51 @@ void AlphaBetaPlayer::UpdateStats(
     const Move& move, int depth, bool fail_high,
     const std::vector<Move>& searched_moves) {
   
-  int from_idx = BitboardImpl::LocationToIndex(move.From());
-  int to_idx = BitboardImpl::LocationToIndex(move.To());
-  Piece piece = board.GetPiece(move.From());
+  const auto& from = move.From();
+  const auto& to = move.To();
+  Piece piece = board.GetPiece(from);
 
   int bonus = 1 << (fail_high ? depth + 1: depth);
 
   if (move.IsCapture()) {
     Piece captured = move.GetCapturePiece();
-    size_t lock_key = to_idx;
+    size_t lock_key = to.GetRow() * 14 + to.GetCol();
     std::lock_guard<std::mutex> lock(heuristic_mutexes_[lock_key % kHeuristicMutexes]);
     capture_heuristic[piece.GetPieceType()][piece.GetColor()]
       [captured.GetPieceType()][captured.GetColor()]
-      [to_idx] += bonus;
+      [to.GetRow()][to.GetCol()] += bonus;
   } else {
-    size_t lock_key = (from_idx * 256 + to_idx);
+    size_t lock_key = (from.GetRow()*14 + from.GetCol())*196 + (to.GetRow()*14+to.GetCol());
     std::lock_guard<std::mutex> lock(heuristic_mutexes_[lock_key % kHeuristicMutexes]);
     if (options_.enable_history_heuristic) {
-      history_heuristic[piece.GetPieceType()][from_idx][to_idx] += bonus;
+      history_heuristic[piece.GetPieceType()][from.GetRow()][from.GetCol()]
+        [to.GetRow()][to.GetCol()] += bonus;
     }
     if (options_.enable_counter_move_heuristic) {
-      counter_moves[from_idx][to_idx] = move;
+      counter_moves[from.GetRow()*14*14*14 + from.GetCol()*14*14
+        + to.GetRow()*14 + to.GetCol()] = move;
     }
     UpdateQuietStats(ss, move);
     UpdateContinuationHistories(ss, move, piece.GetPieceType(), bonus);
   }
   for (const auto& other_move : searched_moves) {
     if (other_move != move) {
-      int other_from_idx = BitboardImpl::LocationToIndex(other_move.From());
-      int other_to_idx = BitboardImpl::LocationToIndex(other_move.To());
-      Piece other_piece = board.GetPiece(other_move.From());
+      const auto& other_from = other_move.From();
+      const auto& other_to = other_move.To();
+      Piece other_piece = board.GetPiece(other_from);
 
       if (other_move.IsCapture()) {
         Piece other_captured = other_move.GetCapturePiece();
-        size_t lock_key = other_to_idx;
+        size_t lock_key = other_to.GetRow() * 14 + other_to.GetCol();
         std::lock_guard<std::mutex> lock(heuristic_mutexes_[lock_key % kHeuristicMutexes]);
         capture_heuristic[other_piece.GetPieceType()][other_piece.GetColor()]
           [other_captured.GetPieceType()][other_captured.GetColor()]
-          [other_to_idx] -= bonus;
+          [other_to.GetRow()][other_to.GetCol()] -= bonus;
       } else {
-        size_t lock_key = (other_from_idx * 256 + other_to_idx);
+        size_t lock_key = (other_from.GetRow()*14 + other_from.GetCol())*196 + (other_to.GetRow()*14+other_to.GetCol());
         std::lock_guard<std::mutex> lock(heuristic_mutexes_[lock_key % kHeuristicMutexes]);
-        history_heuristic[other_piece.GetPieceType()][other_from_idx][other_to_idx] -= bonus;
+        history_heuristic[other_piece.GetPieceType()][other_from.GetRow()][other_from.GetCol()]
+          [other_to.GetRow()][other_to.GetCol()] -= bonus;
       }
     }
   }
@@ -986,11 +983,11 @@ void AlphaBetaPlayer::UpdateQuietStats(Stack* ss, const Move& move) {
 }
 
 void AlphaBetaPlayer::UpdateContinuationHistories(Stack* ss, const Move& move, PieceType piece_type, int bonus) {
-  const int to_idx = BitboardImpl::LocationToIndex(move.To());
+  const auto to = move.To();
   for (int i : {1, 2, 3, 4, 5, 6}) {
     if (ss->in_check && i > 2) break;
     if ((ss-i)->current_move.Present()) {
-      (*(ss-i)->continuation_history)[piece_type][to_idx] << bonus;
+      (*(ss-i)->continuation_history)[piece_type][to.GetRow()][to.GetCol()] << bonus;
     }
   }
 }
@@ -1233,48 +1230,80 @@ int AlphaBetaPlayer::Evaluate(
 void AlphaBetaPlayer::ResetHistoryHeuristics() {
   std::memset(history_heuristic, 0, sizeof(history_heuristic));
   std::memset(capture_heuristic, 0, sizeof(capture_heuristic));
-  std::memset(counter_moves, 0, sizeof(Move) * 256 * 256);
-  // // --- CHANGE START ---
-  // // Reset the single continuation_history object using its fill method.
-  // if (continuation_history) {
-  //   continuation_history->fill(0);
-  // }
-  // // --- CHANGE END ---
-  // --- FIX START ---
-  // The call to `fill(0)` was incorrect because the compiler cannot convert
-  // an `int` to the expected `PieceToHistory` object.
-  // The correct and most efficient way to zero out this large, contiguous
-  // block of POD-like data is to use `std::memset`.
-  if (continuation_history) {
-    std::memset(continuation_history, 0, sizeof(ContinuationHistory));
+  std::memset(counter_moves, 0, sizeof(Move) * 14 * 14 * 14 * 14);
+
+  for (bool in_check : {false, true}) {
+    for (StatsType c : {NoCaptures, Captures}) {
+      for (auto& to_row : continuation_history[in_check][c]) {
+        for (auto& to_col : to_row) {
+          for (auto& h : to_col) {
+            h->fill(0);
+          }
+        }
+      }
+    }
   }
-  // --- FIX END ---
 }
 
 void AlphaBetaPlayer::AgeHistoryHeuristics() {
-  auto age_table = [](auto* table, size_t size_bytes) {
-      int* p = reinterpret_cast<int*>(table);
-      for(size_t i = 0; i < size_bytes / sizeof(int); ++i) p[i] /= 2;
-  };
-  age_table(history_heuristic, sizeof(history_heuristic));
-  age_table(capture_heuristic, sizeof(capture_heuristic));
-  std::memset(counter_moves, 0, sizeof(Move) * 256 * 256);
-  
-  // --- CHANGE START ---
-  // The original bitboard code had a bug here, resetting histories to 0 instead of aging them.
-  // This new implementation correctly ages the single, contiguous continuation_history table
-  // by halving all its integer values, matching the logic from the mailbox version.
-  if (continuation_history) {
-      // The base type of the entire ContinuationHistory structure is int32_t. We can
-      // safely cast the whole object to an array of its base entries and halve each one.
-      using entry_t = StatsEntry<int32_t, 2147483647>;
-      entry_t* p_start = reinterpret_cast<entry_t*>(continuation_history);
-      constexpr size_t num_entries = sizeof(ContinuationHistory) / sizeof(entry_t);
-      for (size_t i = 0; i < num_entries; ++i) {
-          p_start[i] = static_cast<int32_t>(p_start[i]) >> 1;
+  // Age quiet move history heuristic by dividing all scores by 2
+  for (int pt = 0; pt < 6; ++pt) {
+    for (int r1 = 0; r1 < 14; ++r1) {
+      for (int c1 = 0; c1 < 14; ++c1) {
+        for (int r2 = 0; r2 < 14; ++r2) {
+          for (int c2 = 0; c2 < 14; ++c2) {
+            history_heuristic[pt][r1][c1][r2][c2] >>= 1;
+          }
+        }
       }
+    }
   }
-  // --- CHANGE END ---
+
+  // Age capture move history heuristic by dividing all scores by 2
+  for (int pt1 = 0; pt1 < 6; ++pt1) {
+    for (int c1 = 0; c1 < 4; ++c1) {
+      for (int pt2 = 0; pt2 < 6; ++pt2) {
+        for (int c2 = 0; c2 < 4; ++c2) {
+          for (int r = 0; r < 14; ++r) {
+            for (int col = 0; col < 14; ++col) {
+              capture_heuristic[pt1][c1][pt2][c2][r][col] >>= 1;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Countermoves are not aged, they are cleared to prevent using
+  // a move from a completely different position.
+  std::memset(counter_moves, 0, sizeof(Move) * 14 * 14 * 14 * 14);
+
+  // Age continuation histories by iterating down to the final integer tables.
+  for (int in_check = 0; in_check < 2; ++in_check) {
+    for (int is_capture = 0; is_capture < 2; ++is_capture) {
+      auto& cont_hist_table = continuation_history[in_check][is_capture];
+
+      for (auto& piece_hist : cont_hist_table) { // Iterates over piece_type (7 elements)
+        for (auto& to_row_hist : piece_hist) { // Iterates over to_row (14 elements)
+          for (auto& to_col_hist : to_row_hist) { // Iterates over to_col (14 elements)
+            // The to_col_hist here is a StatsEntry<PieceToHistory, NOT_USED>
+            PieceToHistory* h = &to_col_hist; // Get the pointer to the underlying PieceToHistory object
+
+            // Age the PieceToHistory table this pointer points to.
+            if (h != nullptr) {
+                using entry_t = StatsEntry<int32_t, 2147483647>;
+                entry_t* p_start = reinterpret_cast<entry_t*>(h); // Reinterpret as a flat array of StatsEntry<int32_t, ...>
+                constexpr size_t num_entries = sizeof(PieceToHistory) / sizeof(entry_t); // Calculate how many int32_t values are in PieceToHistory
+
+                for (size_t i = 0; i < num_entries; ++i) {
+                    p_start[i] = static_cast<int32_t>(p_start[i]) >> 1; // Divide by 2
+                }
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 void AlphaBetaPlayer::ResetMobilityScores(ThreadState& thread_state, Board& board) {
@@ -1481,12 +1510,9 @@ AlphaBetaPlayer::MakeMoveSingleThread(
   int searched_depth = 0;
   Stack stack[kMaxPly + 10];
   Stack* ss = stack + 7;
-  // --- CHANGE START ---
-  // Update initialization to use the new single continuation_history object.
   for (int i = 7; i > 0; i--) {
-    (ss-i)->continuation_history = &(*continuation_history)[0][0][NO_PIECE][0];
+    (ss-i)->continuation_history = &continuation_history[0][0][NO_PIECE][0][0];
   }
-  // --- CHANGE END ---
 
   if (options_.enable_aspiration_window) {
     while (next_depth <= max_depth) {

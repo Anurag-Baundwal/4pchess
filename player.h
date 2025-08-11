@@ -286,15 +286,14 @@ class AlphaBetaPlayer {
   Team root_team_ = NO_TEAM;
 
   // Heuristics (shared across threads)
-  int history_heuristic[6][256][256];
-  int capture_heuristic[6][4][6][4][256];
-  Move (*counter_moves)[256] = nullptr;
-  // --- CHANGE START ---
-  // Changed from `ContinuationHistory**` to a single `ContinuationHistory*`.
-  // This will now point to one large, contiguous block of memory holding all
-  // continuation history tables for all contexts ([in_check][is_capture]).
-  ContinuationHistory* continuation_history = nullptr;
-  // --- CHANGE END ---
+  // (piece_type, from_row, from_col, to_row, to_col)
+  int history_heuristic[6][14][14][14][14];
+  // (piece_type, piece_color, capture_piece_type, capture_piece_color, to_row, to_col)
+  int capture_heuristic[6][4][6][4][14][14];
+  // (from_row, from_col, to_row, to_col)
+  Move* counter_moves = nullptr;
+  // indexed by (in_check, is_capture)
+  ContinuationHistory** continuation_history = nullptr;
 
   static constexpr size_t kHeuristicMutexes = 256 * 256 / 100; // Larger to reduce collisions
   std::unique_ptr<std::mutex[]> heuristic_mutexes_;
