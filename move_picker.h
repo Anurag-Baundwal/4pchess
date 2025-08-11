@@ -37,7 +37,7 @@ class StatsEntry {
     void operator<<(int bonus) {
         assert(abs(bonus) <= D);  // Ensure range is [-D, D]
         static_assert(D <= std::numeric_limits<T>::max(), "D overflows T");
-        entry += bonus - entry * abs(bonus) / D;
+        entry += std::min(D - entry, bonus);
         assert(abs(entry) <= D);
     }
 };
