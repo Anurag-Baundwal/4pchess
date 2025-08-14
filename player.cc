@@ -375,6 +375,20 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     }
   }
 
+  // Internal Iterative Reductions (IIR)
+  // At sufficient depth, for PV or Cut nodes that don't have a move from the
+  // transposition table, we can try reducing the depth by 1 to save time.
+  // This is based on the assumption that if there's no TT move, the node is
+  // less likely to be critical.
+  if ((is_pv_node || is_cut_node) // Only for PV or Cut nodes
+      && depth >= 7               // Only for reasonably deep searches
+      && !tt_move.has_value()     // The key trigger: no TT move was found
+      && (ss - 1)->reduction <= 2 // Check parent's reduction amount
+     ) 
+  {
+    depth--; // Reduce the search depth for this node
+  }
+
   std::optional<Move> best_move;
   int player_color = static_cast<int>(player.GetColor());
 
@@ -421,6 +435,9 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     }
 
     Move& move = *move_ptr;
+
+    // Reset the reduction for the current move's stack frame at the beginning
+    ss->reduction = 0;
 
     if (ss->excludedMove.Present() && move == ss->excludedMove) {
       continue;
@@ -557,6 +574,11 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
 
     // allow limited extension if the reduction is negative
     r = std::max(ply >= ss->root_depth * 1.0 ? 0 : -1, r);
+
+    // store the reduction if LMR is happening and the reduction is positive
+    if (lmr && r > 0) {
+        ss->reduction = r;
+    }
 
     int new_depth = depth - 1;
     int lmr_depth = new_depth;
