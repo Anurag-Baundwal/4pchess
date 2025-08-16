@@ -1,5 +1,5 @@
 # move_fetcher.py
-# v12.1 (Removes initial state file write)
+# v12.2 (Reduced startup time)
 
 import time
 import random
@@ -44,24 +44,43 @@ CLOCK_COLOR_MAP = {
 # -----------------------------------------------
 
 def load_cookies(driver, cookie_file):
-    """Loads cookies from a file into the WebDriver session."""
-    print(f"Attempting to load cookies from '{cookie_file}'...")
+    """Optimized cookie loading without initial navigation."""
+    print(f"Loading cookies from '{cookie_file}'...")
     try:
         with open(cookie_file, 'rb') as file:
             cookies = pickle.load(file)
-        driver.get("https://www.chess.com")
+        
+        # Set cookies directly without navigating first
+        driver.execute_cdp_cmd('Network.enable', {})
         for cookie in cookies:
             if 'expiry' in cookie:
                 del cookie['expiry']
-            driver.add_cookie(cookie)
+            # Use CDP to set cookies faster
+            driver.execute_cdp_cmd('Network.setCookie', cookie)
+        
         print("✅ Cookies loaded successfully.")
         return True
     except FileNotFoundError:
-        print(f"⚠️ Cookie file not found. Please run 'save_cookies.py' first.")
+        print(f"⚠️ Cookie file not found.")
         return False
     except Exception as e:
-        print(f"❌ An error occurred while loading cookies: {e}")
+        print(f"❌ Error loading cookies: {e}")
         return False
+    
+def get_chrome_driver_path():
+    """Get cached Chrome driver path to avoid repeated downloads."""
+    cache_file = "chromedriver_path.txt"
+    if os.path.exists(cache_file):
+        with open(cache_file, 'r') as f:
+            cached_path = f.read().strip()
+            if os.path.exists(cached_path):
+                return cached_path
+    
+    # Download and cache the path
+    driver_path = ChromeDriverManager().install()
+    with open(cache_file, 'w') as f:
+        f.write(driver_path)
+    return driver_path
 
 def _parse_clock_str(time_str: str) -> float:
     """Converts a 'M:SS' or 'S.s' string to total seconds."""
@@ -210,12 +229,24 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     options = Options()
-    options.add_argument("--headless")
+    options.add_argument("--headless=new")  # faster/modern headless path[9]
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-renderer-backgrounding")
+    options.add_argument("--disable-background-timer-throttling")
+    options.add_argument("--disable-backgrounding-occluded-windows")
+    options.add_argument("--disable-client-side-phishing-detection")
+    options.add_argument("--disable-crash-reporter")
+    options.add_argument("--no-crash-upload")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--log-level=3")
+    options.add_argument("--silent")
     options.add_experimental_option('excludeSwitches', ['enable-logging'])
 
     print("\nInitializing Selenium WebDriver...")
     try:
-        service = ChromeService(ChromeDriverManager().install())
+        service = ChromeService(get_chrome_driver_path())
         driver = webdriver.Chrome(service=service, options=options)
         print("Done initializing WebDriver.")
     except Exception as e:
@@ -229,9 +260,14 @@ if __name__ == "__main__":
     try:
         print(f"\nNavigating to game URL: {args.url}")
         driver.get(args.url)
-        time.sleep(3)
+        
+        # Wait for specific element instead of fixed delay
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".moves-moves-list"))
+        )
+        print("Page loaded successfully.")
     except Exception as e:
-        print(f"Could not navigate to the URL. Error: {e}")
+        print(f"Could not navigate to URL: {e}")
         driver.quit()
         sys.exit(1)
 

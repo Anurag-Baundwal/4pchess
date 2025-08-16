@@ -42,6 +42,7 @@ stuff.txt
 chess_cookies.pkl
 game_state.json
 game_state.json.tmp
+chromedriver_path.txt
 
 # --- Project-Specific Data and Directories ---
 # These are directories for local data, models, etc., not to be committed.
