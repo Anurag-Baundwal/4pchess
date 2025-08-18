@@ -1,6 +1,5 @@
 # game_controller.py
-# v25.1 (Adds clean shutdown method)
-
+# v26 (Adds logging for engine evaluations)
 import os
 import sys
 import time
@@ -41,6 +40,7 @@ WINDOW_CONFIG = {
 PIECE_ASSET_PATH = os.path.join('assets', 'pieces_svg')
 BOARD_DIMENSIONS = 14
 GAME_STATE_FILE = "game_state.json"
+EVAL_LOG_FILE = "eval_log.txt"  # NEW: Log file for engine evaluations
 POLL_INTERVAL_SECONDS = 0.1
 
 # Time Management Constants (for dynamic TC)
@@ -174,6 +174,15 @@ class GameController:
 
         self.lock = threading.Lock()
         self.uci = uci_wrapper.UciWrapper(num_threads=9, max_depth=100, ponder=self.ponder_enabled)
+        
+        # NEW: Eval logging attributes
+        self.eval_log_file = EVAL_LOG_FILE
+        self.current_move_evals = [".." for _ in range(4)]
+        # Clear the log file on startup
+        with open(self.eval_log_file, 'w') as f:
+            f.write("--- 4PC Eval Log ---\n")
+            f.write(f"Playing as: {self.controlled_colors}\n\n")
+        
         self.reset_game()
 
         self.last_sync_time = 0
@@ -186,11 +195,80 @@ class GameController:
             initial_move_thread = threading.Thread(target=self._initial_move_thread_target, daemon=True)
             initial_move_thread.start()
 
-    # **NEW METHOD**
     def shutdown(self):
+        """Gracefully shuts down the controller and engine, saving any pending evals."""
         print("\nShutting down controller...")
         self.stop_polling_event.set()
+        
+        # Write any pending (incomplete line) evaluations to the log file before exiting
+        ply = len(self.board_moves)
+        turn_index = ply % 4
+        if turn_index > 0: # If we are in the middle of a move, write what we have
+            move_number = (ply // 4) + 1
+            move_num_str = f"{move_number}."
+            
+            # Get only the evals that have occurred in this partial move
+            logged_evals = self.current_move_evals[:turn_index]
+            
+            # Join the move number and the actual evals with spaces
+            all_parts = [move_num_str] + logged_evals
+            line = " ".join(all_parts) + "\n"
+
+            with open(self.eval_log_file, 'a') as f:
+                f.write(line)
+                f.write("--- Shutdown mid-move ---\n")
+        
         self.uci.shutdown()
+
+    # NEW METHOD: For logging evaluations
+    def _log_evaluation(self, ply: int, score: Optional[int]):
+        """
+        Logs the engine evaluation for a given ply. Now uses a simple,
+        space-separated format without any fixed padding.
+        """
+        turn_index = ply % 4
+        current_turn_char = ['R', 'B', 'Y', 'G'][turn_index]
+        is_bg_turn = current_turn_char in ('B', 'G')
+
+        if score is None:
+            eval_str = ".."
+        else:
+            # Check for mate scores
+            if abs(score) > 90000:
+                if (score > 0 and not is_bg_turn) or (score < 0 and is_bg_turn):
+                    eval_str = "+MATE"
+                else:
+                    eval_str = "-MATE"
+            else:
+                # Flip perspective for Blue/Green
+                if is_bg_turn:
+                    score *= -1
+                score_pawns = score / 100.0
+                eval_str = f"{score_pawns:+.1f}"
+
+        # Update the in-memory list for the current move
+        self.current_move_evals[turn_index] = eval_str
+
+        # If this was the last ply of a full move (Green's turn), write to file
+        if turn_index == 3:
+            move_number = (ply // 4) + 1
+            move_num_str = f"{move_number}."
+            
+            # --- SIMPLE FORMATTING LOGIC ---
+            # Create a list of all parts: move number + the four evals
+            all_parts = [move_num_str] + self.current_move_evals
+            
+            # Join all parts with a single space
+            line = " ".join(all_parts) + "\n"
+
+            try:
+                with open(self.eval_log_file, 'a') as f:
+                    f.write(line)
+            except IOError as e:
+                print(f"!!! CRITICAL ERROR: Could not write to eval log file: {e}")
+
+            # Reset for the next move
+            self.current_move_evals = [".." for _ in range(4)]
 
     def _poll_game_state_file(self):
         """Continuously polls the game state file for updates."""
@@ -286,6 +364,8 @@ class GameController:
             self.uci.set_position(uci_wrapper.START_FEN_NEW)
             self.board_moves = []
             self.clock_times_sec = {}
+            # Also reset the eval logger state
+            self.current_move_evals = [".." for _ in range(4)]
             print(f"Internal board state has been reset. Playing as colors: {self.colors_arg}")
 
     def _log_clocks(self):
@@ -333,13 +413,14 @@ class GameController:
 
     def check_and_play(self):
         """
-        The main decision-making loop.
-        Determines whose turn it is. If it's our turn, it stops any pondering,
-        gets a move, and plays it. If it's the opponent's turn, it starts pondering.
+        The main decision-making loop. Now logs a placeholder for every opponent
+        turn to ensure the log file is always written correctly.
         """
         turn_order = ['R', 'B', 'Y', 'G']
-        current_turn_char = 'R' if not self.board_moves else turn_order[len(self.board_moves) % 4]
+        ply_number = len(self.board_moves)
+        current_turn_char = turn_order[ply_number % 4]
 
+        # --- IT'S OUR TURN ---
         if current_turn_char in self.controlled_colors:
             print(f"--- My turn to play as {current_turn_char} (controlled colors: {self.colors_arg}) ---")
             
@@ -352,6 +433,7 @@ class GameController:
 
             if self.tablebase_enabled and (best_move := tablebase.get_tablebase_move(self.board_moves)):
                 print(f"Found move in tablebase: {best_move}")
+                self._log_evaluation(ply_number, None)
                 self.execute_gui_move(best_move, perspective=perspective)
                 return
 
@@ -364,17 +446,26 @@ class GameController:
 
             if 'best_move' in result:
                 print(f"Engine chose move: {result['best_move']}")
+                score = result.get('score') 
+                self._log_evaluation(ply_number, score)
                 self.execute_gui_move(result['best_move'], perspective=perspective)
             else:
                 print("!!! WARNING: Engine did not return a move.")
+                self._log_evaluation(ply_number, None)
 
-        elif self.ponder_enabled:
-            self.uci.stop() # Stop any previous search to be safe
-            if self.asymmetric_eval:
-                self.uci.set_team('red_yellow' if current_turn_char in 'RY' else 'blue_green')
-            self.uci.set_position(self.get_current_fen(), self.board_moves)
-            print(f"--- Opponent's turn ({current_turn_char}). Starting to ponder... ---")
-            self.uci.start_pondering(gameover_callback=lambda: None)
+        # --- IT'S THE OPPONENT'S TURN ---
+        else:
+            # Log a placeholder for the opponent's move.
+            self._log_evaluation(ply_number, None)
+            
+            # Then, if pondering is enabled, start pondering.
+            if self.ponder_enabled:
+                self.uci.stop() 
+                if self.asymmetric_eval:
+                    self.uci.set_team('red_yellow' if current_turn_char in 'RY' else 'blue_green')
+                self.uci.set_position(self.get_current_fen(), self.board_moves)
+                print(f"--- Opponent's turn ({current_turn_char}). Starting to ponder... ---")
+                self.uci.start_pondering(gameover_callback=lambda: None)
 
     def execute_gui_move(self, move_str: str, perspective: str):
         """Converts an algebraic move to pixel coordinates and executes it via GUI automation."""
