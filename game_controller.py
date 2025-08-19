@@ -1,5 +1,5 @@
 # game_controller.py
-# v26 (Adds logging for engine evaluations)
+# v27 (Adds game-over detection and ensures final eval logging)
 import os
 import sys
 import time
@@ -40,7 +40,7 @@ WINDOW_CONFIG = {
 PIECE_ASSET_PATH = os.path.join('assets', 'pieces_svg')
 BOARD_DIMENSIONS = 14
 GAME_STATE_FILE = "game_state.json"
-EVAL_LOG_FILE = "eval_log.txt"  # NEW: Log file for engine evaluations
+EVAL_LOG_FILE = "eval_log.txt"
 POLL_INTERVAL_SECONDS = 0.1
 
 # Time Management Constants (for dynamic TC)
@@ -175,7 +175,6 @@ class GameController:
         self.lock = threading.Lock()
         self.uci = uci_wrapper.UciWrapper(num_threads=9, max_depth=100, ponder=self.ponder_enabled)
         
-        # NEW: Eval logging attributes
         self.eval_log_file = EVAL_LOG_FILE
         self.current_move_evals = [".." for _ in range(4)]
         # Clear the log file on startup
@@ -190,6 +189,8 @@ class GameController:
         self.polling_thread = threading.Thread(target=self._poll_game_state_file, daemon=True)
         self.polling_thread.start()
 
+        self.game_is_over = False
+
         if 'R' in self.controlled_colors:
             print("[INIT] Engine is controlling Red. Proactively checking for first move...")
             initial_move_thread = threading.Thread(target=self._initial_move_thread_target, daemon=True)
@@ -199,6 +200,11 @@ class GameController:
         """Gracefully shuts down the controller and engine, saving any pending evals."""
         print("\nShutting down controller...")
         self.stop_polling_event.set()
+
+        # If the game ended normally, don't re-log partial evals.
+        if self.game_is_over:
+            self.uci.shutdown()
+            return
         
         # Write any pending (incomplete line) evaluations to the log file before exiting
         ply = len(self.board_moves)
@@ -220,7 +226,42 @@ class GameController:
         
         self.uci.shutdown()
 
-    # NEW METHOD: For logging evaluations
+    def _log_final_evals_and_terminate_play(self):
+        """
+        Called when a game-ending position is detected. Stops engine activity,
+        logs any pending evaluations, and signals the main thread to exit.
+        """
+        print("[GAME END] Stopping engine and logging final evaluations...")
+        self.uci.stop()  # Stop pondering or any active search
+
+        ply = len(self.board_moves)
+        turn_index = ply % 4
+        
+        # Only write if there are pending evals from a partial move cycle
+        if turn_index > 0:
+            move_number = (ply // 4) + 1
+            move_num_str = f"{move_number}."
+            
+            # Get only the evals that have occurred in this partial move
+            logged_evals = self.current_move_evals[:turn_index]
+            
+            all_parts = [move_num_str] + logged_evals
+            line = " ".join(all_parts) + "\n"
+
+            try:
+                with open(self.eval_log_file, 'a') as f:
+                    f.write(line)
+                    f.write("--- Game Over ---\n")
+                print(f"[EVAL LOG] Wrote final partial move evaluations to '{self.eval_log_file}'.")
+            except IOError as e:
+                print(f"!!! CRITICAL ERROR: Could not write final eval log: {e}")
+                
+        # Reset for the next game, just in case.
+        self.current_move_evals = [".." for _ in range(4)]
+        
+        # Signal the main thread that the game is over and it should exit.
+        self.game_is_over = True
+
     def _log_evaluation(self, ply: int, score: Optional[int]):
         """
         Logs the engine evaluation for a given ply. Now uses a simple,
@@ -254,11 +295,7 @@ class GameController:
             move_number = (ply // 4) + 1
             move_num_str = f"{move_number}."
             
-            # --- SIMPLE FORMATTING LOGIC ---
-            # Create a list of all parts: move number + the four evals
             all_parts = [move_num_str] + self.current_move_evals
-            
-            # Join all parts with a single space
             line = " ".join(all_parts) + "\n"
 
             try:
@@ -387,6 +424,17 @@ class GameController:
                 print(f"\n[SYNC] Received {len(incoming_moves)} moves, had {len(self.board_moves)}. Updating state.")
                 self.board_moves = incoming_moves
                 self._log_clocks()
+
+                # After syncing, check if the game has ended before proceeding.
+                # This prevents the bot from getting stuck waiting for a move in a finished game.
+                self.uci.set_position(self.get_current_fen(), self.board_moves)
+                num_legal_moves = self.uci.get_num_legal_moves()
+
+                if num_legal_moves is not None and num_legal_moves == 0:
+                    print("\n--- GAME OVER DETECTED (0 legal moves available) ---")
+                    self._log_final_evals_and_terminate_play()
+                    return  # Halt further processing as the game is over.
+
                 self.check_and_play()
 
     def _calculate_dynamic_time_ms(self, current_turn_char: str) -> int:
@@ -413,7 +461,7 @@ class GameController:
 
     def check_and_play(self):
         """
-        The main decision-making loop. Now logs a placeholder for every opponent
+        The main decision-making loop. Logs a placeholder for every opponent
         turn to ensure the log file is always written correctly.
         """
         turn_order = ['R', 'B', 'Y', 'G']
@@ -604,14 +652,17 @@ if __name__ == "__main__":
     if args.tablebase: print("[CONFIG] Opening move tablebase is ENABLED.")
     else: print("[CONFIG] Opening move tablebase is DISABLED.")
 
+
     print("\n--- 4-Player Chess Game Controller ---")
     print(f"Running for colors: {args.colors.upper()}")
     print("A separate terminal has been launched for the move fetcher.")
     print("Controller is running. Press Ctrl+C to exit.")
     
     try:
-        while True:
+        while not controller.game_is_over:
             time.sleep(1)
+        print("\nGame has ended. Shutting down gracefully.")
     except KeyboardInterrupt:
-        # **UPDATED SHUTDOWN LOGIC**
+        pass  # Let the shutdown method handle Ctrl+C
+    finally:
         controller.shutdown()
