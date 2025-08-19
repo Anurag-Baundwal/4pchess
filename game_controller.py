@@ -325,11 +325,11 @@ class GameController:
             print(f"!!! CRITICAL: Failed to activate window for chat after 3 attempts. Aborting message.")
             return
         
-        time.sleep(0.05)
+        time.sleep(0.25)
 
         print("[ACTION] Attempting to dismiss any popups by pressing ESC...")
         pyautogui.press('escape')
-        time.sleep(0.05)
+        time.sleep(0.1)
         
         # Find chat box coordinates just-in-time
         chat_coords = self._find_chat_box(window)
@@ -505,6 +505,24 @@ class GameController:
                 self.board_moves = incoming_moves
                 self._log_clocks()
 
+                # Check for game termination via special move notation from the move list
+                if self.board_moves and self.board_moves[-1] in ('T', 'R', '#'):
+                    termination_reason = {
+                        'T': 'Timeout (Flag)',
+                        'R': 'Resignation',
+                        '#': 'Checkmate (by notation)'
+                    }.get(self.board_moves[-1], 'Unknown notation')
+                    
+                    print(f"\n--- GAME OVER DETECTED ({termination_reason}: '{self.board_moves[-1]}') ---")
+                    
+                    # Set engine position to the state *before* the terminal move for logging purposes
+                    engine_moves = self.board_moves[:-1]
+                    self.uci.set_position(self.get_current_fen(), engine_moves)
+                    
+                    self._log_final_evals_and_terminate_play()
+                    return
+
+                # If not terminated by notation, check for mate/stalemate by checking legal moves
                 self.uci.set_position(self.get_current_fen(), self.board_moves)
                 num_legal_moves = self.uci.get_num_legal_moves()
 

@@ -1,5 +1,5 @@
 # move_fetcher.py
-# v12.2 (Reduced startup time)
+# v13 (Fix parsing for resingation and timeout moves)
 
 import time
 import random
@@ -189,11 +189,18 @@ def fetch_and_sync_moves(driver):
                 if title:
                     move_notation = title.split('•')[0].strip()
 
-                    if not move_notation or move_notation == '#' or len(move_notation) <= 1:
+                    if not move_notation:
                         continue
-                    else:
-                        standardized_move = _standardize_move_notation(move_notation, i)
-                        current_moves.append(standardized_move)
+                    
+                    # Handle game-ending notations, which are single characters.
+                    if move_notation in ('T', 'R', '#'):
+                        current_moves.append(move_notation)
+                        # The game is over, so no more moves will appear in this list.
+                        # We can stop parsing the rest of the moves for this cycle.
+                        break
+                    
+                    standardized_move = _standardize_move_notation(move_notation, i)
+                    current_moves.append(standardized_move)
 
             if current_moves != last_sent_moves:
                 detection_time = time.time()
