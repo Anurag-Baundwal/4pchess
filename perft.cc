@@ -17,18 +17,30 @@ uint64_t perft(Board& board, int depth) {
 
   uint64_t nodes = 0;
   Move move_buffer[300];
-  Player player_to_move = board.GetTurn(); // Get the player *before* making moves
+  Player player_to_move = board.GetTurn();
 
   size_t num_moves = board.GetPseudoLegalMoves2(move_buffer, 300);
 
   for (size_t i = 0; i < num_moves; i++) {
     const auto& move = move_buffer[i];
-
+    
     board.MakeMove(move);
-    // A move is legal if the king of the player who just moved is NOT in check.
-    if (!board.IsKingInCheck(player_to_move)) {
-      nodes += perft(board, depth - 1);
+
+    // 1. Check for winning king capture first. This is a terminal node.
+    if (board.CheckWasLastMoveKingCapture() != IN_PROGRESS) {
+      nodes += 1;
+      board.UndoMove();
+      continue; // Stop recursing down this line
     }
+
+    // 2. If not a king capture, then check for self-check legality.
+    if (board.IsKingInCheck(player_to_move)) {
+      board.UndoMove();
+      continue; // Illegal move, discard it
+    }
+
+    // 3. If legal and not game-ending, recurse.
+    nodes += perft(board, depth - 1);
     board.UndoMove();
   }
 
@@ -53,12 +65,26 @@ uint64_t divide(Board& board, int depth) {
       const auto& move = move_buffer[i];
 
       board.MakeMove(move);
-      // A move is legal if the king of the player who just moved is NOT in check.
-      if (!board.IsKingInCheck(player_to_move)) {
-          uint64_t nodes = perft(board, depth - 1);
+
+      // 1. Check for winning king capture first.
+      if (board.CheckWasLastMoveKingCapture() != IN_PROGRESS) {
+          uint64_t nodes = 1; // This move is a single leaf node
           total_nodes += nodes;
           std::cout << move.PrettyStr() << ": " << nodes << std::endl;
+          board.UndoMove();
+          continue;
       }
+      
+      // 2. If not a king capture, check for self-check.
+      if (board.IsKingInCheck(player_to_move)) {
+          board.UndoMove();
+          continue; // Illegal move
+      }
+
+      // 3. If legal, recurse with perft.
+      uint64_t nodes = perft(board, depth - 1);
+      total_nodes += nodes;
+      std::cout << move.PrettyStr() << ": " << nodes << std::endl;
       board.UndoMove();
   }
   std::cout << "\nTotal Nodes: " << total_nodes << std::endl;
