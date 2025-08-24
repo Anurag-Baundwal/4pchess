@@ -309,6 +309,9 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
 
   (ss+2)->killers[0] = (ss+2)->killers[1] = Move();
   ss->move_count = 0;
+  // Fail-High Reduction Logic (cutoff counter initialization)
+  (ss+1)->cutoffCnt = 0; 
+  
   if (ply == 1) {
     ss->root_depth = depth;
   }
@@ -572,6 +575,13 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       r -= std::clamp((history_score - 4000) / 10000, -3, 3);
     }
 
+    // Fail-High Reduction Logic (increase reduction based on child cutoffs)
+    // If the next ply has had a lot of cutoffs, it's likely an "easy" position,
+    // so we can be more aggressive with our reductions.
+    if ((ss + 1)->cutoffCnt > 2) {
+        r += 1;
+    }
+
     // allow limited extension if the reduction is negative
     r = std::max(ply >= ss->root_depth * 1.0 ? 0 : -1, r);
 
@@ -712,6 +722,10 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     searched_moves.push_back(move);
 
     if (score >= beta) {
+      if (e < 2) {
+          ss->cutoffCnt++;
+      }
+
       alpha = beta;
       best_move = move;
       pvinfo.SetChild(child_pvinfo);
@@ -751,13 +765,25 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       score = std::min(beta, std::max(alpha, -kMateValue));
     }
   }
-
-  if (options_.enable_transposition_table) {
-    ScoreBound bound = beta <= alpha ? LOWER_BOUND : is_pv_node &&
-      best_move.has_value() ? EXACT : UPPER_BOUND;
-    transposition_table_->Save(board.HashKey(), depth, best_move, score, ss->static_eval, bound, is_pv_node);
+  
+  // Post-search soft bounding on fail-high 
+  if (fail_high && std::abs(score) < kMateValue) {
+      score = (score * depth + beta) / (depth + 1);
+      // Sanity check to ensure we don't violate the bound
+      assert(score >= beta); 
   }
 
+  if (options_.enable_transposition_table) {
+      ScoreBound bound;
+      if (fail_high) {
+          bound = LOWER_BOUND;
+      } else if (is_pv_node && best_move.has_value()) {
+          bound = EXACT;
+      } else {
+          bound = UPPER_BOUND;
+      }
+      transposition_table_->Save(board.HashKey(), depth, best_move, score, ss->static_eval, bound, is_pv_node);
+  }
   if (best_move.has_value()
       && !best_move->IsCapture()) {
     UpdateQuietStats(ss, *best_move);
@@ -1817,7 +1843,7 @@ AlphaBetaPlayer::MakeMoveSingleThread(
   int beta = kMateValue;
   bool maximizing_player = board.TeamToPlay() == RED_YELLOW;
   int searched_depth = 0;
-  Stack stack[kMaxPly + 10];
+  Stack stack[kMaxPly + 10] = {};
   Stack* ss = stack + 7;
   for (int i = 7; i > 0; i--) {
     (ss-i)->continuation_history = &continuation_history[0][0][NO_PIECE][0][0];
@@ -1838,9 +1864,15 @@ AlphaBetaPlayer::MakeMoveSingleThread(
       int fail_cnt = 0;
 
       while (true) {
+          // === MODIFIED: Aspiration Window Depth Reduction ===
+          // Reduce the effective search depth based on the number of fail-highs.
+          // int adjusted_depth = std::max(1, next_depth - fail_cnt); // We revert this for now.
+          
           move_and_value = Search(
               ss, Root, thread_state, board, 1, next_depth, alpha, beta, maximizing_player,
               0, deadline, pv_info);
+          // ==================================================
+
           if (!move_and_value.has_value()) { // Hit deadline
               break;
           }
@@ -1861,10 +1893,10 @@ AlphaBetaPlayer::MakeMoveSingleThread(
           if (evaluation <= alpha) {
               beta = (alpha + beta) / 2;
               alpha = std::max(evaluation - delta, -kMateValue);
-              ++fail_cnt;
+              fail_cnt = 0; // Reset fail_cnt on fail-low
           } else if (evaluation >= beta) {
               beta = std::min(evaluation + delta, kMateValue);
-              ++fail_cnt;
+              ++fail_cnt; // Increment fail_cnt on fail-high
           } else {
               break;
           }
@@ -1876,7 +1908,6 @@ AlphaBetaPlayer::MakeMoveSingleThread(
 
           delta += delta / 3;
       }
-      // MODIFICATION END
 
       if (!move_and_value.has_value()) { // Hit deadline
         break;
@@ -2087,4 +2118,4 @@ std::shared_ptr<PVInfo> PVInfo::Copy() const {
   return copy;
 }
 
-} // namespace chesss
+} // namespace chess
