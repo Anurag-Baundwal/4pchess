@@ -96,6 +96,7 @@ struct Stack {
   int root_depth = 0;
   int static_eval = 0;
   int reduction = 0;
+  int cutoffCnt = 0;
 };
 
 enum NodeType {
