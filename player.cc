@@ -578,7 +578,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     // Fail-High Reduction Logic (increase reduction based on child cutoffs)
     // If the next ply has had a lot of cutoffs, it's likely an "easy" position,
     // so we can be more aggressive with our reductions.
-    if ((ss + 1)->cutoffCnt > 2) {
+    if ((ss + 1)->cutoffCnt > 4) {
         r += 1;
     }
 
