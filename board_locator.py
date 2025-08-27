@@ -64,13 +64,11 @@ class BoardLocator:
             return (max_loc[0] + w // 2, max_loc[1] + h // 2)
         return None
 
-    def calibrate(self) -> Optional[Dict]:
+    def calibrate(self, setup: str = 'modern') -> Optional[Dict]:
         """
         Main public method. Finds kings on the full screen, calculates geometry, and performs a sanity check.
         NOTE: Assumes the correct window has ALREADY been brought to the foreground by the caller.
         """
-        # --- MODIFIED SECTION ---
-        # We no longer find the window or define a region. We just screenshot the whole screen.
         print("Taking a screenshot of the entire screen...")
         try:
             screenshot = pyautogui.screenshot()
@@ -78,15 +76,12 @@ class BoardLocator:
         except Exception as e:
             print(f"Error capturing full-screen screenshot: {e}")
             return None
-        # --- END MODIFIED SECTION ---
 
         print("Searching for kings on screen...")
         king_coords_raw = {}
         for color, template in self.king_templates.items():
             coords = self._find_piece_center(screenshot_cv, template)
             if coords:
-                # --- MODIFIED ---
-                # The coordinates are already absolute screen coordinates. No need to add window.left/top.
                 king_coords_raw[color] = np.array(coords, dtype=float)
                 print(f"  - Found {color} King at {coords}")
             else:
@@ -98,19 +93,31 @@ class BoardLocator:
             print("ERROR: Could not locate all four kings. Is it the start of the game?")
             return None
         
-        print("\nAll kings found. Calculating board geometry using vector math...")
-        return self._calculate_geometry(king_coords_raw)
+        print(f"\nAll kings found. Calculating board geometry for '{setup}' setup using vector math...")
+        return self._calculate_geometry(king_coords_raw, setup)
 
-    def _calculate_geometry(self, king_coords: Dict[str, np.ndarray]) -> Optional[Dict]:
+    def _calculate_geometry(self, king_coords: Dict[str, np.ndarray], setup: str) -> Optional[Dict]:
         """
         Uses vector math based on king positions to derive a universal board coordinate system.
+        The algebraic vectors and king positions change based on the game setup.
         """
         vec_ry = king_coords['Y'] - king_coords['R']
         vec_bg = king_coords['G'] - king_coords['B']
         
-        A = np.array([[-1, 13], [13, 1]])
+        # Define algebraic king positions (col, row) and the resulting matrix A for each setup
+        if setup == 'classic':
+            # R=h1(7,0), Y=g14(6,13) -> vec_ry = (-1, 13)
+            # B=a8(0,7), G=n7(13,6) -> vec_bg = (13, -1)
+            A = np.array([[-1, 13], [13, -1]])
+            king_alg = {'R': (7, 0), 'Y': (6, 13), 'B': (0, 7), 'G': (13, 6)}
+        else: # Default to 'modern'
+            # R=h1(7,0), Y=g14(6,13) -> vec_ry = (-1, 13)
+            # B=a7(0,6), G=n8(13,7) -> vec_bg = (13, 1)
+            A = np.array([[-1, 13], [13, 1]])
+            king_alg = {'R': (7, 0), 'Y': (6, 13), 'B': (0, 6), 'G': (13, 7)}
+        
         if np.linalg.det(A) == 0:
-            print("!!! CRITICAL ERROR: Geometry matrix is singular. Cannot calculate vectors.")
+            print(f"!!! CRITICAL ERROR: Geometry matrix for setup '{setup}' is singular. Cannot calculate vectors.")
             return None
             
         A_inv = np.linalg.inv(A)
@@ -118,12 +125,10 @@ class BoardLocator:
         # Matrix of the two displacement vectors stacked as rows
         vec_matrix_rows = np.vstack([vec_ry, vec_bg])
         
-        # --- MODIFIED SECTION (VECTOR MATH FIX) ---
         # Solve the system of linear equations: U = A_inv * V
         # The result is a 2x2 matrix where row 0 is U_col and row 1 is U_row
         unit_vectors = np.dot(A_inv, vec_matrix_rows)
         unit_vec_col, unit_vec_row = unit_vectors
-        # --- END MODIFIED SECTION ---
 
         square_size = (np.linalg.norm(unit_vec_col) + np.linalg.norm(unit_vec_row)) / 2.0
         print(f"Calculated average square size: {square_size:.2f} pixels")
@@ -131,13 +136,13 @@ class BoardLocator:
         print(f"Unit vector for 1 column (e.g., a->b): {unit_vec_col.round(2)}")
         print(f"Unit vector for 1 row (e.g., 1->2):   {unit_vec_row.round(2)}")
 
+        # Origin is calculated from the Red King's position, which is the same in both setups
         origin_a1_center_px = king_coords['R'] - (7 * unit_vec_col)
         print(f"Calculated origin (center of a1): {origin_a1_center_px.round(1)}")
 
         print("\nPerforming sanity check by re-calculating king positions...")
         errors = {}
-        king_alg = {'R': (7, 0), 'Y': (6, 13), 'B': (0, 6), 'G': (13, 7)}
-        
+        # The correct king_alg dictionary is used here based on the setup
         for color, (col_offset, row_offset) in king_alg.items():
             calculated_pos = origin_a1_center_px + col_offset * unit_vec_col + row_offset * unit_vec_row
             found_pos = king_coords[color]
