@@ -1,5 +1,5 @@
 # move_fetcher.py
-# v13 (Fix parsing for resingation and timeout moves)
+# v14 (Adds support for classic setup)
 
 import time
 import random
@@ -23,7 +23,7 @@ GAME_STATE_FILE = "game_state.json"
 POLL_INTERVAL_SECONDS = 0.1
 COOKIE_FILE = "chess_cookies.pkl"
 
-CASTLING_KING_MOVES = {
+CASTLING_KING_MOVES_MODERN = {
     ('R', 'O-O'):   'h1-j1',
     ('R', 'O-O-O'): 'h1-f1',
     ('B', 'O-O'):   'a7-a5',
@@ -32,6 +32,17 @@ CASTLING_KING_MOVES = {
     ('Y', 'O-O-O'): 'g14-i14',
     ('G', 'O-O'):   'n8-n10',
     ('G', 'O-O-O'): 'n8-n6',
+}
+
+CASTLING_KING_MOVES_CLASSIC = {
+    ('R', 'O-O'):   'h1-j1',
+    ('R', 'O-O-O'): 'h1-f1',
+    ('B', 'O-O'):   'a8-a10',  # King on a8
+    ('B', 'O-O-O'): 'a8-a6',
+    ('Y', 'O-O'):   'g14-e14',
+    ('Y', 'O-O-O'): 'g14-i14',
+    ('G', 'O-O'):   'n7-n5',   # King on n7
+    ('G', 'O-O-O'): 'n7-n9',
 }
 
 # Unique RGB values for each player's clock from chess.com
@@ -135,7 +146,7 @@ def _fetch_clock_times(driver) -> dict:
     return clocks_found
 
 
-def _standardize_move_notation(move_notation: str, turn_index: int) -> str:
+def _standardize_move_notation(move_notation: str, turn_index: int, castling_moves: dict) -> str:
     """
     Converts various PGN-style notations from chess.com into the simple
     'from-to' algebraic format the engine expects.
@@ -144,8 +155,8 @@ def _standardize_move_notation(move_notation: str, turn_index: int) -> str:
     player_char = turn_order[turn_index % 4]
     if move_notation in ('O-O', 'O-O-O'):
         lookup_key = (player_char, move_notation)
-        if lookup_key in CASTLING_KING_MOVES:
-            return CASTLING_KING_MOVES[lookup_key]
+        if lookup_key in castling_moves:
+            return castling_moves[lookup_key]
         else:
             print(f"!!! ERROR: Could not translate castling move for {lookup_key}")
             return move_notation
@@ -160,7 +171,7 @@ def _standardize_move_notation(move_notation: str, turn_index: int) -> str:
     print(f"!!! WARNING: Unhandled move notation format: '{move_notation}'. Passing it as is.")
     return move_notation
 
-def fetch_and_sync_moves(driver):
+def fetch_and_sync_moves(driver, castling_moves: dict):
     """
     Finds moves on the page, formats them, and writes them to a JSON file.
     """
@@ -199,7 +210,7 @@ def fetch_and_sync_moves(driver):
                         # We can stop parsing the rest of the moves for this cycle.
                         break
                     
-                    standardized_move = _standardize_move_notation(move_notation, i)
+                    standardized_move = _standardize_move_notation(move_notation, i, castling_moves)
                     current_moves.append(standardized_move)
 
             if current_moves != last_sent_moves:
@@ -233,8 +244,14 @@ def fetch_and_sync_moves(driver):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Launches Chrome, loads login cookies, navigates to a game URL, and fetches moves.")
     parser.add_argument('--url', required=True, help="The full URL of the chess.com game.")
+    parser.add_argument('--setup', default='modern', choices=['modern', 'classic'], help="The game setup being played (modern or classic).")
     args = parser.parse_args()
-
+    if args.setup == 'classic':
+        castling_rules = CASTLING_KING_MOVES_CLASSIC
+        print("Using CLASSIC setup castling rules.")
+    else:
+        castling_rules = CASTLING_KING_MOVES_MODERN
+        print("Using MODERN setup castling rules.")
     options = Options()
     options.add_argument("--headless=new")  # faster/modern headless path[9]
     options.add_argument("--no-sandbox")
@@ -277,8 +294,8 @@ if __name__ == "__main__":
         print(f"Could not navigate to URL: {e}")
         driver.quit()
         sys.exit(1)
-
-    fetch_and_sync_moves(driver)
+    
+    fetch_and_sync_moves(driver, castling_rules)
 
     print("Script finished. Closing browser.")
     driver.quit()

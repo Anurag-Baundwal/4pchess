@@ -1,5 +1,5 @@
 # game_controller.py
-# v28 (Adds OCR-based chat functionality to say "gg" at game end)
+# v29 (Adds --setup flag for modern vs classic games)
 import os
 import sys
 import time
@@ -67,11 +67,11 @@ SAFETY_MARGIN = 0.90
 # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 # -----------------------------------------------------------------------------
 
-def launch_move_fetcher(url: str):
+def launch_move_fetcher(url: str, setup: str):
     """Launches move_fetcher.py in a separate terminal based on the OS."""
     current_os = platform.system()
     print(f"[{current_os.upper()}] Launching move fetcher in a new terminal...")
-    fetcher_command_args = [sys.executable, "move_fetcher.py", "--url", url]
+    fetcher_command_args = [sys.executable, "move_fetcher.py", "--url", url, "--setup", setup]
     try:
         if current_os == "Windows":
             subprocess.Popen(['start', 'cmd', '/k'] + fetcher_command_args, shell=True)
@@ -150,13 +150,13 @@ def switch_to_window_robust(partial_title: str) -> bool:
 
 class GameController:
     """Manages the overall game state, engine communication, and GUI interaction."""
-    # --- MODIFIED ---
-    def __init__(self, window_config, colors: str, ponder: bool, use_tablebase: bool, tc_config: tuple, asymmetric_eval: bool, url: str):
+    def __init__(self, window_config, colors: str, ponder: bool, use_tablebase: bool, tc_config: tuple, asymmetric_eval: bool, url: str, setup: str):
         self.window_config = window_config
         self.ponder_enabled = ponder
         self.tablebase_enabled = use_tablebase
         self.asymmetric_eval = asymmetric_eval
         self.game_url = url
+        self.setup = setup  # Store the setup mode ('modern' or 'classic')
 
         self.tc_mode, self.tc_params = tc_config
         if self.tc_mode == 'dynamic':
@@ -235,7 +235,6 @@ class GameController:
         
         self.uci.shutdown()
 
-    # --- MODIFIED ---
     def _log_final_evals_and_terminate_play(self):
         """
         Called when a game-ending position is detected. Stops engine activity,
@@ -261,7 +260,6 @@ class GameController:
             except IOError as e:
                 print(f"!!! CRITICAL ERROR: Could not write final eval log: {e}")
         
-        # --- SIMPLIFIED CHAT LOGIC ---
         print("\n[CHAT] Game is over. Attempting to say 'gg' in Bot-1 window.")
         bot1_window_title = self.window_config['BOT_1_TITLE']
         bot1_window = self._find_window(bot1_window_title)
@@ -271,7 +269,6 @@ class GameController:
             self._send_chat_message("gg", bot1_window)
         else:
             print(f"!!! WARNING: Bot-1 window ('{bot1_window_title}') not found. Cannot send 'gg'.")
-        # ----------------------------
                 
         self.current_move_evals = [".." for _ in range(4)]
         self.game_is_over = True
@@ -308,7 +305,6 @@ class GameController:
             print("    Please ensure Tesseract is installed and configured correctly.")
             return None
 
-    # --- MODIFIED ---
     def _send_chat_message(self, message: str, window: gw.Win32Window):
         """Activates a window, finds the chat box, dismisses popups, and sends a message."""
         print(f"--- Sending chat message '{message}' to window '{window.title}' ---")
@@ -456,7 +452,7 @@ class GameController:
                  return False
 
             locator = BoardLocator(piece_png_path=PIECE_ASSET_PATH, window_title=target_window.title)
-            geometry = locator.calibrate()
+            geometry = locator.calibrate(setup=self.setup)
             if geometry:
                 self.board_configs[perspective_key] = geometry
                 print(f"--- Calibration for '{perspective_key}' Successful ---")
@@ -479,7 +475,7 @@ class GameController:
         """Resets the internal game state to the beginning."""
         with self.lock:
             print("\n--- GAME RESET ---")
-            self.uci.set_position(uci_wrapper.START_FEN_NEW)
+            self.uci.set_position(self.get_current_fen())
             self.board_moves = []
             self.clock_times_sec = {}
             self.current_move_evals = [".." for _ in range(4)]
@@ -625,6 +621,8 @@ class GameController:
 
     def get_current_fen(self) -> str:
         """Returns the FEN for the current game position."""
+        if self.setup == 'classic':
+            return uci_wrapper.START_FEN_OLD
         return uci_wrapper.START_FEN_NEW
 
     def _find_window(self, title: str) -> Optional[gw.Win32Window]:
@@ -695,6 +693,10 @@ if __name__ == "__main__":
              " - Fixed:   'fixed_milliseconds' (e.g., 'fixed_3000')\n"
              "Default is '2+10'."
     )
+    parser.add_argument(
+        '--setup', default='modern', choices=['modern', 'classic'],
+        help="The game setup being played (modern or classic). Default is 'modern'."
+    )
     parser.add_argument('--asymmetric_eval', action='store_true', help="Enable asymmetric evaluation.")
     parser.add_argument('--ponder', action='store_true', help="Enable thinking on the opponent's turn.")
     parser.add_argument('--tablebase', dest='tablebase', action='store_true', help="Enable opening tablebase.")
@@ -720,14 +722,15 @@ if __name__ == "__main__":
         print(f"!!! CRITICAL: Could not initialize game state file: {e}")
         sys.exit(1)
 
-    launch_move_fetcher(args.url)
+    launch_move_fetcher(args.url, args.setup)
     print("Waiting a moment for the fetcher to launch...")
     time.sleep(2)
-
+    
     controller = GameController(
         WINDOW_CONFIG, colors=args.colors, ponder=args.ponder,
         use_tablebase=args.tablebase, tc_config=args.tc,
-        asymmetric_eval=args.asymmetric_eval, url=args.url
+        asymmetric_eval=args.asymmetric_eval, url=args.url,
+        setup=args.setup
     )
 
     tc_mode, tc_params = args.tc
@@ -736,6 +739,7 @@ if __name__ == "__main__":
     else:
         print(f"\n[CONFIG] Time control set to FIXED: {tc_params}ms per move.")
 
+    print(f"[CONFIG] Game setup is {args.setup.upper()}.")
     if args.asymmetric_eval: print("[CONFIG] Asymmetric evaluation has been ENABLED.")
     else: print("[CONFIG] Asymmetric evaluation is DISABLED (standard evaluation).")
     if args.ponder: print("[CONFIG] Pondering is ENABLED.")
