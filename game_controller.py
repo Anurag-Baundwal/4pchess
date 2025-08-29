@@ -706,6 +706,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # Disable tablebase if setup is not 'modern'
+    if args.setup != 'modern' and args.tablebase:
+        print("[CONFIG] Tablebase is only compatible with the 'modern' setup. Disabling it for this game.")
+        args.tablebase = False
+    
     print(f"Initializing clean game state file for URL: {args.url}")
     initial_payload = {
         'url': args.url,
