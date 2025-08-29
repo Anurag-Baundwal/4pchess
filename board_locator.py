@@ -1,5 +1,3 @@
-# board_locator.py
-
 import os
 import time
 import cv2
@@ -7,51 +5,67 @@ import numpy as np
 import pyautogui
 import pygetwindow as gw
 from typing import Dict, Tuple, Optional
-import cairosvg
+# cairosvg is no longer needed for this class
+# import cairosvg 
 
 class BoardLocator:
     """
     Finds the 4-player chessboard on screen by locating the four kings,
     determining the board's orientation, and calculating a precise vector-based
     coordinate system for the squares.
+    This version uses pre-rendered PNG templates for the kings.
     """
-    def __init__(self, piece_png_path: str, window_title: str, confidence: float = 0.85):
-        self.piece_path = piece_png_path
+    def __init__(self, king_png_path: str, window_title: str, confidence: float = 0.95):
+        self.king_path = king_png_path
         self.window_title = window_title # Note: This is now just for reference/logging
         self.confidence = confidence
-        self.king_templates = self._load_king_templates()
+        self.king_templates = self._load_king_template_pairs()
 
-    def _load_king_templates(self) -> Dict[str, np.ndarray]:
+    def _load_king_template_pairs(self) -> Dict[str, Dict[str, np.ndarray]]:
         """
-        Loads the four king SVGs, renders them to PNGs in memory,
-        and loads them into OpenCV format with transparency.
+        Loads the eight king PNGs (light and dark versions for each color)
+        into OpenCV format with transparency.
         """
         templates = {}
-        king_files = {
-            'R': os.path.join(self.piece_path, 'r', 'K.svg'),
-            'B': os.path.join(self.piece_path, 'b', 'K.svg'),
-            'Y': os.path.join(self.piece_path, 'y', 'K.svg'),
-            'G': os.path.join(self.piece_path, 'g', 'K.svg'),
+        king_map = {
+            'R': 'r', # Maps internal color code to filename prefix
+            'B': 'b',
+            'Y': 'y',
+            'G': 'g',
         }
-        print("Loading and rendering king templates from SVG...")
-        for color, path in king_files.items():
-            if not os.path.exists(path):
-                raise FileNotFoundError(f"King template not found at {path}.")
+        print("Loading king templates from PNG files...")
+        for color_code, prefix in king_map.items():
+            light_path = os.path.join(self.king_path, f"{prefix}k_light.png")
+            dark_path = os.path.join(self.king_path, f"{prefix}k_dark.png")
+
+            # Check if files exist before trying to load
+            if not os.path.exists(light_path):
+                raise FileNotFoundError(f"King template not found at {light_path}.")
+            if not os.path.exists(dark_path):
+                raise FileNotFoundError(f"King template not found at {dark_path}.")
+
+            # Load images with alpha channel
+            light_img = cv2.imread(light_path, cv2.IMREAD_UNCHANGED)
+            dark_img = cv2.imread(dark_path, cv2.IMREAD_UNCHANGED)
+
+            if light_img is None or dark_img is None:
+                raise IOError(f"Could not read image files for {color_code} King.")
             
-            png_data = cairosvg.svg2png(url=path, output_height=60)
-            np_array = np.frombuffer(png_data, np.uint8)
-            templates[color] = cv2.imdecode(np_array, cv2.IMREAD_UNCHANGED)
-            print(f"  - Loaded {color} King.")
+            templates[color_code] = {'light': light_img, 'dark': dark_img}
+            print(f"  - Loaded {color_code} King templates (light and dark).")
         return templates
 
     def _find_piece_center(self, screenshot: np.ndarray, template: np.ndarray) -> Optional[Tuple[int, int]]:
         """Finds the center of a given piece template within a screenshot."""
+        # Ensure template has an alpha channel for masking
         if template.shape[2] < 4:
-            print("Template is missing alpha channel, using standard matching.")
+            print(f"Warning: Template is missing alpha channel. Results may be inaccurate.")
+            # Fallback to simple template matching if no alpha
             screenshot_gray = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
             template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
             res = cv2.matchTemplate(screenshot_gray, template_gray, cv2.TM_CCOEFF_NORMED)
         else:
+            # Use alpha mask for more precise matching
             screenshot_bgr = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2BGR)
             template_bgr = template[:, :, :3]
             alpha_mask = template[:, :, 3]
@@ -66,7 +80,8 @@ class BoardLocator:
 
     def calibrate(self, setup: str = 'modern') -> Optional[Dict]:
         """
-        Main public method. Finds kings on the full screen, calculates geometry, and performs a sanity check.
+        Main public method. Finds kings on the full screen using a two-step
+        (light/dark) search, calculates geometry, and performs a sanity check.
         NOTE: Assumes the correct window has ALREADY been brought to the foreground by the caller.
         """
         print("Taking a screenshot of the entire screen...")
@@ -79,17 +94,29 @@ class BoardLocator:
 
         print("Searching for kings on screen...")
         king_coords_raw = {}
-        for color, template in self.king_templates.items():
-            coords = self._find_piece_center(screenshot_cv, template)
+        for color, template_pair in self.king_templates.items():
+            coords = None
+            
+            # 1. Try to find the light version first
+            print(f"  - Searching for {color} King (light version)...")
+            coords = self._find_piece_center(screenshot_cv, template_pair['light'])
+
+            # 2. If not found, try the dark version
+            if coords is None:
+                print(f"    - Light version not found. Trying dark version...")
+                coords = self._find_piece_center(screenshot_cv, template_pair['dark'])
+            
+            # 3. Check the final result and store it or fail
             if coords:
                 king_coords_raw[color] = np.array(coords, dtype=float)
                 print(f"  - Found {color} King at {coords}")
             else:
-                print(f"  - FAILED to find {color} King. Calibration aborted.")
+                print(f"  - FAILED to find {color} King (both light and dark versions). Calibration aborted.")
                 print(f"    Suggestion: Ensure the game window is fully visible and not obscured.")
                 return None
         
         if len(king_coords_raw) != 4:
+            # This check is somewhat redundant now but good for safety
             print("ERROR: Could not locate all four kings. Is it the start of the game?")
             return None
         
