@@ -49,6 +49,7 @@ WINDOW_CONFIG = {
     'BOT_2_TITLE': "Bot-2",
 }
 PIECE_ASSET_PATH = os.path.join('assets', 'pieces_svg')
+KING_PNG_PATH = os.path.join('assets', 'kings')
 BOARD_DIMENSIONS = 14
 GAME_STATE_FILE = "game_state.json"
 EVAL_LOG_FILE = "eval_log.txt"
@@ -451,7 +452,7 @@ class GameController:
                  print(f"!!! CRITICAL: Failed to activate window '{target_window.title}' for calibration.")
                  return False
 
-            locator = BoardLocator(piece_png_path=PIECE_ASSET_PATH, window_title=target_window.title)
+            locator = BoardLocator(king_png_path=KING_PNG_PATH, window_title=target_window.title)
             geometry = locator.calibrate(setup=self.setup)
             if geometry:
                 self.board_configs[perspective_key] = geometry
