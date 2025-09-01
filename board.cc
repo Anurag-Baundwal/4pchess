@@ -376,6 +376,7 @@ void Board::GetKingMoves2(
   const CastlingRights& initial_castling_rights = castling_rights_[piece.GetColor()];
   CastlingRights castling_rights(false, false);
 
+  // --- Standard King Moves (same as before) ---
   for (int delta_row = -1; delta_row < 2; ++delta_row) {
     for (int delta_col = -1; delta_col < 2; ++delta_col) {
       if (delta_row == 0 && delta_col == 0) {
@@ -393,7 +394,24 @@ void Board::GetKingMoves2(
     }
   }
 
+  // --- Castling ---
+  // Delegate to the appropriate helper function based on the setup type.
+  if (setup_type_ == MODERN) {
+    AddModernCastlingMoves(moves, from, piece);
+  } else {
+    AddClassicCastlingMoves(moves, from, piece);
+  }
+}
+
+void Board::AddModernCastlingMoves(
+    MoveBuffer& moves,
+    const BoardLocation& from,
+    const Piece& piece) const {
+
+  const CastlingRights& initial_castling_rights = castling_rights_[piece.GetColor()];
+  CastlingRights castling_rights(false, false);
   Team other_team = OtherTeam(piece.GetTeam());
+  
   for (int is_kingside = 0; is_kingside < 2; ++is_kingside) {
     bool allowed = is_kingside ? initial_castling_rights.Kingside() :
       initial_castling_rights.Queenside();
@@ -404,65 +422,37 @@ void Board::GetKingMoves2(
       switch (piece.GetColor()) {
       case RED:
         if (is_kingside) {
-          squares_between = {
-            from.Relative(0, 1),
-            from.Relative(0, 2),
-          };
+          squares_between = { from.Relative(0, 1), from.Relative(0, 2) };
           rook_location = from.Relative(0, 3);
         } else {
-          squares_between = {
-            from.Relative(0, -1),
-            from.Relative(0, -2),
-            from.Relative(0, -3),
-          };
+          squares_between = { from.Relative(0, -1), from.Relative(0, -2), from.Relative(0, -3) };
           rook_location = from.Relative(0, -4);
         }
         break;
       case BLUE:
         if (is_kingside) {
-          squares_between = {
-            from.Relative(1, 0),
-            from.Relative(2, 0),
-          };
+          squares_between = { from.Relative(1, 0), from.Relative(2, 0) };
           rook_location = from.Relative(3, 0);
         } else {
-          squares_between = {
-            from.Relative(-1, 0),
-            from.Relative(-2, 0),
-            from.Relative(-3, 0),
-          };
+          squares_between = { from.Relative(-1, 0), from.Relative(-2, 0), from.Relative(-3, 0) };
           rook_location = from.Relative(-4, 0);
         }
         break;
       case YELLOW:
         if (is_kingside) {
-          squares_between = {
-            from.Relative(0, -1),
-            from.Relative(0, -2),
-          };
+          squares_between = { from.Relative(0, -1), from.Relative(0, -2) };
           rook_location = from.Relative(0, -3);
         } else {
-          squares_between = {
-            from.Relative(0, 1),
-            from.Relative(0, 2),
-            from.Relative(0, 3),
-          };
+          squares_between = { from.Relative(0, 1), from.Relative(0, 2), from.Relative(0, 3) };
           rook_location = from.Relative(0, 4);
         }
         break;
       case GREEN:
         if (is_kingside) {
-          squares_between = {
-            from.Relative(-1, 0),
-            from.Relative(-2, 0),
-          };
+          squares_between = { from.Relative(-1, 0), from.Relative(-2, 0) };
           rook_location = from.Relative(-3, 0);
         } else {
-          squares_between = {
-            from.Relative(1, 0),
-            from.Relative(2, 0),
-            from.Relative(3, 0),
-          };
+          squares_between = { from.Relative(1, 0), from.Relative(2, 0), from.Relative(3, 0) };
           rook_location = from.Relative(4, 0);
         }
         break;
@@ -471,15 +461,11 @@ void Board::GetKingMoves2(
         break;
       }
 
-      // Make sure the rook is present
       const auto rook = GetPiece(rook_location);
-      if (rook.Missing()
-          || rook.GetPieceType() != ROOK
-          || rook.GetTeam() != piece.GetTeam()) {
+      if (rook.Missing() || rook.GetPieceType() != ROOK || rook.GetTeam() != piece.GetTeam()) {
         continue;
       }
 
-      // Make sure that there are no pieces between the king and rook
       bool piece_between = false;
       for (const auto& loc : squares_between) {
         if (GetPiece(loc).Present()) {
@@ -489,10 +475,89 @@ void Board::GetKingMoves2(
       }
 
       if (!piece_between) {
-        // Make sure the king is not currently in or would pass through check
-        if (!IsAttackedByTeam(other_team, squares_between[0])
-            && !IsAttackedByTeam(other_team, from)) {
-          // Additionally move the castle
+        if (!IsAttackedByTeam(other_team, squares_between[0]) && !IsAttackedByTeam(other_team, from)) {
+          SimpleMove rook_move(rook_location, squares_between[0]);
+          moves.emplace_back(from, squares_between[1], rook_move,
+              initial_castling_rights, castling_rights);
+        }
+      }
+    }
+  }
+}
+
+void Board::AddClassicCastlingMoves(
+    MoveBuffer& moves,
+    const BoardLocation& from,
+    const Piece& piece) const {
+
+  const CastlingRights& initial_castling_rights = castling_rights_[piece.GetColor()];
+  CastlingRights castling_rights(false, false);
+  Team other_team = OtherTeam(piece.GetTeam());
+
+  for (int is_kingside = 0; is_kingside < 2; ++is_kingside) {
+    bool allowed = is_kingside ? initial_castling_rights.Kingside() :
+      initial_castling_rights.Queenside();
+    if (allowed) {
+      std::vector<BoardLocation> squares_between;
+      BoardLocation rook_location;
+
+      switch (piece.GetColor()) {
+      case RED:   // Same as modern
+        if (is_kingside) {
+          squares_between = { from.Relative(0, 1), from.Relative(0, 2) };
+          rook_location = from.Relative(0, 3);
+        } else {
+          squares_between = { from.Relative(0, -1), from.Relative(0, -2), from.Relative(0, -3) };
+          rook_location = from.Relative(0, -4);
+        }
+        break;
+      case BLUE:  // Logic is inverted compared to modern
+        if (is_kingside) { // This is the SHORT castle (towards row 3)
+          squares_between = { from.Relative(-1, 0), from.Relative(-2, 0) };
+          rook_location = from.Relative(-3, 0);
+        } else { // This is the LONG castle (towards row 10)
+          squares_between = { from.Relative(1, 0), from.Relative(2, 0), from.Relative(3, 0) };
+          rook_location = from.Relative(4, 0);
+        }
+        break;
+      case YELLOW: // Same as modern
+        if (is_kingside) {
+          squares_between = { from.Relative(0, -1), from.Relative(0, -2) };
+          rook_location = from.Relative(0, -3);
+        } else {
+          squares_between = { from.Relative(0, 1), from.Relative(0, 2), from.Relative(0, 3) };
+          rook_location = from.Relative(0, 4);
+        }
+        break;
+      case GREEN: // Logic is inverted compared to modern
+        if (is_kingside) { // This is the SHORT castle (towards row 10)
+          squares_between = { from.Relative(1, 0), from.Relative(2, 0) };
+          rook_location = from.Relative(3, 0);
+        } else { // This is the LONG castle (towards row 3)
+          squares_between = { from.Relative(-1, 0), from.Relative(-2, 0), from.Relative(-3, 0) };
+          rook_location = from.Relative(-4, 0);
+        }
+        break;
+      default:
+        assert(false);
+        break;
+      }
+
+      const auto rook = GetPiece(rook_location);
+      if (rook.Missing() || rook.GetPieceType() != ROOK || rook.GetTeam() != piece.GetTeam()) {
+        continue;
+      }
+
+      bool piece_between = false;
+      for (const auto& loc : squares_between) {
+        if (GetPiece(loc).Present()) {
+          piece_between = true;
+          break;
+        }
+      }
+
+      if (!piece_between) {
+        if (!IsAttackedByTeam(other_team, squares_between[0]) && !IsAttackedByTeam(other_team, from)) {
           SimpleMove rook_move(rook_location, squares_between[0]);
           moves.emplace_back(from, squares_between[1], rook_move,
               initial_castling_rights, castling_rights);
@@ -1360,6 +1425,15 @@ Board::Board(
     }
   }
 
+  // Deduce the setup type based on the initial position of the Blue King.
+  // In the classic setup, the Blue King is on a8 (row 6), in modern it's on a7 (row 7).
+  const auto& blue_king_loc = king_locations_[BLUE];
+  if (blue_king_loc.Present() && blue_king_loc.GetRow() == 6) {
+    setup_type_ = CLASSIC;
+  } else {
+    setup_type_ = MODERN;
+  }
+
   struct {
     bool operator()(const PlacedPiece& a, const PlacedPiece& b) {
       // this doesn't need to be fast.
@@ -1445,18 +1519,29 @@ Player GetPreviousPlayer(const Player& player) {
   }
 }
 
-std::shared_ptr<Board> Board::CreateStandardSetup() {
+std::shared_ptr<Board> Board::CreateStandardSetup(SetupType setup) {
   std::unordered_map<BoardLocation, Piece> location_to_piece;
   std::unordered_map<Player, CastlingRights> castling_rights;
 
-  std::vector<PieceType> piece_types = {
+  // for modern setup
+  std::vector<PieceType> piece_types_modern = {
     ROOK, KNIGHT, BISHOP, QUEEN, KING, BISHOP, KNIGHT, ROOK,
   };
+  // for classic setup
+  std::vector<PieceType> piece_types_classic = {
+    ROOK, KNIGHT, BISHOP, KING, QUEEN, BISHOP, KNIGHT, ROOK,
+  };
+
   std::vector<PlayerColor> player_colors = {RED, BLUE, YELLOW, GREEN};
 
   for (const PlayerColor& color : player_colors) {
     Player player(color);
     castling_rights[player] = CastlingRights(true, true);
+
+    // logic to select the correct piece layout based on the setup
+    const auto& piece_types = (setup == CLASSIC && (color == BLUE || color == GREEN))
+                              ? piece_types_classic
+                              : piece_types_modern;
 
     BoardLocation piece_location;
     int delta_row = 0;
@@ -1610,31 +1695,29 @@ std::optional<CastlingType> Board::GetRookLocationType(
     const Player& player, const BoardLocation& location) const {
   switch (player.GetColor()) {
   case RED:
-    if (location == kRedInitialRookLocationKingside) {
-      return KINGSIDE;
-    } else if (location == kRedInitialRookLocationQueenside) {
-      return QUEENSIDE;
-    }
+    if (location == kRedInitialRookLocationKingside) return KINGSIDE;
+    if (location == kRedInitialRookLocationQueenside) return QUEENSIDE;
     break;
   case BLUE:
-    if (location == kBlueInitialRookLocationKingside) {
-      return KINGSIDE;
-    } else if (location == kBlueInitialRookLocationQueenside) {
-      return QUEENSIDE;
+    if (setup_type_ == CLASSIC) {
+        if (location == kBlueInitialRookLocationKingside) return QUEENSIDE;
+        if (location == kBlueInitialRookLocationQueenside) return KINGSIDE;
+    } else { // MODERN
+        if (location == kBlueInitialRookLocationKingside) return KINGSIDE;
+        if (location == kBlueInitialRookLocationQueenside) return QUEENSIDE;
     }
     break;
   case YELLOW:
-    if (location == kYellowInitialRookLocationKingside) {
-      return KINGSIDE;
-    } else if (location == kYellowInitialRookLocationQueenside) {
-      return QUEENSIDE;
-    }
+    if (location == kYellowInitialRookLocationKingside) return KINGSIDE;
+    if (location == kYellowInitialRookLocationQueenside) return QUEENSIDE;
     break;
   case GREEN:
-    if (location == kGreenInitialRookLocationKingside) {
-      return KINGSIDE;
-    } else if (location == kGreenInitialRookLocationQueenside) {
-      return QUEENSIDE;
+    if (setup_type_ == CLASSIC) {
+        if (location == kGreenInitialRookLocationKingside) return QUEENSIDE;
+        if (location == kGreenInitialRookLocationQueenside) return KINGSIDE;
+    } else { // MODERN
+        if (location == kGreenInitialRookLocationKingside) return KINGSIDE;
+        if (location == kGreenInitialRookLocationQueenside) return QUEENSIDE;
     }
     break;
   default:
