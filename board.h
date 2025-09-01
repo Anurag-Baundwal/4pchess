@@ -408,6 +408,10 @@ struct MoveBuffer {
   }
 };
 
+enum SetupType {
+  MODERN,
+  CLASSIC,
+};
 
 class Board {
  // Conventions:
@@ -471,7 +475,7 @@ class Board {
 
   int64_t HashKey() const { return hash_key_; }
 
-  static std::shared_ptr<Board> CreateStandardSetup();
+  static std::shared_ptr<Board> CreateStandardSetup(SetupType setup = MODERN);
   const CastlingRights& GetCastlingRights(const Player& player);
 
   void MakeMove(const Move& move);
@@ -556,6 +560,14 @@ class Board {
       int incr_col,
       CastlingRights initial_castling_rights = CastlingRights::kMissingRights,
       CastlingRights castling_rights = CastlingRights::kMissingRights) const;
+  void AddModernCastlingMoves(
+      MoveBuffer& moves,
+      const BoardLocation& from,
+      const Piece& piece) const;
+  void AddClassicCastlingMoves(
+      MoveBuffer& moves,
+      const BoardLocation& from,
+      const Piece& piece) const;
   int GetMaxRow() const { return 13; }
   int GetMaxCol() const { return 13; }
   std::optional<CastlingType> GetRookLocationType(
@@ -599,6 +611,8 @@ class Board {
 
   BoardLocation locations_[14][14];
 
+  SetupType setup_type_;
+  
   CastlingRights castling_rights_[4];
   EnpassantInitialization enp_;
   std::vector<Move> moves_; // list of moves from beginning of game
