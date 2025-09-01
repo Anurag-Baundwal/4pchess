@@ -1216,6 +1216,20 @@ int AlphaBetaPlayer::Evaluate(
           int col = loc.GetCol();
 
           if (piece_type == QUEEN) {
+            // Central queen bonus
+            if (row >= 5 && row <= 8 && col >= 5 && col <= 8) {
+              if (color == RED || color == YELLOW) {
+                eval += 50;
+              } else { // BLUE or GREEN
+                eval -= 50;
+              }
+            } else if ((row >= 3 && row <= 10 && col >= 3 && col <= 10)) {
+                if (color == RED || color == YELLOW) {
+                eval += 25;
+              } else { // BLUE or GREEN
+                eval -= 25;
+              }
+            }
             if ((color == RED && row == 13) || (color == YELLOW && row == 0)) {
               eval -= 30;
             }
