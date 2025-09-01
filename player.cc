@@ -1240,12 +1240,12 @@ int AlphaBetaPlayer::Evaluate(
             if (color == RED || color == YELLOW) {
               // A Red/Yellow queen in Blue/Green territory (cols 0-1 or 12-13).
               if ((row >= 3 && row <= 10) && (col <= 1 || col >= 12)) {
-                eval += 25;
+                eval += 150;
               }
             } else { // BLUE or GREEN
               // A Blue/Green queen in Red/Yellow territory (rows 0-1 or 12-13).
               if ((col >= 3 && col <= 10) && (row <= 1 || row >= 12)) {
-                eval -= 25;
+                eval -= 150;
               }
             }
 
