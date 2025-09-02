@@ -1312,6 +1312,48 @@ int AlphaBetaPlayer::Evaluate(
             }
           }
 
+          // Bonus for a minor piece (Knight/Bishop) shielded by a friendly pawn.
+          // This is a simple but effective positional feature.
+          if (options_.enable_minor_behind_pawn_bonus
+              && (piece_type == BISHOP)) 
+          {
+            bool on_back_rank = false;
+            switch (color) {
+              case RED:    if (row == 13) on_back_rank = true; break;
+              case YELLOW: if (row == 0)  on_back_rank = true; break;
+              case BLUE:   if (col == 0)  on_back_rank = true; break;
+              case GREEN:  if (col == 13) on_back_rank = true; break;
+            }
+
+            // Only proceed if the piece is NOT on its back rank.
+            if (!on_back_rank) {
+              int pawn_row = row;
+              int pawn_col = col;
+
+              // Determine where the shielding pawn should be based on the piece's color
+              switch (color) {
+                case RED:    pawn_row--; break; // Pawn is on a lower row index
+                case YELLOW: pawn_row++; break; // Pawn is on a higher row index
+                case BLUE:   pawn_col++; break; // Pawn is on a higher col index
+                case GREEN:  pawn_col--; break; // Pawn is on a lower col index
+                default: break;
+              }
+
+              // Check if the location is valid and actually contains a friendly pawn
+              if (board.IsLegalLocation(pawn_row, pawn_col)) {
+                const auto& shield_piece = board.GetPiece(pawn_row, pawn_col);
+                if (shield_piece.GetPieceType() == PAWN && shield_piece.GetColor() == color) {
+                  constexpr int kMinorBehindPawnBonus = 20;
+                  if (color == RED || color == YELLOW) {
+                    eval += kMinorBehindPawnBonus;
+                  } else {
+                    eval -= kMinorBehindPawnBonus;
+                  }
+                }
+              }
+            }
+          }
+
           if (options_.enable_piece_square_table) {
             if (color == RED || color == YELLOW) {
               eval += piece_square_table_[color][piece_type][row][col];

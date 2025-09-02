@@ -67,6 +67,7 @@ struct PlayerOptions {
   bool enable_lazy_eval = true;
   bool enable_piece_square_table = true;
   bool enable_knight_bonus = true;
+  bool enable_minor_behind_pawn_bonus = true;
   Team engine_team = NO_TEAM;
 
   // for pruning / reduction
