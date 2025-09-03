@@ -809,34 +809,26 @@ export class Board {
     }
     return moves;
   }
-
+  
+  // --- MODIFIED ---
   getRookMoves(piece, from) {
     var moves = [];
+    const initial_castling_rights = this.castling_rights[piece.getPlayer()];
+    let castling_rights = null; // Will be set if this move affects rights.
 
-    // Update castling rights
-    var initial_castling_rights = null;
-    var castling_rights = null;
-    var castling_type = this.getRookLocationType(piece.getPlayer(), from);
+    const castling_type = this.getRookLocationType(piece.getPlayer(), from);
     if (castling_type != null) {
-      const curr_rights = this.castling_rights[piece.getPlayer()];
-      if (curr_rights != null) {
-        if (curr_rights.getKingside() || curr_rights.getQueenside()) {
-          if (castling_type.equals(KINGSIDE)) {
-            if (curr_rights.getKingside()) {
-              initial_castling_rights = curr_rights;
-              castling_rights = new CastlingRights(false,
-                  curr_rights.getQueenside());
-            }
-          } else {
-            if (curr_rights.getQueenside()) {
-              initial_castling_rights = curr_rights;
-              castling_rights = new CastlingRights(curr_rights.getKingside(),
-                  false);
-            }
-          }
+        if (castling_type.equals(KINGSIDE) && initial_castling_rights.getKingside()) {
+            castling_rights = new CastlingRights(false, initial_castling_rights.getQueenside());
+        } else if (castling_type.equals(QUEENSIDE) && initial_castling_rights.getQueenside()) {
+            castling_rights = new CastlingRights(initial_castling_rights.getKingside(), false);
         }
-      }
     }
+    
+    // If this move doesn't affect castling rights, castling_rights remains null,
+    // which is the correct way to signal no change in the Move object.
+    const rights_to_pass = castling_rights !== null ? castling_rights : null;
+    const initial_rights_to_pass = castling_rights !== null ? initial_castling_rights : null;
 
     for (var do_pos_incr = 0; do_pos_incr < 2; ++do_pos_incr) {
       var incr = do_pos_incr > 0 ? 1 : -1;
@@ -845,7 +837,7 @@ export class Board {
         var incr_col = do_incr_row > 0 ? 0 : incr;
         this.addMovesFromIncrMovement(
             moves, piece, from, incr_row, incr_col,
-            initial_castling_rights, castling_rights);
+            initial_rights_to_pass, rights_to_pass);
       }
     }
 
@@ -857,17 +849,17 @@ export class Board {
         this.getRookMoves(piece, from));
   }
 
+  // --- MODIFIED ---
   getKingMoves(piece, from) {
     var moves = [];
 
-    var initial_castling_rights = null;
-    var castling_rights = null;
-    const curr_rights = this.castling_rights[piece.getPlayer()];
-    if (curr_rights != null) {
-      if (curr_rights.getKingside() || curr_rights.getQueenside()) {
-        initial_castling_rights = curr_rights;
-        castling_rights = new CastlingRights(false, false);
-      }
+    // A king move always forfeits castling rights. We must record the state before the move.
+    const initial_castling_rights = this.castling_rights[piece.getPlayer()];
+    let castling_rights = null;
+
+    // Only create a new rights object if the rights are actually changing.
+    if (initial_castling_rights.getKingside() || initial_castling_rights.getQueenside()) {
+      castling_rights = new CastlingRights(false, false);
     }
 
     for (var delta_row = -1; delta_row < 2; ++delta_row) {
@@ -878,21 +870,24 @@ export class Board {
         var to = from.relative(delta_row, delta_col);
         if (this.isLegalLocation(to)) {
           var capture = this.getPiece(to);
-          if (capture == null
-            || capture.getTeam() != piece.getTeam()) {
+          if (capture == null || capture.getTeam() != piece.getTeam()) {
+            // Pass the rights objects. If rights didn't change, they will both be null.
             moves.push(Move.FromStandardMove(
-              from, to, capture, initial_castling_rights,
+              from, to, capture, 
+              castling_rights ? initial_castling_rights : null,
               castling_rights));
           }
         }
       }
     }
 
-    if (curr_rights != null) {
+    // Castling moves
+    if (initial_castling_rights.getKingside() || initial_castling_rights.getQueenside()) {
+        const new_castling_rights = new CastlingRights(false, false);
         if (this.setupType.equals(MODERN)) {
-            this.addModernCastlingMoves(moves, piece, from, initial_castling_rights, castling_rights);
+            this.addModernCastlingMoves(moves, piece, from, initial_castling_rights, new_castling_rights);
         } else {
-            this.addClassicCastlingMoves(moves, piece, from, initial_castling_rights, castling_rights);
+            this.addClassicCastlingMoves(moves, piece, from, initial_castling_rights, new_castling_rights);
         }
     }
     return moves;
