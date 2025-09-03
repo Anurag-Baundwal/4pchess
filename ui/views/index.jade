@@ -7,6 +7,13 @@ block content
       div#move_overlay.move-overlay
     div.rhs
       div.settings
+        div.setup-controls
+          label
+            input(type='radio', name='setup_type', value='modern', id='setup_modern', checked=true)
+            | Modern
+          label
+            input(type='radio', name='setup_type', value='classic', id='setup_classic')
+            | Classic
         input(placeholder='Max depth')#max_depth
         input(placeholder='Max secs per move')#secs_per_move
       div.evaluation

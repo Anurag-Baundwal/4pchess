@@ -23,39 +23,49 @@ export function parseBoardLocation(loc_str) {
   return new board_util.BoardLocation(row, col);
 }
 
-function getInitialKingLocation(turn) {
-  // NOTE: This could also handle the initial board configuration (standard,
-  // old, byg, etc.)
-  if (turn.equals(board_util.kRedPlayer)) {
-    return new board_util.BoardLocation(13, 7);
-  } else if (turn.equals(board_util.kBluePlayer)) {
-    return new board_util.BoardLocation(7, 0);
-  } else if (turn.equals(board_util.kYellowPlayer)) {
-    return new board_util.BoardLocation(0, 6);
-  } else if (turn.equals(board_util.kGreenPlayer)) {
-    return new board_util.BoardLocation(6, 13);
+function getInitialKingLocation(turn, setupType) {
+  // NOTE: This now handles the initial board configuration (modern vs. classic)
+  switch (turn.getColor()) {
+    case board_util.PlayerColor.Red:
+      return new board_util.BoardLocation(13, 7); // Same in both setups
+    case board_util.PlayerColor.Blue:
+      // Classic: a8, Modern: a7
+      return setupType.equals(board_util.CLASSIC)
+        ? new board_util.BoardLocation(6, 0)
+        : new board_util.BoardLocation(7, 0);
+    case board_util.PlayerColor.Yellow:
+      return new board_util.BoardLocation(0, 6); // Same in both setups
+    case board_util.PlayerColor.Green:
+      // Classic: n7, Modern: n8
+      return setupType.equals(board_util.CLASSIC)
+        ? new board_util.BoardLocation(7, 13)
+        : new board_util.BoardLocation(6, 13);
   }
   throw new Error(`Invalid turn: ${turn}`);
 }
 
-function getCastlingLocation(from, turn, kingside) {
-  var delta_row = 0;
-  var delta_col = 0;
+function getCastlingLocation(from, turn, kingside, setupType) {
+  let delta_row = 0;
+  let delta_col = 0;
 
-  if (turn.equals(board_util.kRedPlayer)) {
-    delta_col = kingside ? 2 : -2;
-  } else if (turn.equals(board_util.kBluePlayer)) {
-    delta_row = kingside ? 2 : -2;
-  } else if (turn.equals(board_util.kYellowPlayer)) {
-    delta_col = kingside ? -2: 2;
-  } else if (turn.equals(board_util.kGreenPlayer)) {
-    delta_row = kingside ? -2: 2;
+  const is_classic = setupType.equals(board_util.CLASSIC);
+  const color = turn.getColor();
+
+  // Modern: Kingside is always short castle, Queenside is long.
+  // Classic: For Blue/Green, this is swapped.
+  if (color.equals(board_util.PlayerColor.Red)) {
+      delta_col = kingside ? 2 : -2;
+  } else if (color.equals(board_util.PlayerColor.Blue)) {
+      delta_row = (kingside !== is_classic) ? 2 : -2; // Invert logic for classic
+  } else if (color.equals(board_util.PlayerColor.Yellow)) {
+      delta_col = kingside ? -2 : 2;
+  } else if (color.equals(board_util.PlayerColor.Green)) {
+      delta_row = (kingside !== is_classic) ? -2 : 2; // Invert logic for classic
   } else {
-    throw new Error(`Invalid turn: ${turn}`);
+      throw new Error(`Invalid turn: ${turn}`);
   }
 
-  return new board_util.BoardLocation(from.getRow() + delta_row,
-                                      from.getCol() + delta_col);
+  return new board_util.BoardLocation(from.getRow() + delta_row, from.getCol() + delta_col);
 }
 
 function maybeParsePromotionPieceType(move_str) {
@@ -82,14 +92,18 @@ export function parseMove(board, move_str) {
   var from = null;
   var to = null;
   var promotion_piece_type = null;
+
+  // We get the setupType directly from the board object.
+  const setupType = board.setupType;
+
   if (move_str == 'O-O') {
     // Castle kingside
-    from = getInitialKingLocation(board.getTurn());
-    to = getCastlingLocation(from, board.getTurn(), true);
+    from = getInitialKingLocation(board.getTurn(), setupType);
+    to = getCastlingLocation(from, board.getTurn(), true, setupType);
   } else if (move_str == 'O-O-O') {
     // Castle queenside
-    from = getInitialKingLocation(board.getTurn());
-    to = getCastlingLocation(from, board.getTurn(), false);
+    from = getInitialKingLocation(board.getTurn(), setupType);
+    to = getCastlingLocation(from, board.getTurn(), false, setupType);
   } else {
     var parts = move_str.split(/[-x]/);
     if (parts.length != 2) {
@@ -110,15 +124,15 @@ export function parseMove(board, move_str) {
   throw new Error(`Illegal move: ${move_str}`);
 }
 
-export function parseGameFromPGN(pgn_str) {
+export function parseGameFromPGN(pgn_str, setupType) {
   // Remove variations
   pgn_str = pgn_str.replaceAll(/\(.*?\)/gs, '');
   var parts = pgn_str.split('\n');
   const re = /^\d+\. (.*)$/;
   var moves = [];
   var piece_types = [];
-  // TODO: handle other types of start fen positions
-  var board = board_util.Board.CreateStandardSetup();
+  // Create a board with the specified setup type
+  var board = board_util.Board.CreateStandardSetup(setupType);
   var matched_lines = 0;
   for (var part of parts) {
     if (re.test(part)) {
@@ -130,6 +144,7 @@ export function parseGameFromPGN(pgn_str) {
             `Expected <= 4 moves per line, found ${move_strs.length}`);
       }
       for (var i = 0; i < move_strs.length; i++) {
+        // parseMove will now work correctly because the board object knows its setupType
         var move = parseMove(board, move_strs.at(i));
         if (move != null) {
           piece_types.push(board.getPiece(move.getFrom()).getPieceType());
@@ -144,4 +159,3 @@ export function parseGameFromPGN(pgn_str) {
   }
   return {'board': board, 'moves': moves, 'piece_types': piece_types};
 }
-
