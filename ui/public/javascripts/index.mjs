@@ -14,6 +14,7 @@ var request_interval = null;
 var max_search_depth = null;
 var secs_per_move = null;
 var MATE_VALUE = 1000000;
+var currentSetupType = board_util.MODERN; // Track the current setup
 
 if (window.localStorage != null) {
   var max_depth = parseInt(window.localStorage['max_search_depth']);
@@ -77,6 +78,20 @@ $(document).ready(function() {
   resetBoard();
   displayBoard();
   request_interval = setInterval(requestBoardEvaluation, 50);
+
+  $('input[name="setup_type"]').change(function() {
+    const selected_setup = $(this).val();
+    currentSetupType = (selected_setup === 'classic') ? board_util.CLASSIC : board_util.MODERN;
+    
+    // Reset the entire UI state for the new setup
+    resetBoard();
+    displayBoard();
+    $('#move_history').html('');
+    $('#pgn_input').val('');
+    $('#pgn_error').text('');
+    board_key_to_eval = {}; // Clear evaluation cache
+  });
+
   if (max_search_depth != null) {
     $('#max_depth').val(max_search_depth);
   }
@@ -110,7 +125,8 @@ $(document).ready(function() {
       var pgn_moves = null;
       var piece_types = null;
       try {
-        var res = utils.parseGameFromPGN(pgn_str);
+        // Pass the current setup type to the PGN parser
+        var res = utils.parseGameFromPGN(pgn_str, currentSetupType);
         pgn_board = res['board'];
         pgn_moves = res['moves'];
         piece_types = res['piece_types'];
@@ -132,7 +148,8 @@ $(document).ready(function() {
 
 function resetBoard(set_board = null, set_moves = null) {
   if (set_board == null) {
-    board = board_util.Board.CreateStandardSetup();
+    // Create the board using the currently selected setup type
+    board = board_util.Board.CreateStandardSetup(currentSetupType);
     moves = [];
     move_index = null;
   } else {
@@ -508,7 +525,8 @@ function getBoardState() {
 }
 
 function getBoardKey() {
-  return board.moves.toString();
+  // Add setup type to the key to distinguish evaluations for different setups
+  return board.moves.toString() + `|setup:${currentSetupType.name}`;
 }
 
 function handleResponse(req_key, req_depth, data) {
@@ -591,4 +609,3 @@ function requestBoardEvaluation() {
 }
 
 })()
-

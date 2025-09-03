@@ -5,21 +5,6 @@
 
 // Enums
 
-export class SetupType {
-  static Modern = new SetupType('modern');
-  static Classic = new SetupType('classic');
-
-  constructor(name) {
-    this.name = name;
-  }
-  toString() { return `SetupType(${this.name})`; }
-  equals(other) { return (typeof this == typeof other && this.name == other.name); }
-}
-
-export const MODERN = SetupType.Modern;
-export const CLASSIC = SetupType.Classic;
-
-
 export class GameResult {
   static InProgress = new GameResult('in_progress');
   static WinRy = new GameResult('win_ry');
@@ -395,11 +380,9 @@ function getPreviousPlayer(player) {
 
 
 export class Board {
-  constructor(turn, location_to_piece, castling_rights = null, setupType = MODERN) {
+  constructor(turn, location_to_piece, castling_rights = null) {
     this.turn = turn;
     this.location_to_piece = location_to_piece;
-    this.setupType = setupType;
-
     if (castling_rights == null) {
       this.castling_rights = {}
       this.castling_rights[kRedPlayer] = new CastlingRights();
@@ -889,133 +872,118 @@ export class Board {
     }
 
     if (curr_rights != null) {
-        if (this.setupType.equals(MODERN)) {
-            this.addModernCastlingMoves(moves, piece, from, initial_castling_rights, castling_rights);
-        } else {
-            this.addClassicCastlingMoves(moves, piece, from, initial_castling_rights, castling_rights);
-        }
-    }
-    return moves;
-  }
-
-  addModernCastlingMoves(moves, piece, from, initial_castling_rights, castling_rights) {
-    const other_team = getOtherTeam(piece.getTeam());
-    for (let is_kingside = 0; is_kingside < 2; ++is_kingside) {
-      const allowed = is_kingside ? initial_castling_rights.getKingside() : initial_castling_rights.getQueenside();
-      if (!allowed) continue;
-
-      let squares_between = [];
-      let rook_location;
-
-      switch (piece.getColor()) {
-        case RED:
-          if (is_kingside) {
-            squares_between = [from.relative(0, 1), from.relative(0, 2)];
-            rook_location = from.relative(0, 3);
-          } else {
-            squares_between = [from.relative(0, -1), from.relative(0, -2), from.relative(0, -3)];
-            rook_location = from.relative(0, -4);
-          }
-          break;
-        case BLUE:
-          if (is_kingside) {
-            squares_between = [from.relative(1, 0), from.relative(2, 0)];
-            rook_location = from.relative(3, 0);
-          } else {
-            squares_between = [from.relative(-1, 0), from.relative(-2, 0), from.relative(-3, 0)];
-            rook_location = from.relative(-4, 0);
-          }
-          break;
-        case YELLOW:
-          if (is_kingside) {
-            squares_between = [from.relative(0, -1), from.relative(0, -2)];
-            rook_location = from.relative(0, -3);
-          } else {
-            squares_between = [from.relative(0, 1), from.relative(0, 2), from.relative(0, 3)];
-            rook_location = from.relative(0, 4);
-          }
-          break;
-        case GREEN:
-          if (is_kingside) {
-            squares_between = [from.relative(-1, 0), from.relative(-2, 0)];
-            rook_location = from.relative(-3, 0);
-          } else {
-            squares_between = [from.relative(1, 0), from.relative(2, 0), from.relative(3, 0)];
-            rook_location = from.relative(4, 0);
-          }
-          break;
-      }
-      this.validateAndAddCastlingMove(moves, piece, from, squares_between, rook_location, other_team, initial_castling_rights, castling_rights);
-    }
-  }
-
-  addClassicCastlingMoves(moves, piece, from, initial_castling_rights, castling_rights) {
-      const other_team = getOtherTeam(piece.getTeam());
-      for (let is_kingside = 0; is_kingside < 2; ++is_kingside) {
-          const allowed = is_kingside ? initial_castling_rights.getKingside() : initial_castling_rights.getQueenside();
-          if (!allowed) continue;
-
-          let squares_between = [];
-          let rook_location;
+      var other_team = getOtherTeam(piece.getTeam());
+      for (var is_kingside = 0; is_kingside < 2; ++is_kingside) {
+        var allowed = is_kingside > 0 ? curr_rights.getKingside() :
+          curr_rights.getQueenside();
+        if (allowed) {
+          var squares_between = null;
+          var rook_location = null;
 
           switch (piece.getColor()) {
-              case RED: // Same as modern
-                  if (is_kingside) {
-                      squares_between = [from.relative(0, 1), from.relative(0, 2)];
-                      rook_location = from.relative(0, 3);
-                  } else {
-                      squares_between = [from.relative(0, -1), from.relative(0, -2), from.relative(0, -3)];
-                      rook_location = from.relative(0, -4);
-                  }
-                  break;
-              case BLUE: // Swapped
-                  if (is_kingside) { // Short castle
-                      squares_between = [from.relative(-1, 0), from.relative(-2, 0)];
-                      rook_location = from.relative(-3, 0);
-                  } else { // Long castle
-                      squares_between = [from.relative(1, 0), from.relative(2, 0), from.relative(3, 0)];
-                      rook_location = from.relative(4, 0);
-                  }
-                  break;
-              case YELLOW: // Same as modern
-                  if (is_kingside) {
-                      squares_between = [from.relative(0, -1), from.relative(0, -2)];
-                      rook_location = from.relative(0, -3);
-                  } else {
-                      squares_between = [from.relative(0, 1), from.relative(0, 2), from.relative(0, 3)];
-                      rook_location = from.relative(0, 4);
-                  }
-                  break;
-              case GREEN: // Swapped
-                  if (is_kingside) { // Short castle
-                      squares_between = [from.relative(1, 0), from.relative(2, 0)];
-                      rook_location = from.relative(3, 0);
-                  } else { // Long castle
-                      squares_between = [from.relative(-1, 0), from.relative(-2, 0), from.relative(-3, 0)];
-                      rook_location = from.relative(-4, 0);
-                  }
-                  break;
+            case RED:
+              if (is_kingside) {
+                squares_between = [
+                  from.relative(0, 1),
+                  from.relative(0, 2),
+                ];
+                rook_location = from.relative(0, 3);
+              } else {
+                squares_between = [
+                  from.relative(0, -1),
+                  from.relative(0, -2),
+                  from.relative(0, -3),
+                ];
+                rook_location = from.relative(0, -4);
+              }
+              break;
+            case BLUE:
+              if (is_kingside) {
+                squares_between = [
+                  from.relative(1, 0),
+                  from.relative(2, 0),
+                  from.relative(3, 0)
+                ];
+                rook_location = from.relative(4, 0);
+              } else {
+                squares_between = [
+                  from.relative(-1, 0),
+                  from.relative(-2, 0),
+                ];
+                rook_location = from.relative(-3, 0);
+              }
+              break;
+            case YELLOW:
+              if (is_kingside) {
+                squares_between = [
+                  from.relative(0, -1),
+                  from.relative(0, -2),
+                ];
+                rook_location = from.relative(0, -3);
+              } else {
+                squares_between = [
+                  from.relative(0, 1),
+                  from.relative(0, 2),
+                  from.relative(0, 3),
+                ];
+                rook_location = from.relative(0, 4);
+              }
+              break;
+            case GREEN:
+              if (is_kingside) {
+                squares_between = [
+                  from.relative(-1, 0),
+                  from.relative(-2, 0),
+                  from.relative(-3, 0)
+                ];
+                rook_location = from.relative(-4, 0);
+              } else {
+                squares_between = [
+                  from.relative(1, 0),
+                  from.relative(2, 0),
+                ];
+                rook_location = from.relative(3, 0);
+              }
+              break;
+            default:
+              break;
           }
-          this.validateAndAddCastlingMove(moves, piece, from, squares_between, rook_location, other_team, initial_castling_rights, castling_rights);
+
+          // Make sure that the rook is present
+          const rook = this.getPiece(rook_location);
+          if (rook == null
+            || !rook.getPieceType().equals(ROOK)
+            || !rook.getTeam().equals(piece.getTeam())) {
+            continue;
+          }
+
+          // Make sure that there are no pieces between the king and rook
+          var piece_between = false;
+          for (const loc of squares_between) {
+            if (this.getPiece(loc) != null) {
+              piece_between = true;
+              break;
+            }
+          }
+
+          if (!piece_between) {
+            // Make sure the king is not currently in or would pass through check
+            if (!this.isAttackedByTeam(other_team, squares_between.at(0))
+              && !this.isAttackedByTeam(other_team, from)) {
+              // Additionally move the castle
+              const rook = this.getPiece(rook_location);
+              var rook_move = new SimpleMove(
+                rook_location, squares_between.at(0), rook);
+              moves.push(Move.FromCastlingMove(
+                from, squares_between.at(1), rook_move,
+                initial_castling_rights, castling_rights));
+            }
+          }
+        }
       }
-  }
-
-  validateAndAddCastlingMove(moves, piece, from, squares_between, rook_location, other_team, initial_castling_rights, castling_rights) {
-    const rook = this.getPiece(rook_location);
-    if (rook == null || !rook.getPieceType().equals(ROOK) || !rook.getTeam().equals(piece.getTeam())) {
-        return;
     }
 
-    const piece_between = squares_between.some(loc => this.getPiece(loc) != null);
-    if (piece_between) {
-        return;
-    }
-
-    if (!this.isAttackedByTeam(other_team, squares_between[0]) && !this.isAttackedByTeam(other_team, from)) {
-        const rook = this.getPiece(rook_location);
-        const rook_move = new SimpleMove(rook_location, squares_between[0], rook);
-        moves.push(Move.FromCastlingMove(from, squares_between[1], rook_move, initial_castling_rights, castling_rights));
-    }
+    return moves;
   }
 
   getKingLocation(turn) {
@@ -1206,29 +1174,29 @@ export class Board {
     }
   }
 
-  static CreateStandardSetup(setupType = MODERN) {
+  static CreateStandardSetup() {
     var location_to_piece = {};
     var castling_rights = {};
-    const piece_types_modern = [
-      PieceType.Rook, PieceType.Knight, PieceType.Bishop, PieceType.Queen,
-      PieceType.King, PieceType.Bishop, PieceType.Knight, PieceType.Rook,
+    var piece_types = [
+      PieceType.Rook,
+      PieceType.Knight,
+      PieceType.Bishop,
+      PieceType.Queen,
+      PieceType.King,
+      PieceType.Bishop,
+      PieceType.Knight,
+      PieceType.Rook,
     ];
-    const piece_types_classic = [
-      PieceType.Rook, PieceType.Knight, PieceType.Bishop, PieceType.King,
-      PieceType.Queen, PieceType.Bishop, PieceType.Knight, PieceType.Rook,
-    ];
-
     var player_colors = [
-      PlayerColor.Red, PlayerColor.Blue, PlayerColor.Yellow, PlayerColor.Green,
+      PlayerColor.Red,
+      PlayerColor.Blue,
+      PlayerColor.Yellow,
+      PlayerColor.Green,
     ];
 
-    player_colors.forEach((color) => {
+    player_colors.forEach((color, index) => {
       var player = new Player(color);
       castling_rights[player] = new CastlingRights();
-
-      const piece_types = (setupType.equals(CLASSIC) && (color.equals(BLUE) || color.equals(GREEN)))
-        ? piece_types_classic
-        : piece_types_modern;
 
       var piece_location;
       var delta_row = 0;
@@ -1236,30 +1204,77 @@ export class Board {
       var pawn_offset_row = 0;
       var pawn_offset_col = 0;
 
+      // below I've piece_types for blue and green to swap their kings to match the classic setup
+      // red and yellow still have the piece_types in the same order as before
       switch (color) {
-      case PlayerColor.Red:
-        piece_location = new BoardLocation(13, 3);
-        delta_col = 1;
-        pawn_offset_row = -1;
-        break;
-      case PlayerColor.Blue:
-        piece_location = new BoardLocation(3, 0);
-        delta_row = 1;
-        pawn_offset_col = 1;
-        break;
-      case PlayerColor.Yellow:
-        piece_location = new BoardLocation(0, 10);
-        delta_col = -1;
-        pawn_offset_row = 1;
-        break;
-      case PlayerColor.Green:
-        piece_location = new BoardLocation(10, 13);
-        delta_row = -1;
-        pawn_offset_col = -1;
-        break;
+        case PlayerColor.Red:
+          piece_location = new BoardLocation(13, 3);
+          delta_col = 1;
+          pawn_offset_row = -1;
+          piece_types = [
+            PieceType.Rook,
+            PieceType.Knight,
+            PieceType.Bishop,
+            PieceType.Queen,
+            PieceType.King,
+            PieceType.Bishop,
+            PieceType.Knight,
+            PieceType.Rook,
+          ];
+          break;
+
+        case PlayerColor.Blue:
+          piece_location = new BoardLocation(3, 0);
+          delta_row = 1;
+          pawn_offset_col = 1;
+          piece_types = [
+            PieceType.Rook,
+            PieceType.Knight,
+            PieceType.Bishop,
+
+            PieceType.King,
+            PieceType.Queen,
+
+            PieceType.Bishop,
+            PieceType.Knight,
+            PieceType.Rook,
+          ];
+          break;
+        case PlayerColor.Yellow:
+          piece_location = new BoardLocation(0, 10);
+          delta_col = -1;
+          pawn_offset_row = 1;
+          piece_types = [
+            PieceType.Rook,
+            PieceType.Knight,
+            PieceType.Bishop,
+            PieceType.Queen,
+            PieceType.King,
+            PieceType.Bishop,
+            PieceType.Knight,
+            PieceType.Rook,
+          ];
+          break;
+        case PlayerColor.Green:
+          piece_location = new BoardLocation(10, 13);
+          delta_row = -1;
+          pawn_offset_col = -1;
+          piece_types = [
+            PieceType.Rook,
+            PieceType.Knight,
+            PieceType.Bishop,
+
+            PieceType.King,
+            PieceType.Queen,
+
+            PieceType.Bishop,
+            PieceType.Knight,
+            PieceType.Rook,
+          ];
+          break;
       }
 
-      piece_types.forEach((piece_type) => {
+      piece_types.forEach((piece_type, index) => {
         var pawn_location = piece_location.relative(
           pawn_offset_row, pawn_offset_col);
         location_to_piece[piece_location] = [
@@ -1268,47 +1283,113 @@ export class Board {
           pawn_location, new Piece(player, PieceType.Pawn)];
         piece_location = piece_location.relative(delta_row, delta_col);
       });
+
     });
 
-    return new Board(kRedPlayer, location_to_piece, castling_rights, setupType);
+    return new Board(kRedPlayer, location_to_piece);
   }
 
   getRookLocationType(player, loc) {
-    const color = player.getColor();
+    let kingsideLoc, queensideLoc;
 
-    if (this.setupType.equals(CLASSIC) && (color.equals(BLUE) || color.equals(GREEN))) {
-      // For classic setup, Blue and Green have their kingside/queenside rook roles swapped
-      // relative to the move logic (e.g., short castle is now queenside for Blue).
-      switch (color) {
-        case BLUE:
-          if (loc.equals(kBlueInitialRookLocationKingside)) return QUEENSIDE;
-          if (loc.equals(kBlueInitialRookLocationQueenside)) return KINGSIDE;
-          break;
-        case GREEN:
-          if (loc.equals(kGreenInitialRookLocationKingside)) return QUEENSIDE;
-          if (loc.equals(kGreenInitialRookLocationQueenside)) return KINGSIDE;
-          break;
+    switch (player.getColor()) {
+      case RED:
+        kingsideLoc = kRedInitialRookLocationKingside;
+        queensideLoc = kRedInitialRookLocationQueenside;
+        break;
+      case BLUE:
+        // Swap for Blue
+        kingsideLoc = kBlueInitialRookLocationQueenside;
+        queensideLoc = kBlueInitialRookLocationKingside;
+        break;
+      case YELLOW:
+        kingsideLoc = kYellowInitialRookLocationKingside;
+        queensideLoc = kYellowInitialRookLocationQueenside;
+        break;
+      case GREEN:
+        // Swap for Green
+        kingsideLoc = kGreenInitialRookLocationQueenside;
+        queensideLoc = kGreenInitialRookLocationKingside;
+        break;
+      default:
+        break;
+    }
+
+    if (loc.equals(kingsideLoc)) {
+      return KINGSIDE;
+    } else if (loc.equals(queensideLoc)) {
+      return QUEENSIDE;
+    }
+
+    return null;
+  }
+  //getRookLocationType(player, loc) {
+  //  switch (player.getColor()) {
+  //  case RED:
+  //    if (loc.equals(kRedInitialRookLocationKingside)) {
+  //      return KINGSIDE;
+  //    } else if (loc.equals(kRedInitialRookLocationQueenside)) {
+  //      return QUEENSIDE;
+  //    }
+  //    break;
+  //  case BLUE:
+  //    if (loc.equals(kBlueInitialRookLocationKingside)) {
+  //      return KINGSIDE;
+  //    } else if (loc.equals(kBlueInitialRookLocationQueenside)) {
+  //      return QUEENSIDE;
+  //    }
+  //    break;
+  //  case YELLOW:
+  //    if (loc.equals(kYellowInitialRookLocationKingside)) {
+  //      return KINGSIDE;
+  //    } else if (loc.equals(kYellowInitialRookLocationQueenside)) {
+  //      return QUEENSIDE;
+  //    }
+  //    break;
+  //  case GREEN:
+  //    if (loc.equals(kGreenInitialRookLocationKingside)) {
+  //      return KINGSIDE;
+  //    } else if (loc.equals(kGreenInitialRookLocationQueenside)) {
+  //      return QUEENSIDE;
+  //    }
+  //    break;
+  //  default:
+  //    break;
+  //  }
+  //  return null;
+  //}
+  getRookLocationType(player, loc) {
+    switch (player.getColor()) {
+    case RED:
+      if (loc.equals(kRedInitialRookLocationKingside)) {
+        return KINGSIDE;
+      } else if (loc.equals(kRedInitialRookLocationQueenside)) {
+        return QUEENSIDE;
       }
-    } else {
-      // Modern setup logic for all colors, and Classic setup for Red/Yellow
-      switch (color) {
-        case RED:
-          if (loc.equals(kRedInitialRookLocationKingside)) return KINGSIDE;
-          if (loc.equals(kRedInitialRookLocationQueenside)) return QUEENSIDE;
-          break;
-        case BLUE:
-          if (loc.equals(kBlueInitialRookLocationKingside)) return KINGSIDE;
-          if (loc.equals(kBlueInitialRookLocationQueenside)) return QUEENSIDE;
-          break;
-        case YELLOW:
-          if (loc.equals(kYellowInitialRookLocationKingside)) return KINGSIDE;
-          if (loc.equals(kYellowInitialRookLocationQueenside)) return QUEENSIDE;
-          break;
-        case GREEN:
-          if (loc.equals(kGreenInitialRookLocationKingside)) return KINGSIDE;
-          if (loc.equals(kGreenInitialRookLocationQueenside)) return QUEENSIDE;
-          break;
+      break;
+    case BLUE:
+      if (loc.equals(kBlueInitialRookLocationKingside)) {
+        return KINGSIDE;
+      } else if (loc.equals(kBlueInitialRookLocationQueenside)) {
+        return QUEENSIDE;
       }
+      break;
+    case YELLOW:
+      if (loc.equals(kYellowInitialRookLocationKingside)) {
+        return KINGSIDE;
+      } else if (loc.equals(kYellowInitialRookLocationQueenside)) {
+        return QUEENSIDE;
+      }
+      break;
+    case GREEN:
+      if (loc.equals(kGreenInitialRookLocationKingside)) {
+        return KINGSIDE;
+      } else if (loc.equals(kGreenInitialRookLocationQueenside)) {
+        return QUEENSIDE;
+      }
+      break;
+    default:
+      break;
     }
     return null;
   }
@@ -1336,10 +1417,20 @@ export class Board {
       }
       parts.push(part.join(''));
     }
+//    for (let key in this.piece_list) {
+//      console.log('key', key);
+//      var placed_pieces = this.piece_list[key];
+//      for (var placed_piece of placed_pieces) {
+//        var piece = placed_piece.getPiece();
+//        console.log('placed piece', placed_piece.getLocation(), piece.getPieceType());
+//      }
+//    }
     return parts.join('\n');
   }
 
   pieceEval() {
     return this.piece_eval;
   }
+
 }
+
