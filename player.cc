@@ -889,15 +889,16 @@ AlphaBetaPlayer::QSearch(
 
       return std::make_tuple(best_value, std::nullopt);
     }
-
-    if (best_value > alpha) {
-        alpha = best_value;
-    }
     
     // delta pruning
     if (best_value + kPieceEvaluations[QUEEN] < alpha) {
       return std::make_tuple(alpha, std::nullopt);
     }
+    
+    if (best_value > alpha) {
+        alpha = best_value;
+    }
+    
     futility_base = best_value;
   }
 
