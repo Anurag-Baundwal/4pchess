@@ -1,5 +1,5 @@
 # game_controller.py
-# v29 (Adds --setup flag for modern vs classic games)
+# v30 (Adds adaptive time management for dynamic TC)
 import os
 import sys
 import time
@@ -56,12 +56,18 @@ EVAL_LOG_FILE = "eval_log.txt"
 POLL_INTERVAL_SECONDS = 0.1
 
 # Time Management Constants (for dynamic TC)
-MAX_MOVE_MS = 30000
-MIN_REMAINING_MOVE_MS = 30000
 MIN_MOVE_TIME_MS = 100
+MAX_MOVE_TIME_MS = 30000
+MIN_REMAINING_MOVE_MS = 30000
 TIME_DIVISOR = 20.0
 SAFETY_MARGIN = 0.90
 # ---------------------
+
+# --- Adaptive Time Control Configuration ---
+ADAPTIVE_TC_SAFE_BUFFER_PERCENT = 0.50  # 50% of base time
+ADAPTIVE_TC_FACTOR_DECREASE = 0.75      # Multiplier when time is dropping
+ADAPTIVE_TC_FACTOR_INCREASE = 1.10      # Multiplier to recover time usage
+# -----------------------------------------------
 
 # --- NEW: If Tesseract is not in your PATH, uncomment and set the path here ---
 # For example, on Windows:
@@ -159,13 +165,22 @@ class GameController:
         self.game_url = url
         self.setup = setup  # Store the setup mode ('modern' or 'classic')
 
+        # --- Initialize TC state variables ---
         self.tc_mode, self.tc_params = tc_config
         if self.tc_mode == 'dynamic':
             base_min, incr_sec = self.tc_params
             self.base_time_ms = base_min * 60 * 1000
             self.incr_time_ms = incr_sec * 1000
+            
+            # State for adaptive time management
+            self.safe_time_buffer_ms = self.base_time_ms * ADAPTIVE_TC_SAFE_BUFFER_PERCENT
+            self.time_management_factor = {'R': 1.0, 'B': 1.0, 'Y': 1.0, 'G': 1.0}
+            self.previous_clock_ms = {}
+            print(f"[TIME-ADAPT] Safe time buffer set to {self.safe_time_buffer_ms / 1000:.1f}s.")
+
         else:
             self.fixed_time_ms = self.tc_params
+        # ----------------------------------------------------
 
         self.colors_arg = colors.lower()
         if len(self.colors_arg) != 2 or not all(c in 'rybg' for c in self.colors_arg):
@@ -480,6 +495,11 @@ class GameController:
             self.board_moves = []
             self.clock_times_sec = {}
             self.current_move_evals = [".." for _ in range(4)]
+            # --- Reset adaptive TC state ---
+            if self.tc_mode == 'dynamic':
+                self.time_management_factor = {'R': 1.0, 'B': 1.0, 'Y': 1.0, 'G': 1.0}
+                self.previous_clock_ms = {}
+            # ------------------------------------------
             print(f"Internal board state has been reset. Playing as colors: {self.colors_arg}")
 
     def _log_clocks(self):
@@ -531,22 +551,64 @@ class GameController:
                 self.check_and_play()
 
     def _calculate_dynamic_time_ms(self, current_turn_char: str) -> int:
-        """Calculates the optimal time to think for a move based on clock and increment."""
-        if len(self.board_moves) < 4:
-            print("[TIME] Opening move (<4), using fixed 5s.")
-            return 5000
+        """Calculates the optimal time to think for a move using an adaptive algorithm."""
         clock_sec = self.clock_times_sec.get(current_turn_char)
         if clock_sec is None:
             print(f"[TIME] No clock data for {current_turn_char}, using default 5s.")
             return 5000
+            
         clock_ms = clock_sec * 1000
-        move_time_ms = self.incr_time_ms + (clock_ms - MIN_REMAINING_MOVE_MS) / TIME_DIVISOR if clock_ms > MIN_REMAINING_MOVE_MS else self.incr_time_ms
-        move_time_ms = int(min(max(move_time_ms, MIN_MOVE_TIME_MS), MAX_MOVE_MS) * SAFETY_MARGIN)
-        print(f"[TIME] Clock: {clock_sec:.1f}s. Calculated think time: {move_time_ms / 1000:.2f}s.")
-        return move_time_ms
+        current_factor = self.time_management_factor[current_turn_char]
+        previous_clock = self.previous_clock_ms.get(current_turn_char)
+
+        # --- Adaptive Factor Adjustment Logic ---
+        if previous_clock is not None:
+            clock_delta = clock_ms - previous_clock
+            
+            # Condition to REDUCE think time: clock is dropping AND we are in the danger zone
+            if clock_delta < 0 and clock_ms < self.safe_time_buffer_ms:
+                current_factor *= ADAPTIVE_TC_FACTOR_DECREASE
+                print(f"[TIME-ADAPT] Clock dropping for {current_turn_char} below safe buffer. Reducing factor to {current_factor:.2f}.")
+            # Condition to INCREASE think time: clock is rising OR we are safely out of the danger zone
+            elif clock_delta >= 0 or clock_ms > self.safe_time_buffer_ms:
+                if current_factor < 1.0:
+                    current_factor = min(1.0, current_factor * ADAPTIVE_TC_FACTOR_INCREASE)
+                    print(f"[TIME-ADAPT] Clock for {current_turn_char} is stable/rising. Increasing factor to {current_factor:.2f}.")
+        
+        self.time_management_factor[current_turn_char] = current_factor
+        self.previous_clock_ms[current_turn_char] = clock_ms # Store current clock for next turn's comparison
+        # ----------------------------------------
+
+        # Calculate base move time using the standard formula
+        base_move_time_ms = self.incr_time_ms + (clock_ms - MIN_REMAINING_MOVE_MS) / TIME_DIVISOR if clock_ms > MIN_REMAINING_MOVE_MS else self.incr_time_ms
+
+        # Apply the adaptive factor
+        adjusted_move_time_ms = base_move_time_ms * current_factor
+
+        # Clamp the result within safe boundaries
+        final_move_time_ms = int(min(max(adjusted_move_time_ms, MIN_MOVE_TIME_MS), MAX_MOVE_TIME_MS) * SAFETY_MARGIN)
+        
+        print(f"[TIME] Clock: {clock_sec:.1f}s. Factor: {current_factor:.2f}. Calculated think time: {final_move_time_ms / 1000:.2f}s.")
+        return final_move_time_ms
+    # -----------------------------------------------------------
 
     def get_time_to_think_ms(self, current_turn_char: str) -> int:
         """Determines think time based on the configured time control mode."""
+        # Move fetcher takes some time to navigate to the game and start fetching moves
+        # So on the first move we must move quickly to avoid aborting the game
+        if len(self.board_moves) < 4: 
+            first_move_time = 0
+            if self.tc_mode == 'fixed':
+                first_move_time = int(0.25 * self.fixed_time_ms)
+                print(f"[TIME] Opening move (<4), using 25% of fixed time: {first_move_time}ms.")
+            else: # 'dynamic'
+                first_move_time = int(0.25 * self.incr_time_ms)
+                print(f"[TIME] Opening move (<4), using 25% of increment: {first_move_time}ms.")
+            
+            # Ensure that we always think for at least 100ms to make decent moves
+            return max(first_move_time, MIN_MOVE_TIME_MS)
+
+        # If not an opening move, proceed with the normal logic
         if self.tc_mode == 'fixed':
             print(f"[TIME] Using fixed time control: {self.fixed_time_ms}ms.")
             return self.fixed_time_ms
@@ -742,6 +804,7 @@ if __name__ == "__main__":
     tc_mode, tc_params = args.tc
     if tc_mode == 'dynamic':
         print(f"\n[CONFIG] Time control set to DYNAMIC: {tc_params[0]} minutes + {tc_params[1]} seconds per move.")
+        print(f"[CONFIG] Adaptive TC is ACTIVE.")
     else:
         print(f"\n[CONFIG] Time control set to FIXED: {tc_params}ms per move.")
 
