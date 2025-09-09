@@ -3,6 +3,8 @@ import argparse
 import skopt
 import subprocess
 
+from skopt import Optimizer
+
 parser = argparse.ArgumentParser(
     prog='Tuner',
     description='Tunes parameters of the chess program')
@@ -68,35 +70,81 @@ def tune_params(param_names):
 
     lines = output.split('\n')
     for line in reversed(lines):
-      pattern = 'Engine1.*?(\d+) wins.*?Engine2.*?(\d+) wins'
+      # Use a raw string (r'...') for the pattern to avoid SyntaxWarning
+      pattern = r'Engine1.*?(\d+) wins.*?Engine2.*?(\d+) wins'
       match = re.search(pattern, line)
       if match is not None:
         win1 = float(match.group(1))
         win2 = float(match.group(2))
-        print('win1:', win1, 'win2:', win2, 'param_values:', format_param_values(param_values))
-        if win2 == 0:
-          return 1
-        return win1/(win1 + win2)
-    print('output:', output)
-    raise ValueError('chess match program did not return win status')
+        
+        games_target_index = scm_args.index('--games') + 1
+        games_target = int(scm_args[games_target_index])
+        min_games_threshold = 0.9 * games_target
 
-  def callback(result):
-    print('#iters:', len(result.x_iters), ', '
-          'new win rate:', 1.-result.fun,
-          'params:', format_param_values(result.x)
-          )
+        total_decisive_games = win1 + win2
+        if total_decisive_games < min_games_threshold:
+            print(f"WARNING: Incomplete match detected. Decisive games played ({total_decisive_games}) is less than 90% threshold ({min_games_threshold}).")
+            print("         This data point will be ignored by the optimizer.")
+            print('         Params:', format_param_values(param_values))
+            return None # Return None to signal a failed run
 
-  result = skopt.gp_minimize(
-      f,
-      dimensions,
-      n_calls=args.n_calls,
-      noise=.5**2,
-      callback=callback)
+        print('Baseline Wins:', win1, 'Tuned Wins:', win2, 'param_values:', format_param_values(param_values))
+        
+        if total_decisive_games == 0:
+          return 0.5
+        
+        loss_rate = win1 / total_decisive_games
+        return loss_rate
+        
+    print('Error: Could not parse match results from SCM output.')
+    print('Output:\n', output)
+    return 1.0
 
-  print('===== Best params: ====')
-  for param_name, best_value in zip(param_names, result.x):
-    print(f'{param_name}={best_value}')
-  print('Win rate with best params:', 1.0-result.fun)
+  # --- MANUAL OPTIMIZATION LOOP ---
+  # We replace skopt.gp_minimize with our own loop to handle failed runs.
+
+  # 1. Initialize the optimizer
+  optimizer = Optimizer(
+      dimensions=dimensions,
+      random_state=1, # for reproducibility
+      base_estimator="GP", # Gaussian Process
+      acq_func="gp_hedge", # A good default acquisition function
+      n_initial_points=10, # Number of random points to sample before using the model
+  )
+
+  # 2. Run the optimization loop until we have n_calls SUCCESSFUL results
+  successful_calls = 0
+  result = None
+  while successful_calls < args.n_calls:
+      print(f"\n--- Starting Iteration {successful_calls + 1}/{args.n_calls} ---")
+      
+      # Ask the optimizer for the next point to evaluate
+      next_x = optimizer.ask()
+      
+      # Run our objective function
+      next_y = f(next_x)
+      
+      # If the function returned a valid score (not None), tell the optimizer.
+      # Otherwise, we do nothing, effectively skipping this iteration.
+      if next_y is not None:
+          result = optimizer.tell(next_x, next_y)
+          successful_calls += 1
+          
+          # Manually call a "callback" to print progress
+          win_rate = 1.0 - result.fun if result.fun is not None else 0.0
+          print(f'#iters: {successful_calls}, Best Win Rate So Far: {win_rate:.2%}, Current Params: {format_param_values(result.x)}')
+      else:
+          print("Iteration failed. Asking optimizer for a new point.")
+  
+  # --- END: MANUAL OPTIMIZATION LOOP ---
+
+  print('\n===== Best params found: =====')
+  if result:
+    for param_name, best_value in zip(param_names, result.x):
+      print(f'{param_name} = {best_value}')
+    print(f'Win rate with best params: {1.0 - result.fun:.2%}')
+  else:
+    print("No successful iterations were completed.")
 
 
 def main():
@@ -107,5 +155,3 @@ def main():
 
 if __name__ == '__main__':
   main()
-
-
