@@ -155,67 +155,76 @@ def switch_to_window_robust(partial_title: str) -> bool:
         return False
 
 class TimeManager:
-    """Handles adaptive time management during an engine search."""
-    def __init__(self, controller_uci, initial_budget_ms):
+    """
+    Handles adaptive time management by starting a search with a maximum budget
+    and stopping it early if the evaluation becomes stable.
+    """
+    def __init__(self, controller_uci, initial_budget_ms, max_extension_factor=2.0):
         self.uci = controller_uci
         self.initial_budget_ms = initial_budget_ms
-        self.time_extension_factor = 1.0
+        self.max_budget_ms = initial_budget_ms * max_extension_factor
         self.should_stop = False
         self.start_time = time.time()
-        self.last_iter_timestamp = self.start_time
         
         self.best_move_at_depth = {}
         self.score_at_depth = {}
         self.stability_counter = 0
-
-    def get_current_budget_ms(self):
-        """The total time the engine is allowed to think, with extensions."""
-        return self.initial_budget_ms * self.time_extension_factor
+        self.is_unstable = False # Flag to track if we've ever been unstable
 
     def process_depth_result(self, depth, score, move):
         """Callback function to be called by the UCI wrapper for each completed depth."""
         if self.should_stop:
             return
 
-        current_time = time.time()
-        elapsed_ms = (current_time - self.start_time) * 1000
-        
-        # --- Heuristic for how long reaching the next depth might take ---
-        last_iteration_ms = (current_time - self.last_iter_timestamp) * 1000
-        predicted_next_iter_ms = last_iteration_ms * 2
-        
-        # Check if the *next* iteration is predicted to exceed the budget
-        if elapsed_ms + predicted_next_iter_ms > self.get_current_budget_ms():
-            if self.stability_counter >= 1: # Require at least one stable iteration before stopping early
-                print(f"[TIME] Heuristic Stop: Elapsed {elapsed_ms:.0f}ms, Next iter predicted >{predicted_next_iter_ms:.0f}ms. Stopping early.")
-                self.should_stop = True
-                self.uci.stop()
-                return
-        
-        # --- Stability Logic to Extend Time ---
-        if depth > 1:
+        # --- Stability Logic to decide whether to continue searching ---
+        if depth > 5: # Start checking for stability after a reasonable depth
             prev_best_move = self.best_move_at_depth.get(depth - 1)
             prev_score = self.score_at_depth.get(depth - 1)
 
-            is_stable = True
+            is_stable_this_iter = True
             if move != prev_best_move:
-                print(f"[TIME] Best move changed at depth {depth}. Extending time.")
-                self.time_extension_factor = min(2.0, self.time_extension_factor + 0.3)
+                print(f"[TIME] Best move changed at depth {depth}. Search is unstable.")
                 self.stability_counter = 0
-                is_stable = False
+                is_stable_this_iter = False
+                self.is_unstable = True
 
-            if prev_score is not None and abs(score - prev_score) > 80: # Eval swing > 0.8 pawns
-                print(f"[TIME] Eval is unstable at depth {depth}. Extending time.")
-                self.time_extension_factor = min(2.0, self.time_extension_factor + 0.2)
-                self.stability_counter = 0
-                is_stable = False
-            
-            if is_stable:
+            # Refined instability check:
+            # - Only check if prev_score exists.
+            # - Extend if eval drops for us (score < prev_score) by more than 0.5 pawns.
+            # - Extend if eval swings wildly (by more than 1.2 pawns in either direction).
+            if prev_score is not None:
+                score_delta = score - prev_score
+                # Note: Assumes positive score is good for the current player.
+                # Your eval logging handles the perspective, so we can assume this is fine.
+                if score_delta < -50: # Our position got worse
+                    print(f"[TIME] Eval dropped at depth {depth}. Search is unstable.")
+                    self.stability_counter = 0
+                    is_stable_this_iter = False
+                    self.is_unstable = True
+                elif abs(score_delta) > 120: # Exceptionally unstable swing
+                    print(f"[TIME] Eval is highly unstable at depth {depth}. Search continues.")
+                    self.stability_counter = 0
+                    is_stable_this_iter = False
+                    self.is_unstable = True
+
+            if is_stable_this_iter:
                 self.stability_counter += 1
-
+        
         self.best_move_at_depth[depth] = move
         self.score_at_depth[depth] = score
-        self.last_iter_timestamp = current_time
+
+        # --- Early Stopping Logic ---
+        # If the search was ever unstable, we require 3 stable iterations before stopping.
+        # If it was always stable, we can stop after just 2 stable iterations.
+        required_stable_iterations = 3 if self.is_unstable else 2
+        
+        if self.stability_counter >= required_stable_iterations:
+            elapsed_ms = (time.time() - self.start_time) * 1000
+            # Only stop if we've used at least 40% of our initial budget
+            if elapsed_ms > (self.initial_budget_ms * 0.4):
+                print(f"[TIME] Stable for {self.stability_counter} iterations. Stopping search early.")
+                self.should_stop = True
+                self.uci.stop()
 
 class GameController:
     """Manages the overall game state, engine communication, and GUI interaction."""
@@ -702,24 +711,25 @@ class GameController:
                 return
 
             initial_time_to_think_ms = self.get_time_to_think_ms(current_turn_char)
-
-            time_manager = TimeManager(self.uci, initial_time_to_think_ms)
+            
+            # Create the time manager. It will decide when to stop the search.
+            time_manager = TimeManager(self.uci, initial_time_to_think_ms, max_extension_factor=2.0)
 
             if self.asymmetric_eval:
                 self.uci.set_team('red_yellow' if current_turn_char in 'RY' else 'blue_green')
 
             self.uci.set_position(self.get_current_fen(), self.board_moves)
+            
+            # We tell the engine to search for the MAXIMUM allowed time.
+            # The TimeManager will stop it early if the position is stable.
             result = self.uci.get_best_move(
-                time_limit_ms=time_manager.get_current_budget_ms(),
+                time_limit_ms=time_manager.max_budget_ms,
                 gameover_callback=lambda: None,
                 depth_callback=time_manager.process_depth_result
             )
 
-            # --- Log the final, actual search time ---
             actual_think_time_ms = (time.time() - time_manager.start_time) * 1000
-            final_budget_ms = time_manager.get_current_budget_ms()
-            print(f"[TIME] Final Search Time: {actual_think_time_ms / 1000:.2f}s (Final budget was {final_budget_ms / 1000:.2f}s).")
-            # ----------------------------------------------
+            print(f"[TIME] Final Search Time: {actual_think_time_ms / 1000:.2f}s (Initial budget was {initial_time_to_think_ms / 1000:.2f}s).")
 
             if 'best_move' in result:
                 print(f"Engine chose move: {result['best_move']}")
