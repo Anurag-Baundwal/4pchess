@@ -15,7 +15,7 @@ START_FEN_BYG = "R-0,0,0,0-1,1,1,1-1,1,1,1-0,0,0,0-0-x,x,x,yR,yN,yB,yQ,yK,yB,yN,
 START_FEN_OLD = "R-0,0,0,0-1,1,1,1-1,1,1,1-0,0,0,0-0-x,x,x,yR,yN,yB,yK,yQ,yB,yN,yR,x,x,x/x,x,x,yP,yP,yP,yP,yP,yP,yP,yP,x,x,x/x,x,x,8,x,x,x/bR,bP,10,gP,gR/bN,bP,10,gP,gN/bB,bP,10,gP,gB/bK,bP,10,gP,gQ/bQ,bP,10,gP,gK/bB,bP,10,gP,gB/bN,bP,10,gP,gN/bR,bP,10,gP,gR/x,x,x,8,x,x,x/x,x,x,rP,rP,rP,rP,rP,rP,rP,rP,x,x,x/x,x,x,rR,rN,rB,rQ,rK,rB,rN,rR,x,x,x"
 START_FEN_BY = "R-0,0,0,0-1,1,1,1-1,1,1,1-0,0,0,0-0-x,x,x,yR,yN,yB,yQ,yK,yB,yN,yR,x,x,x/x,x,x,yP,yP,yP,yP,yP,yP,yP,yP,x,x,x/x,x,x,8,x,x,x/bR,bP,10,gP,gR/bN,bP,10,gP,gN/bB,bP,10,gP,gB/bQ,bP,10,gP,gQ/bK,bP,10,gP,gK/bB,bP,10,gP,gB/bN,bP,10,gP,gN/bR,bP,10,gP,gR/x,x,x,8,x,x,x/x,x,x,rP,rP,rP,rP,rP,rP,rP,rP,x,x,x/x,x,x,rR,rN,rB,rQ,rK,rB,rN,rR,x,x,x"
 
-def get_move_response(lock, process, response, pv_callback, gameover_callback):
+def get_move_response(lock, process, response, pv_callback, gameover_callback, depth_callback):
   while process.poll() is None:
     try:
         with lock:
@@ -24,6 +24,15 @@ def get_move_response(lock, process, response, pv_callback, gameover_callback):
         if not line:
             break
         print(line)
+        if line.startswith('info string depth_result'):
+            if depth_callback:
+                try:
+                    depth = int(re.search(r'depth=(\d+)', line).group(1))
+                    score = int(re.search(r'score=([-\d]+)', line).group(1))
+                    move = re.search(r'move=([\w-]+)', line).group(1)
+                    depth_callback(depth, score, move)
+                except (AttributeError, ValueError):
+                    print(f"Warning: Could not parse depth_result line: {line}")
         if 'Game completed' in line:
             response['gameover'] = True
             if gameover_callback: gameover_callback()
@@ -192,6 +201,7 @@ class UciWrapper:
         time_limit_ms: int,
         gameover_callback: Callable[[], None],
         pv_callback: Optional[Callable[[list[str]], None]] = None,
+        depth_callback: Optional[Callable[[int, int, str], None]] = None, # New
         last_move: Optional[str] = None
     ):
         self.maybe_recreate_process()
@@ -218,7 +228,7 @@ class UciWrapper:
         response = {}
         reader_thread = threading.Thread(
             target=get_move_response,
-            args=(self._lock, self._process, response, pv_callback, gameover_callback))
+            args=(self._lock, self._process, response, pv_callback, gameover_callback, depth_callback)) 
         reader_thread.start()
         
         timeout_sec = (time_limit_ms / 1000.0) + 2.0

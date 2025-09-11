@@ -69,7 +69,7 @@ ADAPTIVE_TC_FACTOR_DECREASE = 0.75      # Multiplier when time is dropping
 ADAPTIVE_TC_FACTOR_INCREASE = 1.10      # Multiplier to recover time usage
 # -----------------------------------------------
 
-# --- NEW: If Tesseract is not in your PATH, uncomment and set the path here ---
+# --- If Tesseract is not in your PATH, uncomment and set the path here ---
 # For example, on Windows:
 # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 # -----------------------------------------------------------------------------
@@ -154,6 +154,68 @@ def switch_to_window_robust(partial_title: str) -> bool:
         print(f"!!! CRITICAL ERROR in robust switch: {e}")
         return False
 
+class TimeManager:
+    """Handles adaptive time management during an engine search."""
+    def __init__(self, controller_uci, initial_budget_ms):
+        self.uci = controller_uci
+        self.initial_budget_ms = initial_budget_ms
+        self.time_extension_factor = 1.0
+        self.should_stop = False
+        self.start_time = time.time()
+        self.last_iter_timestamp = self.start_time
+        
+        self.best_move_at_depth = {}
+        self.score_at_depth = {}
+        self.stability_counter = 0
+
+    def get_current_budget_ms(self):
+        """The total time the engine is allowed to think, with extensions."""
+        return self.initial_budget_ms * self.time_extension_factor
+
+    def process_depth_result(self, depth, score, move):
+        """Callback function to be called by the UCI wrapper for each completed depth."""
+        if self.should_stop:
+            return
+
+        current_time = time.time()
+        elapsed_ms = (current_time - self.start_time) * 1000
+        
+        # --- Heuristic for how long reaching the next depth might take ---
+        last_iteration_ms = (current_time - self.last_iter_timestamp) * 1000
+        predicted_next_iter_ms = last_iteration_ms * 2
+        
+        # Check if the *next* iteration is predicted to exceed the budget
+        if elapsed_ms + predicted_next_iter_ms > self.get_current_budget_ms():
+            if self.stability_counter >= 1: # Require at least one stable iteration before stopping early
+                print(f"[TIME] Heuristic Stop: Elapsed {elapsed_ms:.0f}ms, Next iter predicted >{predicted_next_iter_ms:.0f}ms. Stopping early.")
+                self.should_stop = True
+                self.uci.stop()
+                return
+        
+        # --- Stability Logic to Extend Time ---
+        if depth > 1:
+            prev_best_move = self.best_move_at_depth.get(depth - 1)
+            prev_score = self.score_at_depth.get(depth - 1)
+
+            is_stable = True
+            if move != prev_best_move:
+                print(f"[TIME] Best move changed at depth {depth}. Extending time.")
+                self.time_extension_factor = min(2.0, self.time_extension_factor + 0.3)
+                self.stability_counter = 0
+                is_stable = False
+
+            if prev_score is not None and abs(score - prev_score) > 80: # Eval swing > 0.8 pawns
+                print(f"[TIME] Eval is unstable at depth {depth}. Extending time.")
+                self.time_extension_factor = min(2.0, self.time_extension_factor + 0.2)
+                self.stability_counter = 0
+                is_stable = False
+            
+            if is_stable:
+                self.stability_counter += 1
+
+        self.best_move_at_depth[depth] = move
+        self.score_at_depth[depth] = score
+        self.last_iter_timestamp = current_time
 
 class GameController:
     """Manages the overall game state, engine communication, and GUI interaction."""
@@ -588,7 +650,7 @@ class GameController:
         # Clamp the result within safe boundaries
         final_move_time_ms = int(min(max(adjusted_move_time_ms, MIN_MOVE_TIME_MS), MAX_MOVE_TIME_MS) * SAFETY_MARGIN)
         
-        print(f"[TIME] Clock: {clock_sec:.1f}s. Factor: {current_factor:.2f}. Calculated think time: {final_move_time_ms / 1000:.2f}s.")
+        print(f"[TIME] Clock: {clock_sec:.1f}s. Factor: {current_factor:.2f}. Initially calculated thinking time: {final_move_time_ms / 1000:.2f}s.")
         return final_move_time_ms
     # -----------------------------------------------------------
 
@@ -639,12 +701,25 @@ class GameController:
                 self.execute_gui_move(best_move, perspective=perspective)
                 return
 
-            time_to_think_ms = self.get_time_to_think_ms(current_turn_char)
+            initial_time_to_think_ms = self.get_time_to_think_ms(current_turn_char)
+
+            time_manager = TimeManager(self.uci, initial_time_to_think_ms)
+
             if self.asymmetric_eval:
                 self.uci.set_team('red_yellow' if current_turn_char in 'RY' else 'blue_green')
 
             self.uci.set_position(self.get_current_fen(), self.board_moves)
-            result = self.uci.get_best_move(time_limit_ms=time_to_think_ms, gameover_callback=lambda: None)
+            result = self.uci.get_best_move(
+                time_limit_ms=time_manager.get_current_budget_ms(),
+                gameover_callback=lambda: None,
+                depth_callback=time_manager.process_depth_result
+            )
+
+            # --- Log the final, actual search time ---
+            actual_think_time_ms = (time.time() - time_manager.start_time) * 1000
+            final_budget_ms = time_manager.get_current_budget_ms()
+            print(f"[TIME] Final Search Time: {actual_think_time_ms / 1000:.2f}s (Final budget was {final_budget_ms / 1000:.2f}s).")
+            # ----------------------------------------------
 
             if 'best_move' in result:
                 print(f"Engine chose move: {result['best_move']}")
