@@ -722,7 +722,7 @@ class GameController:
                     is_in_time_pressure = True
             
             # Create the time manager. It will decide when to stop the search.
-            time_manager = TimeManager(self.uci, initial_time_to_think_ms, is_in_time_pressure, max_extension_factor=2.0)
+            time_manager = TimeManager(self.uci, initial_time_to_think_ms, is_in_time_pressure, max_extension_factor=4.0)
 
             if self.asymmetric_eval:
                 self.uci.set_team('red_yellow' if current_turn_char in 'RY' else 'blue_green')
