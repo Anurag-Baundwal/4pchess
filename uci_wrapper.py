@@ -24,15 +24,6 @@ def get_move_response(lock, process, response, pv_callback, gameover_callback, d
         if not line:
             break
         print(line)
-        if line.startswith('info string depth_result'):
-            if depth_callback:
-                try:
-                    depth = int(re.search(r'depth=(\d+)', line).group(1))
-                    score = int(re.search(r'score=([-\d]+)', line).group(1))
-                    move = re.search(r'move=([\w-]+)', line).group(1)
-                    depth_callback(depth, score, move)
-                except (AttributeError, ValueError):
-                    print(f"Warning: Could not parse depth_result line: {line}")
         if 'Game completed' in line:
             response['gameover'] = True
             if gameover_callback: gameover_callback()
@@ -41,15 +32,20 @@ def get_move_response(lock, process, response, pv_callback, gameover_callback, d
             if m:
                 pv = m.group(1).split()
                 score = m.group(2)
-                response['best_move'] = pv[0]
+                current_move = pv[0] # The first move in the PV is the best move for this depth
+                response['best_move'] = current_move
                 response['pv'] = pv
                 response['score'] = int(score)
-            if (d_match := re.search(r'depth (\d+)', line)): response['depth'] = int(d_match.group(1))
-            if (t_match := re.search(r'time (\d+)', line)):
-                movetime = int(t_match.group(1))
-                depth = response.get('depth', 0)
-                if pv_callback and (depth >= 15 or (movetime >= 500 and depth >= 10)):
-                    pv_callback(pv)
+                if (d_match := re.search(r'depth (\d+)', line)):
+                    depth = int(d_match.group(1))
+                    response['depth'] = depth
+                    if depth_callback:
+                        depth_callback(depth, int(score), current_move)
+                if (t_match := re.search(r'time (\d+)', line)):
+                    movetime = int(t_match.group(1))
+                    depth_for_pv = response.get('depth', 0)
+                    if pv_callback and (depth_for_pv >= 15 or (movetime >= 500 and depth_for_pv >= 10)):
+                        pv_callback(pv)
         if 'bestmove' in line:
             m = re.search('bestmove (.*)', line)
             if m: response['best_move'] = m.group(1)
