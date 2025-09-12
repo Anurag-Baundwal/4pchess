@@ -346,6 +346,8 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       && !in_check // not in check
       && !is_verification_search // <-- RECURSION GUARD
       && eval >= beta + 50
+      && ss->static_eval >= beta - (19 * depth) + 389
+      && beta > -kMateValue
       && !partner_checked
       ) {
     num_null_moves_tried_++;
