@@ -593,11 +593,13 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
         && alpha > -kMateValue
         && lmr
         && move.IsCapture()
-        && lmr_depth < 10
-        && !in_check) {
+        && lmr_depth < 8
+        && !in_check
+        && !delivers_check
+        ) {
       Piece capture_piece = move.GetCapturePiece();
       PieceType capture_piece_type = capture_piece.GetPieceType();
-      int futility_eval = eval + 400 + 291 * lmr_depth + kPieceEvaluations[capture_piece_type];
+      int futility_eval = eval + 250 + 250 * lmr_depth + kPieceEvaluations[capture_piece_type];
       if (futility_eval < alpha) {
         continue;
       }
