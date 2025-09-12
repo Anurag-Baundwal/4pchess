@@ -235,7 +235,8 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
         std::chrono::time_point<std::chrono::system_clock>>& deadline,
     PVInfo& pvinfo,
     int null_moves,
-    bool is_cut_node) {
+    bool is_cut_node,
+    bool is_verification_search) {
   depth = std::max(depth, 0);
   if (canceled_
       || (deadline.has_value()
@@ -343,6 +344,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       && !is_pv_node // not a pv node
       && null_moves == 0 // last move wasn't null
       && !in_check // not in check
+      && !is_verification_search // <-- RECURSION GUARD
       && eval >= beta + 50
       && !partner_checked
       ) {
@@ -354,23 +356,46 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     // try the null move with possibly reduced depth
     PVInfo null_pvinfo;
     int r = std::min(depth / 3 + 2, depth);
+    int nmp_depth = depth - r;
 
     auto value_and_move_or = Search(
-        ss+1, NonPV, thread_state, board, ply + 1, depth - r,
+        ss+1, NonPV, thread_state, board, ply + 1, nmp_depth,
         -beta, -beta + 1, !maximizing_player, expanded, deadline, null_pvinfo,
-        null_moves + 1);
+        null_moves + 1, is_verification_search=false);
 
     board.UndoNullMove();
 
-    // if it failed high, skip this move
+    // if it failed high, consider pruning or verification
     if (value_and_move_or.has_value()) {
       int nmp_score = -std::get<0>(*value_and_move_or);
-      if (nmp_score >= beta
-          // don't return unproven mate score
-          && nmp_score < kMateValue) {
-        num_null_moves_pruned_++;
+      if (nmp_score >= beta && nmp_score < kMateValue) {
+        
+        // At low depths, we trust NMP without verification.
+        // This is a tunable parameter; Stockfish uses 16. Let's start with 8.
+        constexpr int VERIFICATION_DEPTH_THRESHOLD = 8;
+        if (depth < VERIFICATION_DEPTH_THRESHOLD) {
+          num_null_moves_pruned_++;
+          return std::make_tuple(beta, std::nullopt);
+        }
 
-        return std::make_tuple(beta, std::nullopt);
+        // At higher depths, perform a verification search.
+        // This search is done on the ORIGINAL position, with NMP disabled.
+        PVInfo verification_pvinfo;
+        auto verification_res = Search(
+            ss, NonPV, thread_state, board, ply, nmp_depth, // Note: ply, not ply+1
+            beta - 1, beta, maximizing_player, expanded, deadline, verification_pvinfo,
+            null_moves=0, is_cut_node, is_verification_search=true);
+
+        if (verification_res.has_value()) {
+          int verification_score = std::get<0>(*verification_res);
+          // Only prune if the verification search ALSO fails high.
+          if (verification_score >= beta) {
+            num_null_moves_pruned_++;
+            return std::make_tuple(beta, std::nullopt);
+          }
+        }
+        // If verification fails low, the original NMP result was spurious.
+        // We don't prune and the search continues normally.
       }
     }
   }

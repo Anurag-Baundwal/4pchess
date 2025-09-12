@@ -185,7 +185,8 @@ class AlphaBetaPlayer {
       const std::optional<std::chrono::time_point<std::chrono::system_clock>>& deadline,
       PVInfo& pv_info,
       int null_moves = 0,
-      bool is_cut_node = false);
+      bool is_cut_node = false,
+      bool is_verification_search = false);
 
   std::optional<std::tuple<int, std::optional<Move>>> QSearch(
       Stack* ss,
