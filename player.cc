@@ -372,7 +372,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
         
         // At low depths, we trust NMP without verification.
         // This is a tunable parameter; Stockfish uses 16. Let's start with 8.
-        constexpr int VERIFICATION_DEPTH_THRESHOLD = 8;
+        constexpr int VERIFICATION_DEPTH_THRESHOLD = 12;
         if (depth < VERIFICATION_DEPTH_THRESHOLD) {
           num_null_moves_pruned_++;
           return std::make_tuple(beta, std::nullopt);
