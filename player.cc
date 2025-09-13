@@ -569,16 +569,10 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     r -= is_pv_node;
     r -= move.IsCapture() && move.ApproxSEE(board, kPieceEvaluations) > 0;
     // ===================================================================
-    // NEW CODE: Increase reduction for other moves if TT move is a capture
+    // If the tt move is a capture then we reduce other moves (but not captures)
     // ===================================================================
-    if (tt_move_is_capture) {
-        // Only apply the reduction to moves that are NOT the TT move
-        if (tt_move.has_value() && move != *tt_move) {
-            // Stockfish uses a very large value here because its reduction
-            // system is scaled differently. For your engine, a reduction
-            // of +1 or +2 is already very significant. Let's start with 2.
-            r += 1;
-        }
+    if (tt_move_is_capture && !move.IsCapture()) {
+        r += 1;
     }
     // ===================================================================
     if (!move.IsCapture()) {
