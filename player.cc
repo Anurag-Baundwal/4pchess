@@ -284,6 +284,14 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     }
 
   }
+  // A flag to check if the TT move is a capture
+  bool tt_move_is_capture = false;
+  if (tt_move.has_value()) {
+      // A move is a capture if the destination square is occupied by an opponent
+      if (board.GetPiece(tt_move->To()).Present()) {
+          tt_move_is_capture = true;
+      }
+  }
   Player player = board.GetTurn();
 
   if (depth <= 0) {
@@ -560,6 +568,24 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     r -= delivers_check;
     r -= is_pv_node;
     r -= move.IsCapture() && move.ApproxSEE(board, kPieceEvaluations) > 0;
+    // ===================================================================
+    // NEW CODE: Increase reduction for other moves if TT move is a capture
+    // ===================================================================
+    if (tt_move_is_capture) {
+        // Only apply the reduction to moves that are NOT the TT move
+        if (tt_move.has_value() && move != *tt_move) {
+            // Stockfish uses a very large value here because its reduction
+            // system is scaled differently. For your engine, a reduction
+            // of +1 or +2 is already very significant. Let's start with 2.
+            r += 1;
+
+            // We can also mimic Stockfish's depth-dependency for a stronger effect
+            if (depth < 10) {
+                r++; // Add an extra reduction at shallower depths
+            }
+        }
+    }
+    // ===================================================================
     if (!move.IsCapture()) {
       int history_score = history_heuristic[piece.GetPieceType()][from.GetRow()][from.GetCol()]
           [to.GetRow()][to.GetCol()];
