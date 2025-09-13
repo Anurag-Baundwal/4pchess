@@ -578,11 +578,6 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
             // system is scaled differently. For your engine, a reduction
             // of +1 or +2 is already very significant. Let's start with 2.
             r += 1;
-
-            // We can also mimic Stockfish's depth-dependency for a stronger effect
-            if (depth < 10) {
-                r++; // Add an extra reduction at shallower depths
-            }
         }
     }
     // ===================================================================
