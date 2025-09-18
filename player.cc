@@ -549,6 +549,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       options_.enable_late_move_reduction
       && depth > 1
       && move_count > 1 + is_root_node
+      && !in_check
       && (!is_tt_pv
           || !move.IsCapture()
           || (is_cut_node && (ss-1)->move_count > 1))
@@ -570,34 +571,24 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
         && alpha > -kMateValue  // don't prune if we're mated
         && quiet
         && quiets >= q
+        && move_count >= 6
         ) {
       num_lm_pruned_++;
       continue;
     }
 
-    int r = 1 + std::max(0,(depth-5)/3) + move_count/30;
-
-    if (quiet) {
-      r++;
-      r += depth / 8;
+    // MODIFICATION START: New LMR reduction calculation based on move count.
+    int r = 0;
+    // Note: move_count is 0-indexed.
+    // Moves 1-5  -> move_count 0..4  -> r = 0
+    // Moves 6-11 -> move_count 6..11 -> r = 4
+    // Moves 12+  -> move_count 12+   -> r = 6
+    if (move_count >= 6 && move_count <= 11) {
+      r = 4;
+    } else if (move_count >= 12) {
+      r = 6;
     }
-    r += declining - improving;
-
-    r -= in_check;
-    r -= delivers_check;
-    r -= is_pv_node;
-    r -= move.IsCapture() && move.ApproxSEE(board, kPieceEvaluations) > 0;
-    if (!move.IsCapture()) {
-      int history_score = history_heuristic[piece.GetPieceType()][from.GetRow()][from.GetCol()]
-          [to.GetRow()][to.GetCol()];
-      r -= std::clamp((history_score - 4000) / 10000, -3, 3);
-    } else {
-      Piece captured = move.GetCapturePiece();
-      int history_score = capture_heuristic[piece.GetPieceType()][piece.GetColor()]
-        [captured.GetPieceType()][captured.GetColor()]
-        [to.GetRow()][to.GetCol()];
-      r -= std::clamp((history_score - 4000) / 10000, -3, 3);
-    }
+    // MODIFICATION END
 
     // allow limited extension if the reduction is negative
     r = std::max(ply >= ss->root_depth * 1.0 ? 0 : -1, r);
