@@ -12,8 +12,8 @@
 #include <mutex>
 
 #include "board.h"
-#include "move_picker.h"
 #include "transposition_table.h"
+#include "types.h" // <-- Replaced move_picker.h with types.h
 
 namespace chess {
 
@@ -84,8 +84,8 @@ struct PlayerOptions {
   std::optional<int> max_search_depth;
 };
 
+
 struct Stack {
-  Move killers[2];
   Move excludedMove;
   bool tt_pv = false;
   int move_count = 0;
@@ -133,6 +133,8 @@ class ThreadState {
   int n_threats[4] = {0, 0, 0, 0};
 
   AspirationState& asp_state_;
+  
+  KillerEntry killers_[kMaxPly][2];
 
  private:
   PlayerOptions options_;
@@ -193,6 +195,7 @@ class AlphaBetaPlayer {
       NodeType node_type,
       ThreadState& thread_state,
       Board& board,
+      int ply,
       int depth, // called initially with depth = 0, further decreases
       int alpha,
       int beta,
@@ -242,9 +245,9 @@ class AlphaBetaPlayer {
   void ResetHistoryHeuristics();
   void AgeHistoryHeuristics();
   void UpdateStats(Stack* ss, ThreadState& thread_state, const Board& board,
-                   const Move& move, int depth, bool fail_high,
+                   const Move& move, int ply, int depth, bool fail_high,
                    const std::vector<Move>& searched_moves);
-  void UpdateQuietStats(Stack* ss, const Move& move);
+  void UpdateQuietStats(ThreadState& thread_state, int ply, const Move& move, int depth);
   void UpdateMobilityEvaluation(ThreadState& thread_state, Board& board, Player turn);
   void UpdateContinuationHistories(Stack* ss, const Move& move, PieceType piece_type, int bonus);
   bool HasShield(Board& board, PlayerColor color, const BoardLocation& king_loc);

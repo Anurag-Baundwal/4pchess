@@ -16,7 +16,7 @@ enum Stage {
 MovePicker::MovePicker(
     Board& board,
     const std::optional<Move>& pvmove,
-    Move* killers,
+    KillerEntry* killers,
     const int piece_evaluations[6],
     int history_heuristic[6][14][14][14][14],
     int capture_heuristic[6][4][6][4][14][14],
@@ -47,9 +47,14 @@ MovePicker::MovePicker(
     if (pvmove.has_value() && move == *pvmove) {
       stages_[PV_MOVE].emplace_back(static_cast<short>(i), static_cast<float>(score));
     } else if (killers != nullptr
-               && (killers[0] == move || killers[1] == move)
+               && (killers[0].move == move || killers[1].move == move)
                && include_quiets) {
-      stages_[KILLER].emplace_back(static_cast<short>(i), static_cast<float>(score + (move == killers[0] ? 1 : 0)));
+      if (killers[0].move == move) {
+        score += killers[0].score;
+      } else {
+        score += killers[1].score;
+      }
+      stages_[KILLER].emplace_back(static_cast<short>(i), static_cast<float>(score));
     } else if (move.IsCapture()) {
       int captured_val = piece_evaluations[capture.GetPieceType()];
       int attacker_val = piece_evaluations[piece.GetPieceType()];

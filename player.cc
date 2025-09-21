@@ -177,6 +177,7 @@ ThreadState::ThreadState(
     PlayerOptions options, const Board& board, const PVInfo& pv_info, AspirationState& asp_state)
   : options_(options), root_board_(board), pv_info_(pv_info), asp_state_(asp_state) {
   move_buffer_ = new Move[kBufferPartitionSize * kBufferNumPartitions];
+  std::memset(killers_, 0, sizeof(killers_));
 }
 
 ThreadState::~ThreadState() {
@@ -289,7 +290,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
 
   if (depth <= 0) {
     if (options_.enable_qsearch) {
-      return QSearch(ss, is_pv_node ? PV : NonPV, thread_state, board, 0, alpha, beta,
+      return QSearch(ss, is_pv_node ? PV : NonPV, thread_state, board, ply, 0, alpha, beta,
           maximizing_player, deadline, pvinfo);
     }
 
@@ -308,7 +309,6 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     eval = Evaluate(thread_state, board, maximizing_player, alpha, beta);
   }
 
-  (ss+2)->killers[0] = (ss+2)->killers[1] = Move();
   ss->move_count = 0;
   if (ply == 1) {
     ss->root_depth = depth;
@@ -435,7 +435,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
   MovePicker move_picker(
     board,
     pv_move.has_value() ? pv_move : tt_move,
-    ss->killers,
+    thread_state.killers_[ply],
     kPieceEvaluations,
     history_heuristic,
     capture_heuristic,
@@ -764,7 +764,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
   }
 
   if (!fail_low) {
-    UpdateStats(ss, thread_state, board, *best_move, depth, fail_high,
+    UpdateStats(ss, thread_state, board, *best_move, ply, depth, fail_high,
                 searched_moves);
   }
 
@@ -787,7 +787,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
 
   if (best_move.has_value()
       && !best_move->IsCapture()) {
-    UpdateQuietStats(ss, *best_move);
+    UpdateQuietStats(thread_state, ply, *best_move, depth);
   }
 
   // If no good move is found and the previous position was tt_pv, then the
@@ -807,6 +807,7 @@ AlphaBetaPlayer::QSearch(
     NodeType node_type,
     ThreadState& thread_state,
     Board& board,
+    int ply,
     int depth,
     int alpha,
     int beta,
@@ -916,7 +917,7 @@ AlphaBetaPlayer::QSearch(
   MovePicker move_picker(
     board,
     pv_move,
-    ss->killers,
+    thread_state.killers_[ply],
     kPieceEvaluations,
     history_heuristic,
     capture_heuristic,
@@ -1015,7 +1016,7 @@ AlphaBetaPlayer::QSearch(
     }
 
     value_and_move_or = QSearch(
-        ss+1, node_type, thread_state, board, depth - 1, -beta, -alpha, !maximizing_player,
+        ss+1, node_type, thread_state, board, ply + 1, depth - 1, -beta, -alpha, !maximizing_player,
         deadline, *child_pvinfo);
 
     board.UndoMove();
@@ -1059,7 +1060,7 @@ AlphaBetaPlayer::QSearch(
   }
 
   if (!fail_low) {
-    UpdateStats(ss, thread_state, board, *best_move, /*depth=*/0, fail_high,
+    UpdateStats(ss, thread_state, board, *best_move, ply, /*depth=*/0, fail_high,
                 searched_moves);
   }
 
@@ -1084,7 +1085,7 @@ AlphaBetaPlayer::QSearch(
 
 void AlphaBetaPlayer::UpdateStats(
     Stack* ss, ThreadState& thread_state, const Board& board,
-    const Move& move, int depth, bool fail_high,
+    const Move& move, int ply, int depth, bool fail_high,
     const std::vector<Move>& searched_moves) {
   auto from = move.From();
   auto to = move.To();
@@ -1110,7 +1111,7 @@ void AlphaBetaPlayer::UpdateStats(
       counter_moves[from.GetRow()*14*14*14 + from.GetCol()*14*14
         + to.GetRow()*14 + to.GetCol()] = move;
     }
-    UpdateQuietStats(ss, move);
+    UpdateQuietStats(thread_state, ply, move, depth);
     UpdateContinuationHistories(ss, move, piece.GetPieceType(), bonus);
   }
   for (const auto& other_move : searched_moves) {
@@ -1135,11 +1136,14 @@ void AlphaBetaPlayer::UpdateStats(
   }
 }
 
-void AlphaBetaPlayer::UpdateQuietStats(Stack* ss, const Move& move) {
+void AlphaBetaPlayer::UpdateQuietStats(ThreadState& thread_state, int ply, const Move& move, int depth) {
   if (options_.enable_killers) {
-    if (ss->killers[0] != move) {
-      ss->killers[1] = ss->killers[0];
-      ss->killers[0] = move;
+    if (thread_state.killers_[ply][0].move != move) {
+      thread_state.killers_[ply][1] = thread_state.killers_[ply][0];
+      thread_state.killers_[ply][0].move = move;
+      thread_state.killers_[ply][0].score = depth * depth;
+    } else {
+      thread_state.killers_[ply][0].score += depth;
     }
   }
 }
@@ -1854,6 +1858,12 @@ AlphaBetaPlayer::MakeMoveSingleThread(
     while (next_depth <= max_depth) {
       std::optional<std::tuple<int, std::optional<Move>>> move_and_value;
 
+      // Age killers before starting a new search depth
+      for (int i = 0; i < kMaxPly; ++i) {
+        thread_state.killers_[i][0].score /= 2;
+        thread_state.killers_[i][1].score /= 2;
+      }
+      
       int prev = thread_state.asp_state_.average_root_eval_;
       int delta = 50;
       if (thread_state.asp_state_.asp_nobs_ > 0) {
@@ -1920,6 +1930,12 @@ AlphaBetaPlayer::MakeMoveSingleThread(
   } else {
     while (next_depth <= max_depth) {
       std::optional<std::tuple<int, std::optional<Move>>> move_and_value;
+
+      // Age killers before starting a new search depth
+      for (int i = 0; i < kMaxPly; ++i) {
+        thread_state.killers_[i][0].score /= 2;
+        thread_state.killers_[i][1].score /= 2;
+      }
 
       move_and_value = Search(
           ss, Root, thread_state, board, 1, next_depth, alpha, beta, maximizing_player,
