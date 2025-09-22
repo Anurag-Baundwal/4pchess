@@ -1858,11 +1858,11 @@ AlphaBetaPlayer::MakeMoveSingleThread(
     while (next_depth <= max_depth) {
       std::optional<std::tuple<int, std::optional<Move>>> move_and_value;
 
-      // Age killers before starting a new search depth
-      for (int i = 0; i < kMaxPly; ++i) {
-        thread_state.killers_[i][0].score /= 2;
-        thread_state.killers_[i][1].score /= 2;
-      }
+      // // Age killers before starting a new search depth
+      // for (int i = 0; i < kMaxPly; ++i) {
+      //   thread_state.killers_[i][0].score /= 2;
+      //   thread_state.killers_[i][1].score /= 2;
+      // }
       
       int prev = thread_state.asp_state_.average_root_eval_;
       int delta = 50;
@@ -1931,11 +1931,11 @@ AlphaBetaPlayer::MakeMoveSingleThread(
     while (next_depth <= max_depth) {
       std::optional<std::tuple<int, std::optional<Move>>> move_and_value;
 
-      // Age killers before starting a new search depth
-      for (int i = 0; i < kMaxPly; ++i) {
-        thread_state.killers_[i][0].score /= 2;
-        thread_state.killers_[i][1].score /= 2;
-      }
+      // // Age killers before starting a new search depth
+      // for (int i = 0; i < kMaxPly; ++i) {
+      //   thread_state.killers_[i][0].score /= 2;
+      //   thread_state.killers_[i][1].score /= 2;
+      // }
 
       move_and_value = Search(
           ss, Root, thread_state, board, 1, next_depth, alpha, beta, maximizing_player,
