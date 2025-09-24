@@ -135,6 +135,7 @@ class BoardLocation {
   bool Missing() const { return !Present(); }
   int8_t GetRow() const { return loc_ / 14; }
   int8_t GetCol() const { return loc_ % 14; }
+  uint8_t GetIndex() const { return loc_; } // OPTIMIZATION: Raw index access
 
   BoardLocation Relative(int8_t delta_row, int8_t delta_col) const {
     return BoardLocation(GetRow() + delta_row, GetCol() + delta_col);
@@ -150,7 +151,7 @@ class BoardLocation {
   static BoardLocation kNoLocation;
 
  private:
-  // value 0-195: 1 + 14*row + col
+  // value 0-195: 14*row + col
   // value 196: not present
   uint8_t loc_;
 };
@@ -162,9 +163,7 @@ struct std::hash<chess::BoardLocation>
 {
   std::size_t operator()(const chess::BoardLocation& x) const
   {
-    std::size_t hash = 14479 + 14593 * x.GetRow();
-    hash += 24439 * x.GetCol();
-    return hash;
+    return std::hash<int>()(x.GetIndex());
   }
 };
 
@@ -457,11 +456,13 @@ class Board {
 
   const Piece& GetPiece(
       int row, int col) const {
-    return location_to_piece_[row][col];
+    // OPTIMIZATION: Use 1D array access.
+    return location_to_piece_[14 * row + col];
   }
   const Piece& GetPiece(
       const BoardLocation& location) const {
-    return GetPiece(location.GetRow(), location.GetCol());
+    // OPTIMIZATION: Use 1D array access with raw index.
+    return location_to_piece_[location.GetIndex()];
   }
   inline bool IsOnPathBetween(
       const BoardLocation& from,
@@ -606,7 +607,12 @@ class Board {
 
   Player turn_;
 
-  Piece location_to_piece_[14][14];
+  // OPTIMIZATION: Use 1D mailbox array
+  Piece location_to_piece_[196];
+  
+  // OPTIMIZATION: Index into piece_list_ for O(1) updates
+  int8_t piece_indices_[196];
+
   std::vector<std::vector<PlacedPiece>> piece_list_;
 
   BoardLocation locations_[14][14];

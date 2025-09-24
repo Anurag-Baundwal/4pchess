@@ -1119,9 +1119,17 @@ GameResult Board::CheckWasLastMoveKingCapture() const {
 void Board::SetPiece(
     const BoardLocation& location,
     const Piece& piece) {
-  location_to_piece_[location.GetRow()][location.GetCol()] = piece;
-  // Add to piece_list_
-  piece_list_[piece.GetColor()].emplace_back(location, piece);
+  // OPTIMIZATION: O(1) piece list update
+  PlayerColor color = piece.GetColor();
+  auto& placed_pieces = piece_list_[color];
+  const int new_index = placed_pieces.size();
+  
+  placed_pieces.emplace_back(location, piece);
+
+  location_to_piece_[location.GetIndex()] = piece;
+  piece_indices_[location.GetIndex()] = new_index;
+  // END OPTIMIZATION
+
   UpdatePieceHash(piece, location);
   // Update king location
   if (piece.GetPieceType() == KING) {
@@ -1140,17 +1148,22 @@ void Board::SetPiece(
 void Board::RemovePiece(const BoardLocation& location) {
   const auto piece = GetPiece(location);
   assert(piece.Present());
+
+  // OPTIMIZATION: O(1) piece list removal (swap and pop)
+  PlayerColor color = piece.GetColor();
+  int index_to_remove = piece_indices_[location.GetIndex()];
+  auto& placed_pieces = piece_list_[color];
+  
+  const PlacedPiece& last_piece = placed_pieces.back();
+  placed_pieces[index_to_remove] = last_piece;
+  piece_indices_[last_piece.GetLocation().GetIndex()] = index_to_remove;
+  placed_pieces.pop_back();
+  // END OPTIMIZATION
+
   UpdatePieceHash(piece, location);
-  location_to_piece_[location.GetRow()][location.GetCol()] = Piece();
-  auto& placed_pieces = piece_list_[piece.GetColor()];
-  for (auto it = placed_pieces.begin(); it != placed_pieces.end();) {
-    const auto& placed_piece = *it;
-    if (placed_piece.GetLocation() == location) {
-      placed_pieces.erase(it);
-      break;
-    }
-    ++it;
-  }
+  location_to_piece_[location.GetIndex()] = Piece();
+  piece_indices_[location.GetIndex()] = -1;
+  
   // Update king location
   if (piece.GetPieceType() == KING) {
     king_locations_[piece.GetColor()] = BoardLocation::kNoLocation;
@@ -1392,10 +1405,15 @@ Board::Board(
   }
   move_buffer_.reserve(1000);
 
+  // OPTIMIZATION: Initialize 1D arrays
+  for (int i = 0; i < 196; ++i) {
+      location_to_piece_[i] = Piece();
+      piece_indices_[i] = -1;
+  }
+
   for (int i = 0; i < 14; ++i) {
     for (int j = 0; j < 14; ++j) {
       locations_[i][j] = BoardLocation(i, j);
-      location_to_piece_[i][j] = Piece();
     }
   }
 
@@ -1409,10 +1427,13 @@ Board::Board(
     const auto& location = it.first;
     const auto& piece = it.second;
     PlayerColor color = piece.GetColor();
-    location_to_piece_[location.GetRow()][location.GetCol()] = piece;
-    piece_list_[piece.GetColor()].push_back(PlacedPiece(
-          locations_[location.GetRow()][location.GetCol()],
-          piece));
+
+    // OPTIMIZATION: Populate 1D array and piece_indices
+    location_to_piece_[location.GetIndex()] = piece;
+    auto& placed_pieces = piece_list_[color];
+    piece_indices_[location.GetIndex()] = placed_pieces.size();
+    placed_pieces.push_back(PlacedPiece(location, piece));
+
     PieceType piece_type = piece.GetPieceType();
     if (piece.GetTeam() == RED_YELLOW) {
       piece_evaluation_ += kPieceEvaluations[static_cast<int>(piece_type)];
@@ -1453,6 +1474,10 @@ Board::Board(
 
   for (auto& placed_pieces : piece_list_) {
     std::sort(placed_pieces.begin(), placed_pieces.end(), customLess);
+    // OPTIMIZATION: After sorting, we need to update our piece_indices_ array to match.
+    for(size_t i = 0; i < placed_pieces.size(); ++i) {
+        piece_indices_[placed_pieces[i].GetLocation().GetIndex()] = i;
+    }
   }
 
   // Initialize hashes for each piece at each location, and each turn
@@ -1665,7 +1690,7 @@ std::ostream& operator<<(
   for (int i = 0; i < 14; i++) {
     for (int j = 0; j < 14; j++) {
       if (board.IsLegalLocation(BoardLocation(i, j))) {
-        const auto piece = board.location_to_piece_[i][j];
+        const auto piece = board.GetPiece(i, j);
         if (piece.Missing()) {
           os << ".";
         } else {
