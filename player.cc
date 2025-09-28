@@ -548,7 +548,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     bool lmr =
       options_.enable_late_move_reduction
       && depth > 1
-      && move_count > 1 + is_root_node
+      && move_count > 3 + is_root_node
       && (!is_tt_pv
           || !move.IsCapture()
           || (is_cut_node && (ss-1)->move_count > 1))
@@ -575,7 +575,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       continue;
     }
 
-    int r = 1 + std::max(0,(depth-5)/3) + move_count/30;
+    int r = 1 + std::max(0,(depth-5)/3) + move_count/10;
 
     if (quiet) {
       r++;
