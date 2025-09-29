@@ -138,11 +138,35 @@ def tune_params(param_names):
   
   # --- END: MANUAL OPTIMIZATION LOOP ---
 
-  print('\n===== Best params found: =====')
+  import numpy as np
+
+  print('\n===== Tuning Complete: Final Analysis =====')
   if result:
-    for param_name, best_value in zip(param_names, result.x):
+    # --- 1. Best OBSERVED Parameters (potentially lucky) ---
+    # This is the single set of parameters that achieved the best score in one iteration.
+    print('--- Best Observed Run (most "lucky" iteration) ---')
+    best_observed_idx = np.argmin(result.func_vals)
+    best_observed_params = result.x_iters[best_observed_idx]
+    best_observed_score = result.func_vals[best_observed_idx]
+
+    for param_name, best_value in zip(param_names, best_observed_params):
       print(f'{param_name} = {best_value}')
-    print(f'Win rate with best params: {1.0 - result.fun:.2%}')
+    print(f'Observed win rate in its single match: {1.0 - best_observed_score:.2%}\n')
+
+
+    # --- 2. Best PREDICTED Parameters (most robust) ---
+    # This is the set of parameters the GP model predicts is the best after
+    # considering ALL data points. This is the value stored in `result.x`.
+    # THIS IS THE ONE WE SHOULD GENERALLY USE.
+    print('--- Best Predicted Parameters (Optimizer\'s Final Recommendation) ---')
+    best_predicted_params = result.x
+    predicted_score = result.fun
+
+    for param_name, best_value in zip(param_names, best_predicted_params):
+      print(f'{param_name} = {best_value}')
+    print(f'This set is the model\'s best estimate for achieving a win rate of: {1.0 - predicted_score:.2%}')
+    print('(This is the most reliable result as it uses data from all iterations to smooth out noise.)')
+
   else:
     print("No successful iterations were completed.")
 
