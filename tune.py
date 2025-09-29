@@ -2,6 +2,7 @@ import re
 import argparse
 import skopt
 import subprocess
+import numpy as np
 
 from skopt import Optimizer
 
@@ -132,18 +133,39 @@ def tune_params(param_names):
           
           # Manually call a "callback" to print progress
           win_rate = 1.0 - result.fun if result.fun is not None else 0.0
-          print(f'#iters: {successful_calls}, Best Win Rate So Far: {win_rate:.2%}, Current Params: {format_param_values(result.x)}')
+          print(f'#iters: {successful_calls}, Best Predicted Win Rate So Far: {win_rate:.2%}, Params for this prediction: {format_param_values(result.x)}')
+
+          # --- INTERMEDIATE ANALYSIS BLOCK ---
+          # Print the detailed analysis every 10 successful iterations.
+          if successful_calls > 0 and successful_calls % 10 == 0:
+              print(f'\n===== Intermediate Analysis @ Iteration {successful_calls} =====')
+              
+              # 1. Best OBSERVED Parameters (potentially lucky)
+              print('--- Best Observed Run So Far ---')
+              best_observed_idx = np.argmin(result.func_vals)
+              best_observed_params = result.x_iters[best_observed_idx]
+              best_observed_score = result.func_vals[best_observed_idx]
+              for param_name, best_value in zip(param_names, best_observed_params):
+                  print(f'  {param_name} = {best_value}')
+              print(f'Observed win rate in its single match: {1.0 - best_observed_score:.2%}\n')
+
+              # 2. Best PREDICTED Parameters (most robust)
+              print('--- Best Predicted Parameters So Far ---')
+              best_predicted_params = result.x
+              predicted_score = result.fun
+              for param_name, best_value in zip(param_names, best_predicted_params):
+                  print(f'  {param_name} = {best_value}')
+              print(f'Model\'s current best estimate for win rate: {1.0 - predicted_score:.2%}')
+              print('==================================================')
       else:
           print("Iteration failed. Asking optimizer for a new point.")
   
   # --- END: MANUAL OPTIMIZATION LOOP ---
 
-  import numpy as np
-
+  # Final analysis after all iterations are complete
   print('\n===== Tuning Complete: Final Analysis =====')
   if result:
     # --- 1. Best OBSERVED Parameters (potentially lucky) ---
-    # This is the single set of parameters that achieved the best score in one iteration.
     print('--- Best Observed Run (most "lucky" iteration) ---')
     best_observed_idx = np.argmin(result.func_vals)
     best_observed_params = result.x_iters[best_observed_idx]
@@ -155,9 +177,6 @@ def tune_params(param_names):
 
 
     # --- 2. Best PREDICTED Parameters (most robust) ---
-    # This is the set of parameters the GP model predicts is the best after
-    # considering ALL data points. This is the value stored in `result.x`.
-    # THIS IS THE ONE WE SHOULD GENERALLY USE.
     print('--- Best Predicted Parameters (Optimizer\'s Final Recommendation) ---')
     best_predicted_params = result.x
     predicted_score = result.fun
