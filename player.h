@@ -75,6 +75,19 @@ struct PlayerOptions {
   bool enable_late_move_pruning =   true;
   bool enable_null_move_pruning =   true;
 
+  // --- LMR/LMP Tuning Parameters ---
+  int lmr_min_moves = 3;
+  int lmr_depth_sub = 5;
+  int lmr_depth_div = 3;
+  int lmr_move_count_div = 10;
+  int lmp_q_base1 = 1;
+  int lmp_q_div_declining1 = 10;
+  int lmp_q_div_normal1 = 5;
+  int lmp_q_base2 = 5;
+  int lmp_q_div_declining2 = 2;
+  int lmp_q_div_normal2 = 1;
+  int lmp_q_improving_mult = 2;
+
   // for multithreading
   bool enable_multithreading = true;
   int num_threads = 8;

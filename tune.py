@@ -22,11 +22,25 @@ args = parser.parse_args()
 # NOTE: These params are outdated and we don't use this file (yet) to tune any
 # hyper-params of the program.
 _PARAMS = {
-  'piece_eval_pawn': { 'space': skopt.space.space.Integer(10, 300), },
-  'piece_eval_knight': { 'space': skopt.space.space.Integer(100, 600), },
-  'piece_eval_bishop': { 'space': skopt.space.space.Integer(200, 600), },
-  'piece_eval_rook': { 'space': skopt.space.space.Integer(200, 900), },
-  'piece_eval_queen': { 'space': skopt.space.space.Integer(500, 1500), },
+  # 'piece_eval_pawn': { 'space': skopt.space.space.Integer(10, 300), },
+  # 'piece_eval_knight': { 'space': skopt.space.space.Integer(100, 600), },
+  # 'piece_eval_bishop': { 'space': skopt.space.space.Integer(200, 600), },
+  # 'piece_eval_rook': { 'space': skopt.space.space.Integer(200, 900), },
+  # 'piece_eval_queen': { 'space': skopt.space.space.Integer(500, 1500), },
+
+  # --- New LMR/LMP Tuning Parameters ---
+  'lmr_min_moves': { 'space': skopt.space.space.Integer(2, 6), },
+  'lmr_depth_sub': { 'space': skopt.space.space.Integer(3, 8), },
+  'lmr_depth_div': { 'space': skopt.space.space.Integer(2, 6), },
+  'lmr_move_count_div': { 'space': skopt.space.space.Integer(5, 20), },
+
+  'lmp_q_base1': { 'space': skopt.space.space.Integer(0, 4), },
+  'lmp_q_div_declining1': { 'space': skopt.space.space.Integer(5, 20), },
+  'lmp_q_div_normal1': { 'space': skopt.space.space.Integer(2, 10), },
+  'lmp_q_base2': { 'space': skopt.space.space.Integer(2, 10), },
+  'lmp_q_div_declining2': { 'space': skopt.space.space.Integer(1, 5), },
+  'lmp_q_div_normal2': { 'space': skopt.space.space.Integer(1, 4), },
+  'lmp_q_improving_mult': { 'space': skopt.space.space.Integer(1, 4), },
 }
 
 
@@ -57,10 +71,10 @@ def tune_params(param_names):
       args.scm_path,
       '--e1', args.engine_path,
       '--e2', args.engine_path,
-      '--fixed', '200',
-      '--games', '100',
+      '--fixed', '500',
+      '--games', '32',
       '--threads', '10',
-      '--maxmoves', '100',
+      '--maxmoves', '300',
     ] + custom_args
     if args.fens_path:
       scm_args.extend(['--fens', args.fens_path])

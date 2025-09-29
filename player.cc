@@ -548,7 +548,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     bool lmr =
       options_.enable_late_move_reduction
       && depth > 1
-      && move_count > 3 + is_root_node
+      && move_count > options_.lmr_min_moves + is_root_node
       && (!is_tt_pv
           || !move.IsCapture()
           || (is_cut_node && (ss-1)->move_count > 1))
@@ -558,11 +558,11 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       ;
 
     // late move pruning threshold
-    int q = 1 + depth*depth/(declining?10:5);
+    int q = options_.lmp_q_base1 + depth*depth/(declining?options_.lmp_q_div_declining1:options_.lmp_q_div_normal1);
     if (is_pv_node) {
-      q = 5 + depth*depth/(declining?2:1);
+      q = options_.lmp_q_base2 + depth*depth/(declining?options_.lmp_q_div_declining2:options_.lmp_q_div_normal2);
       if (improving) {
-        q *= 2;
+        q *= options_.lmp_q_improving_mult;
       }
     }
 
@@ -575,7 +575,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       continue;
     }
 
-    int r = 1 + std::max(0,(depth-5)/3) + move_count/10;
+    int r = 1 + std::max(0,(depth - options_.lmr_depth_sub) / options_.lmr_depth_div) + move_count/options_.lmr_move_count_div;
 
     if (quiet) {
       r++;

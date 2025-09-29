@@ -322,6 +322,29 @@ void CommandLine::HandleCommand(
             "Invalid team: " + option_value + ". Must be red_yellow, or blue_green.");
         return;
       }
+#define SET_TUNABLE_INT_PARAM(name) \
+    } else if (option_name == #name) { \
+      auto val = ParseInt(option_value); \
+      if (val.has_value()) { \
+        if (player_options_.name != *val) { \
+          player_options_.name = *val; \
+          player_ = std::make_shared<AlphaBetaPlayer>(player_options_); \
+        } \
+      } else { \
+        SendInvalidCommandMessage("Can not parse int: " + option_value); \
+        return; \
+      }
+    SET_TUNABLE_INT_PARAM(lmr_min_moves)
+    SET_TUNABLE_INT_PARAM(lmr_depth_sub)
+    SET_TUNABLE_INT_PARAM(lmr_depth_div)
+    SET_TUNABLE_INT_PARAM(lmr_move_count_div)
+    SET_TUNABLE_INT_PARAM(lmp_q_base1)
+    SET_TUNABLE_INT_PARAM(lmp_q_div_declining1)
+    SET_TUNABLE_INT_PARAM(lmp_q_div_normal1)
+    SET_TUNABLE_INT_PARAM(lmp_q_base2)
+    SET_TUNABLE_INT_PARAM(lmp_q_div_declining2)
+    SET_TUNABLE_INT_PARAM(lmp_q_div_normal2)
+    SET_TUNABLE_INT_PARAM(lmp_q_improving_mult)
     } else {
       SendInvalidCommandMessage("Unrecognized option: " + option_name);
       return;
@@ -478,4 +501,3 @@ void CommandLine::HandleCommand(
 
 
 }  // namespace chess
-
