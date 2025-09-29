@@ -156,22 +156,26 @@ def switch_to_window_robust(partial_title: str) -> bool:
 
 class TimeManager:
     """
-    Handles adaptive time management by starting a search with a maximum budget
-    and stopping it early if the evaluation becomes stable.
-    Now includes a "time pressure" mode to prioritize speed over complexity analysis.
+    Handles adaptive time management with soft and hard limits.
+    - It stops early if the evaluation becomes stable (saves time).
+    - It stops at a 2x "soft limit" unless the position is complex.
+    - It enforces a 3x "hard limit" as the absolute maximum thinking time.
     """
-    def __init__(self, controller_uci, initial_budget_ms, is_time_pressure, max_extension_factor=2.0):
+    def __init__(self, controller_uci, initial_budget_ms, is_time_pressure, max_extension_factor=3.0):
         self.uci = controller_uci
         self.initial_budget_ms = initial_budget_ms
         self.is_time_pressure = is_time_pressure
         
-        # --- REQUIREMENT #4: If in time pressure, DO NOT extend the search. Max budget is the initial budget. ---
         if self.is_time_pressure:
             self.max_budget_ms = initial_budget_ms
-            print("[TIME] TIME PRESSURE ACTIVE: Search extensions are disabled. Focus is on saving time.")
+            print("[TIME] TIME PRESSURE ACTIVE: Search extensions are disabled.")
         else:
+            # Hard limit is the absolute maximum time allowed for the search.
             self.max_budget_ms = initial_budget_ms * max_extension_factor
-        
+            # Soft limit is the point at which we check for complexity before extending.
+            self.soft_budget_ms = initial_budget_ms * 2.0
+            print(f"[TIME] Budgets: Initial={initial_budget_ms/1000:.2f}s, Soft={self.soft_budget_ms/1000:.2f}s, Hard={self.max_budget_ms/1000:.2f}s")
+
         self.should_stop = False
         self.start_time = time.time()
         
@@ -180,28 +184,46 @@ class TimeManager:
         self.stability_counter = 0
         self.is_unstable = False
 
+        # --- NEW: Track specific factors that indicate a complex position ---
+        self.complication_factors = {
+            'move_changes': 0,  # How many times the best move has changed
+            'large_swings': 0,  # How many times the score changed dramatically
+            'sign_flips': 0     # How many times the evaluation flipped from +/- to -/+
+        }
+
     def process_depth_result(self, depth, score, move):
-        """Callback function to be called by the UCI wrapper for each completed depth."""
+        """Callback function called by the UCI wrapper for each completed depth."""
         if self.should_stop:
             return
 
-        # --- REQUIREMENT #2: Minimum depth is 8 plies before considering stopping early. ---
+        # --- 1. Track instability and complication factors (after min depth) ---
         if depth > 8:
             prev_best_move = self.best_move_at_depth.get(depth - 1)
             prev_score = self.score_at_depth.get(depth - 1)
 
             is_stable_this_iter = True
+
+            # Factor: Best move has changed
             if move != prev_best_move:
                 self.stability_counter = 0
                 is_stable_this_iter = False
                 self.is_unstable = True
+                self.complication_factors['move_changes'] += 1
 
             if prev_score is not None:
-                score_delta = score - prev_score
-                if score_delta < -50 or abs(score_delta) > 120:
+                # Factor: Large change in evaluation score
+                if abs(score - prev_score) > 120:
                     self.stability_counter = 0
                     is_stable_this_iter = False
                     self.is_unstable = True
+                    self.complication_factors['large_swings'] += 1
+                
+                # Factor: Evaluation has flipped from winning to losing (or vice-versa)
+                if (score > 50 and prev_score < -50) or (score < -50 and prev_score > 50):
+                    self.stability_counter = 0
+                    is_stable_this_iter = False
+                    self.is_unstable = True
+                    self.complication_factors['sign_flips'] += 1
 
             if is_stable_this_iter:
                 self.stability_counter += 1
@@ -209,19 +231,36 @@ class TimeManager:
         self.best_move_at_depth[depth] = move
         self.score_at_depth[depth] = score
 
-        # --- Early Stopping Logic ---
-        
-        # --- REQUIREMENT #4: In time pressure, be more aggressive with early stopping. ---
-        if self.is_time_pressure:
-            required_stable_iterations = 2
-        else:
-            # --- REQUIREMENT #3: Stricter stability: 3-4 stable iterations required. ---
-            required_stable_iterations = 4 if self.is_unstable else 3
+        elapsed_ms = (time.time() - self.start_time) * 1000
+
+        # --- 2. NEW: Check for soft limit enforcement ---
+        # If we have used more than 2x the budget, we must check if the position is complex enough to continue.
+        if not self.is_time_pressure and elapsed_ms > self.soft_budget_ms:
+            num_complication_factors = 0
+            # A move changing twice or more is a strong indicator of complexity.
+            if self.complication_factors['move_changes'] >= 2:
+                num_complication_factors += 1
+            # A large evaluation swing is another strong indicator.
+            if self.complication_factors['large_swings'] >= 1:
+                num_complication_factors += 1
+            # A sign flip is a critical indicator of complexity.
+            if self.complication_factors['sign_flips'] >= 1:
+                num_complication_factors += 1
+            
+            # If we don't have at least TWO indicators, the position is not complex enough to warrant more time.
+            if num_complication_factors < 2:
+                print(f"[TIME] SOFT LIMIT ({self.soft_budget_ms / 1000:.2f}s) reached.")
+                print(f"       Factors: {num_complication_factors}/2. MoveChanges:{self.complication_factors['move_changes']}, Swings:{self.complication_factors['large_swings']}, Flips:{self.complication_factors['sign_flips']}.")
+                print("       Position not complex enough to extend search. Stopping.")
+                self.should_stop = True
+                self.uci.stop()
+                return # Exit immediately
+
+        # --- 3. Check for standard early stopping (for stable positions) ---
+        # This triggers if the position is stable, usually well before the initial budget is even used up.
+        required_stable_iterations = 2 if self.is_time_pressure else (4 if self.is_unstable else 3)
         
         if self.stability_counter >= required_stable_iterations:
-            elapsed_ms = (time.time() - self.start_time) * 1000
-            
-            # --- REQUIREMENT #1: Start considering stopping after 25% of budget is used. ---
             if elapsed_ms > (self.initial_budget_ms * 0.25):
                 mode = "TIME PRESSURE" if self.is_time_pressure else "STABLE"
                 print(f"[TIME] {mode}: Stable for {self.stability_counter} iterations. Stopping search early.")
@@ -722,7 +761,7 @@ class GameController:
                     is_in_time_pressure = True
             
             # Create the time manager. It will decide when to stop the search.
-            time_manager = TimeManager(self.uci, initial_time_to_think_ms, is_in_time_pressure, max_extension_factor=4.0)
+            time_manager = TimeManager(self.uci, initial_time_to_think_ms, is_in_time_pressure, max_extension_factor=3.0)
 
             if self.asymmetric_eval:
                 self.uci.set_team('red_yellow' if current_turn_char in 'RY' else 'blue_green')
