@@ -477,7 +477,7 @@ class Board {
   int64_t HashKey() const { return hash_key_; }
 
   static std::shared_ptr<Board> CreateStandardSetup(SetupType setup = MODERN);
-  const CastlingRights& GetCastlingRights(const Player& player);
+  const CastlingRights& GetCastlingRights(const Player& player) const;
 
   void MakeMove(const Move& move);
   void UndoMove();
@@ -549,7 +549,7 @@ class Board {
   bool IsLegalLocation(const BoardLocation& location) const {
     return IsLegalLocation(location.GetRow(), location.GetCol());
   }
-  const EnpassantInitialization& GetEnpassantInitialization() { return enp_; }
+  const EnpassantInitialization& GetEnpassantInitialization() const { return enp_; }
   const std::vector<std::vector<PlacedPiece>>& GetPieceList() { return piece_list_; };
 
  private:

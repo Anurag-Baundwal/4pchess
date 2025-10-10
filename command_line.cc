@@ -344,6 +344,20 @@ void CommandLine::HandleCommand(
       SendInvalidCommandMessage(line);
       return;
     }
+    
+    if (parts.size() >= 2 && parts[1] == "generate") {
+      if (parts.size() == 3 && parts[2] == "fen") {
+        if (board_ == nullptr) {
+          SendInfoMessage("Board is not initialized.");
+          return;
+        }
+        std::string fen = GenerateFENFromBoard(*board_);
+        std::cout << fen << std::endl;
+      } else {
+        SendInvalidCommandMessage("Unknown generate command. Use: position generate fen");
+      }
+      return;
+    }
 
     size_t next_pos = 1;
     std::shared_ptr<Board> board;

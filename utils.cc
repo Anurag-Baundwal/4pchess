@@ -423,6 +423,161 @@ std::optional<Move> ParseMove(Board& board, const std::string& move_str_ref) {
   return std::nullopt;
 }
 
+namespace {
+
+// Helper to convert a piece to its FEN character representation.
+std::string PieceToFENChar(const Piece& piece) {
+  std::string s;
+  switch (piece.GetColor()) {
+    case RED:    s += 'r'; break;
+    case BLUE:   s += 'b'; break;
+    case YELLOW: s += 'y'; break;
+    case GREEN:  s += 'g'; break;
+    default:     return "";
+  }
+  switch (piece.GetPieceType()) {
+    case PAWN:   s += 'P'; break;
+    case KNIGHT: s += 'N'; break;
+    case BISHOP: s += 'B'; break;
+    case ROOK:   s += 'R'; break;
+    case QUEEN:  s += 'Q'; break;
+    case KING:   s += 'K'; break;
+    default:     return "";
+  }
+  return s;
+}
+
+// Helper to format an en passant location for the FEN string.
+std::string LocationToEnpStr(const BoardLocation& victim_loc, PlayerColor pawn_color) {
+  if (victim_loc.Missing()) {
+    return "";
+  }
+  
+  // Calculate the destination square based on the color of the pawn that just moved
+  BoardLocation dest_loc;
+  switch (pawn_color) {
+    case RED:    dest_loc = victim_loc.Relative(1, 0); break;
+    case BLUE:   dest_loc = victim_loc.Relative(0, -1); break;
+    case YELLOW: dest_loc = victim_loc.Relative(-1, 0); break;
+    case GREEN:  dest_loc = victim_loc.Relative(0, 1); break;
+    default:     return ""; // Should not happen
+  }
+
+  std::stringstream victim_ss;
+  victim_ss << (char)('a' + victim_loc.GetCol()) << (14 - victim_loc.GetRow());
+
+  std::stringstream dest_ss;
+  dest_ss << (char)('a' + dest_loc.GetCol()) << (14 - dest_loc.GetRow());
+  
+  return dest_ss.str() + ":" + victim_ss.str();
+}
+
+} // namespace
+
+
+std::string GenerateFENFromBoard(const Board& board) {
+  std::stringstream fen;
+
+  // 1. Player to move
+  switch (board.GetTurn().GetColor()) {
+    case RED:    fen << 'R'; break;
+    case BLUE:   fen << 'B'; break;
+    case YELLOW: fen << 'Y'; break;
+    case GREEN:  fen << 'G'; break;
+    default:     fen << '?'; break; // Should not happen
+  }
+  fen << '-';
+
+  // 2. Eliminated players (not tracked, so always 0)
+  fen << "0,0,0,0-";
+
+  // 3. Castling rights (Kingside)
+  for (int i = 0; i < 4; ++i) {
+    fen << board.GetCastlingRights(Player(static_cast<PlayerColor>(i))).Kingside();
+    if (i < 3) fen << ",";
+  }
+  fen << '-';
+
+  // 4. Castling rights (Queenside)
+  for (int i = 0; i < 4; ++i) {
+    fen << board.GetCastlingRights(Player(static_cast<PlayerColor>(i))).Queenside();
+    if (i < 3) fen << ",";
+  }
+  fen << '-';
+
+  // 5. Points (not tracked, so always 0)
+  fen << "0,0,0,0-";
+
+  // 6. Halfmove clock (not tracked, so always 0)
+  fen << "0-";
+  
+  // 7. En Passant
+  const auto& enp_init = board.GetEnpassantInitialization();
+  bool any_enp = false;
+  for(int i = 0; i < 4; ++i) {
+    if (enp_init.enp_moves[i].has_value()) {
+      any_enp = true;
+      break;
+    }
+  }
+  if (any_enp) {
+    fen << "{'enPassant':('";
+    for (int i = 0; i < 4; ++i) {
+      if (enp_init.enp_moves[i].has_value()) {
+        fen << LocationToEnpStr(enp_init.enp_moves[i]->To(), static_cast<PlayerColor>(i));
+      }
+      fen << (i < 3 ? "','": "')}-");
+    }
+  }
+
+
+  // 8. Piece placement
+  for (int r = 0; r < 14; ++r) {
+    int empty_squares = 0;
+    for (int c = 0; c < 14; ++c) {
+      BoardLocation loc(r, c);
+      if (!board.IsLegalLocation(loc)) {
+        if (empty_squares > 0) {
+          fen << empty_squares << ",";
+          empty_squares = 0;
+        }
+        fen << "x,";
+        continue;
+      }
+      
+      const Piece& piece = board.GetPiece(loc);
+      if (piece.Missing()) {
+        empty_squares++;
+      } else {
+        if (empty_squares > 0) {
+          fen << empty_squares << ",";
+          empty_squares = 0;
+        }
+        fen << PieceToFENChar(piece) << ",";
+      }
+    }
+    if (empty_squares > 0) {
+      fen << empty_squares;
+    }
+    // Remove trailing comma if it exists
+    std::string row_str = fen.str();
+    if (row_str.back() == ',') {
+        fen.seekp(-1, std::ios_base::end);
+    }
+    
+    if (r < 13) {
+      fen << "/";
+    }
+  }
+
+  // The stringstream might have a trailing comma on the last row, clean it up.
+  std::string final_fen = fen.str();
+  if (final_fen.back() == ',') {
+      final_fen.pop_back();
+  }
+
+  return final_fen;
+}
 
 }  // namespace chess
 

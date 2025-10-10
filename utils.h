@@ -23,6 +23,8 @@ std::optional<std::vector<bool>> ParseCastlingAvailability(
 
 std::shared_ptr<Board> ParseBoardFromFEN(const std::string& fen);
 
+std::string GenerateFENFromBoard(const Board& board);
+
 void SendInfoMessage(const std::string& message);
 
 void SendInvalidCommandMessage(const std::string& line);

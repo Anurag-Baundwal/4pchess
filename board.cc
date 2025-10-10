@@ -1712,7 +1712,7 @@ std::ostream& operator<<(
   return os;
 }
 
-const CastlingRights& Board::GetCastlingRights(const Player& player) {
+const CastlingRights& Board::GetCastlingRights(const Player& player) const {
   return castling_rights_[player.GetColor()];
 }
 
