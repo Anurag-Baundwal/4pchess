@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 #include <iostream>
+#include <array>
 
 namespace chess {
 
@@ -327,6 +328,10 @@ class Move {
   int SEE(Board& board, const int* piece_evaluations);
   int ApproxSEE(Board& board, const int* piece_evaluations);
 
+  // NEW: Added for storing pre-move en passant state for UndoMove
+  const BoardLocation& GetPreviousEnPassantTarget() const { return previous_en_passant_target_; }
+  void SetPreviousEnPassantTarget(const BoardLocation& loc) { previous_en_passant_target_ = loc; }
+
  private:
   BoardLocation from_;  // 1
   BoardLocation to_;  // 1
@@ -349,6 +354,9 @@ class Move {
 
   // Castling rights after the move
   CastlingRights castling_rights_; // 1
+
+  // NEW: Store the en passant target square that was cleared by this move.
+  BoardLocation previous_en_passant_target_; // 1
 
   // Cached check
   // -1 means missing, 0/1 store check values
@@ -387,11 +395,6 @@ class PlacedPiece {
   Piece piece_;
 };
 
-struct EnpassantInitialization {
-  // Indexed by PlayerColor
-  std::optional<Move> enp_moves[4] = {std::nullopt, std::nullopt, std::nullopt, std::nullopt};
-};
-
 struct MoveBuffer {
   Move* buffer = nullptr;
   size_t pos = 0;
@@ -412,6 +415,9 @@ enum SetupType {
   CLASSIC,
 };
 
+// Forward declare for friend function
+std::string GenerateFENFromBoard(const Board& board);
+
 class Board {
  // Conventions:
  // - Red is on the bottom of the board, blue on the left, yellow on top,
@@ -425,7 +431,8 @@ class Board {
       std::unordered_map<BoardLocation, Piece> location_to_piece,
       std::optional<std::unordered_map<Player, CastlingRights>>
         castling_rights = std::nullopt,
-      std::optional<EnpassantInitialization> enp = std::nullopt);
+      // NEW: En passant state is now passed directly to the constructor.
+      std::optional<std::array<BoardLocation, 4>> en_passant_targets = std::nullopt);
 
   Board(const Board&) = default;
 
@@ -528,6 +535,10 @@ class Board {
   friend std::ostream& operator<<(
       std::ostream& os, const Board& board);
 
+  // NEW: Friend function to access private members for FEN generation
+  friend std::string GenerateFENFromBoard(const Board& board);
+
+
   // Use with caution: after you set the player you must reset it to its
   // original value before calling UndoMove past the current moves.
   // These functions may be used by things such as null move pruning.
@@ -549,7 +560,6 @@ class Board {
   bool IsLegalLocation(const BoardLocation& location) const {
     return IsLegalLocation(location.GetRow(), location.GetCol());
   }
-  const EnpassantInitialization& GetEnpassantInitialization() const { return enp_; }
   const std::vector<std::vector<PlacedPiece>>& GetPieceList() { return piece_list_; };
 
  private:
@@ -604,6 +614,13 @@ class Board {
   void UpdateTurnHash(int turn) {
     hash_key_ ^= turn_hashes_[turn];
   }
+  // NEW: Zobrist hash updates for en passant and castling rights.
+  void UpdateEnPassantHash(const BoardLocation& loc) {
+    hash_key_ ^= en_passant_hashes_[loc.GetRow()][loc.GetCol()];
+  }
+  void UpdateCastlingHash(PlayerColor color, CastlingType type) {
+    hash_key_ ^= castling_hashes_[color][type];
+  }
 
   Player turn_;
 
@@ -620,7 +637,10 @@ class Board {
   SetupType setup_type_;
   
   CastlingRights castling_rights_[4];
-  EnpassantInitialization enp_;
+  
+  // NEW: Each color has a potential en passant target square.
+  BoardLocation en_passant_target_[4];
+
   std::vector<Move> moves_; // list of moves from beginning of game
   std::vector<Move> move_buffer_;
   int piece_evaluation_ = 0;
@@ -629,6 +649,10 @@ class Board {
   int64_t hash_key_ = 0;
   int64_t piece_hashes_[4][6][14][14];
   int64_t turn_hashes_[4];
+  // NEW: Zobrist keys for en passant and castling rights.
+  int64_t en_passant_hashes_[14][14];
+  int64_t castling_hashes_[4][2]; // [color][KINGSIDE/QUEENSIDE]
+
   BoardLocation king_locations_[4];
 
   size_t move_buffer_size_ = 300;

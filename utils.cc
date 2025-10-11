@@ -72,33 +72,39 @@ std::optional<std::vector<bool>> ParseCastlingAvailability(
 }
 
 std::optional<BoardLocation> ParseEnpLocation(const std::string& enp) {
-  size_t pos = enp.find(':');
-  if (pos == std::string::npos) {
-    return std::nullopt;
+  std::string clean_enp = enp;
+
+  // Step 1: Handle the empty string case from the FEN tuple like ('', '', ...)
+  if (clean_enp.empty() || clean_enp == "''") {
+      return std::nullopt;
   }
-  std::string to = enp.substr(pos + 1);
-  if (!to.empty() && to[to.size() - 1] == '\'') {
-    to = to.substr(0, to.size() - 1);
+
+  // Step 2: Remove surrounding quotes from the whole segment first.
+  if (clean_enp.front() == '\'' && clean_enp.back() == '\'') {
+    clean_enp = clean_enp.substr(1, clean_enp.length() - 2);
   }
-  if (to.size() < 2 || to.size() > 3) {
-    return std::nullopt;
+
+  // Step 3: Now that quotes are gone, find the colon and get the target square part.
+  size_t pos = clean_enp.find(':');
+  std::string target_str = (pos == std::string::npos) ? clean_enp : clean_enp.substr(0, pos);
+
+  if (target_str.length() < 2 || target_str.length() > 3) {
+      return std::nullopt;
   }
-  int col = to[0] - 'a';
+  
+  int col = target_str[0] - 'a';
   if (col < 0 || col > 13) {
     return std::nullopt;
   }
-  int row = to[1] - '0';
-  if (row < 0 || row > 9) {
+
+  int row_val;
+  try {
+    row_val = std::stoi(target_str.substr(1));
+  } catch(const std::exception& e) {
     return std::nullopt;
   }
-  if (to.size() > 2) {
-    int digit = to[2] - '0';
-    if (digit < 0 || digit > 9) {
-      return std::nullopt;
-    }
-    row = 10 * row + digit;
-  }
-  row = 14 - row;  // transform to 0-13
+
+  int row = 14 - row_val; // transform to 0-13 index
   return BoardLocation(row, col);
 }
 
@@ -173,43 +179,29 @@ std::shared_ptr<Board> ParseBoardFromFEN(const std::string& fen) {
   }
 
   // Parse enpassant
-  EnpassantInitialization enp;
-  if (!enpassant.empty()) {
+  std::array<BoardLocation, 4> en_passant_targets;
+  for (int i = 0; i < 4; ++i) {
+    en_passant_targets[i] = BoardLocation::kNoLocation;
+  }
+
+  if (!enpassant.empty() && enpassant.find("enPassant") != std::string::npos) {
     size_t lbrace_pos = enpassant.find('(');
     size_t rbrace_pos = enpassant.rfind(')');
     if (lbrace_pos == std::string::npos || rbrace_pos == std::string::npos) {
-      // invalid enpassant string
       return nullptr;
     }
-    auto parts = SplitStr(
-        enpassant.substr(lbrace_pos + 1, rbrace_pos - lbrace_pos), ",");
-    if (parts.size() != 4) { // invalid
-      return nullptr;
-    }
-    for (int i = 0; i < 4; i++) {
-      auto enp_location = ParseEnpLocation(parts[i]);
-      if (enp_location.has_value()) {
-        BoardLocation& to = *enp_location;
-        int from_row = to.GetRow();
-        int from_col = to.GetCol();
-        switch (static_cast<PlayerColor>(i)) {
-        case RED:
-          from_row += 2;
-          break;
-        case BLUE:
-          from_col -= 2;
-          break;
-        case YELLOW:
-          from_row -= 2;
-          break;
-        case GREEN:
-          from_col += 2;
-          break;
-        default:
-          break;
+    std::string content = enpassant.substr(lbrace_pos + 1, rbrace_pos - lbrace_pos - 1);
+    
+    // Split by comma, but be careful of empty strings like ('', 'c4:d4', '', '')
+    std::stringstream ss(content);
+    std::string segment;
+    int i = 0;
+    while(std::getline(ss, segment, ',') && i < 4) {
+        auto enp_location = ParseEnpLocation(segment);
+        if (enp_location.has_value()) {
+            en_passant_targets[i] = *enp_location;
         }
-        enp.enp_moves[i] = Move(BoardLocation(from_row, from_col), to);
-      }
+        i++;
     }
   }
 
@@ -301,7 +293,7 @@ std::shared_ptr<Board> ParseBoardFromFEN(const std::string& fen) {
 
   return std::make_shared<Board>(
       std::move(player), std::move(location_to_piece),
-      std::move(castling_rights), std::move(enp));
+      std::move(castling_rights), std::move(en_passant_targets));
 }
 
 void SendInfoMessage(const std::string& message) {
@@ -448,28 +440,28 @@ std::string PieceToFENChar(const Piece& piece) {
 }
 
 // Helper to format an en passant location for the FEN string.
-std::string LocationToEnpStr(const BoardLocation& victim_loc, PlayerColor pawn_color) {
-  if (victim_loc.Missing()) {
-    return "";
+std::string LocationToEnpStr(const BoardLocation& target_loc, PlayerColor pawn_color) {
+  if (target_loc.Missing()) {
+    return "''";
   }
   
-  // Calculate the destination square based on the color of the pawn that just moved
-  BoardLocation dest_loc;
+  // The victim pawn is one square "behind" the target square, from its own perspective.
+  BoardLocation victim_loc;
   switch (pawn_color) {
-    case RED:    dest_loc = victim_loc.Relative(1, 0); break;
-    case BLUE:   dest_loc = victim_loc.Relative(0, -1); break;
-    case YELLOW: dest_loc = victim_loc.Relative(-1, 0); break;
-    case GREEN:  dest_loc = victim_loc.Relative(0, 1); break;
-    default:     return ""; // Should not happen
+    case RED:    victim_loc = target_loc.Relative(-1, 0); break;
+    case BLUE:   victim_loc = target_loc.Relative(0, 1); break;
+    case YELLOW: victim_loc = target_loc.Relative(1, 0); break;
+    case GREEN:  victim_loc = target_loc.Relative(0, -1); break;
+    default:     return "''"; // Should not happen
   }
 
   std::stringstream victim_ss;
   victim_ss << (char)('a' + victim_loc.GetCol()) << (14 - victim_loc.GetRow());
 
-  std::stringstream dest_ss;
-  dest_ss << (char)('a' + dest_loc.GetCol()) << (14 - dest_loc.GetRow());
+  std::stringstream target_ss;
+  target_ss << (char)('a' + target_loc.GetCol()) << (14 - target_loc.GetRow());
   
-  return dest_ss.str() + ":" + victim_ss.str();
+  return "'" + target_ss.str() + ":" + victim_ss.str() + "'";
 }
 
 } // namespace
@@ -512,22 +504,22 @@ std::string GenerateFENFromBoard(const Board& board) {
   fen << "0-";
   
   // 7. En Passant
-  const auto& enp_init = board.GetEnpassantInitialization();
   bool any_enp = false;
   for(int i = 0; i < 4; ++i) {
-    if (enp_init.enp_moves[i].has_value()) {
+    if (board.en_passant_target_[i].Present()) {
       any_enp = true;
       break;
     }
   }
   if (any_enp) {
-    fen << "{'enPassant':('";
+    fen << "{'enPassant':(";
     for (int i = 0; i < 4; ++i) {
-      if (enp_init.enp_moves[i].has_value()) {
-        fen << LocationToEnpStr(enp_init.enp_moves[i]->To(), static_cast<PlayerColor>(i));
+      fen << LocationToEnpStr(board.en_passant_target_[i], static_cast<PlayerColor>(i));
+      if (i < 3) {
+          fen << ",";
       }
-      fen << (i < 3 ? "','": "')}-");
     }
+    fen << ")}-";
   }
 
 
@@ -580,4 +572,3 @@ std::string GenerateFENFromBoard(const Board& board) {
 }
 
 }  // namespace chess
-

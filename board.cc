@@ -168,46 +168,6 @@ void Board::GetPawnMoves2(
           AddPawnMoves2(moves, from, to, piece.GetColor());
         }
       }
-    } else {
-
-      // En-passant
-      if (other_piece.GetPieceType() == PAWN
-          && piece.GetTeam() != other_piece.GetTeam()) {
-
-        int n_turns = (4 + piece.GetColor() - other_piece.GetColor()) % 4;
-        const Move* other_player_move = nullptr;
-        if (n_turns > 0 && n_turns <= (int)moves_.size()) {
-          other_player_move = &moves_[moves_.size() - n_turns];
-        } else if (n_turns < 4) {
-          const auto& enp_move = enp_.enp_moves[other_piece.GetColor()];
-          if (enp_move.has_value()) {
-            other_player_move = &*enp_move;
-          }
-        }
-
-        if (other_player_move != nullptr
-            && other_player_move->To() == to
-            // TODO: Refactor this with 'enp' locations
-            && other_player_move->ManhattanDistance() == 2
-            && (other_player_move->From().GetRow() == other_player_move->To().GetRow()
-               || other_player_move->From().GetCol() == other_player_move->To().GetCol())
-            ) {
-          const BoardLocation& moved_from = other_player_move->From();
-          int delta_row = to.GetRow() - moved_from.GetRow();
-          int delta_col = to.GetCol() - moved_from.GetCol();
-          BoardLocation enpassant_to = moved_from.Relative(
-              delta_row / 2, delta_col / 2);
-          // there may be both en-passant and piece capture in the same move
-          auto existing = GetPiece(enpassant_to);
-          if (existing.Missing()
-              || existing.GetTeam() != piece.GetTeam()) {
-            AddPawnMoves2(moves, from, enpassant_to, piece.GetColor(),
-                         existing, to, other_piece);
-          }
-        }
-
-      }
-
     }
   }
 
@@ -228,6 +188,42 @@ void Board::GetPawnMoves2(
           && other_piece.GetTeam() != team) {
         AddPawnMoves2(moves, from, BoardLocation(capture_row, capture_col),
             piece.GetColor(), other_piece);
+      }
+    }
+  }
+
+  // --- NEW EN PASSANT LOGIC ---
+  for (int opp_color_idx = 0; opp_color_idx < 4; ++opp_color_idx) {
+    PlayerColor opp_color = static_cast<PlayerColor>(opp_color_idx);
+    if (GetTeam(opp_color) == team) {
+      continue; // Can't capture own team
+    }
+
+    const BoardLocation& target_square = en_passant_target_[opp_color];
+    if (target_square.Missing()) {
+      continue; // No en passant opportunity from this opponent
+    }
+
+    // Check if our pawn is in a position to perform this capture
+    if (PawnAttacks(from, color, target_square)) {
+      // Victim pawn is one square "behind" the target square, from the perspective of the victim pawn
+      BoardLocation victim_loc;
+      switch (opp_color) {
+        case RED:    victim_loc = target_square.Relative(-1, 0); break;
+        case BLUE:   victim_loc = target_square.Relative(0, 1); break;
+        case YELLOW: victim_loc = target_square.Relative(1, 0); break;
+        case GREEN:  victim_loc = target_square.Relative(0, -1); break;
+        default:     assert(false); break;
+      }
+      
+      Piece victim_pawn = GetPiece(victim_loc);
+      // Verify the victim pawn is still there and is the correct type and color
+      if (victim_pawn.Present() && victim_pawn.GetPieceType() == PAWN && victim_pawn.GetColor() == opp_color) {
+        // Check for double capture: a piece on the target square
+        Piece piece_on_target = GetPiece(target_square);
+        if (piece_on_target.Missing() || piece_on_target.GetTeam() != team) {
+            AddPawnMoves2(moves, from, target_square, color, piece_on_target, victim_loc, victim_pawn);
+        }
       }
     }
   }
@@ -1185,6 +1181,21 @@ void Board::InitializeHash() {
     }
   }
   UpdateTurnHash(static_cast<int>(turn_.GetColor()));
+
+  // NEW: Hash in initial castling rights and en passant state.
+  for (int color = 0; color < 4; ++color) {
+    const auto& rights = castling_rights_[color];
+    if (rights.Kingside()) {
+      UpdateCastlingHash(static_cast<PlayerColor>(color), KINGSIDE);
+    }
+    if (rights.Queenside()) {
+      UpdateCastlingHash(static_cast<PlayerColor>(color), QUEENSIDE);
+    }
+    const auto& ep_target = en_passant_target_[color];
+    if (ep_target.Present()) {
+      UpdateEnPassantHash(ep_target);
+    }
+  }
 }
 
 void Board::MakeMove(const Move& move) {
@@ -1194,6 +1205,33 @@ void Board::MakeMove(const Move& move) {
   // 3. En-passant
   // 4. Promotion
   // 5. Castling (rights, rook move)
+
+  // --- NEW HASHING LOGIC (Part 1: Clear old state) ---
+  Move move_to_store = move;
+  PlayerColor current_color = turn_.GetColor();
+  
+  // 1. Clear expiring en passant square for the current player
+  BoardLocation old_en_passant_target = en_passant_target_[current_color];
+  move_to_store.SetPreviousEnPassantTarget(old_en_passant_target);
+  if (old_en_passant_target.Present()) {
+    UpdateEnPassantHash(old_en_passant_target);
+  }
+  en_passant_target_[current_color] = BoardLocation::kNoLocation;
+  
+  // 2. Update hash for castling rights changes
+  const auto initial_castling_rights = move.GetInitialCastlingRights();
+  const auto final_castling_rights = move.GetCastlingRights();
+  if (final_castling_rights.Present()) {
+      if (initial_castling_rights.Kingside() != final_castling_rights.Kingside()) {
+          UpdateCastlingHash(current_color, KINGSIDE);
+      }
+      if (initial_castling_rights.Queenside() != final_castling_rights.Queenside()) {
+          UpdateCastlingHash(current_color, QUEENSIDE);
+      }
+      castling_rights_[current_color] = final_castling_rights;
+  }
+  // --- END HASHING LOGIC (Part 1) ---
+
 
   const auto piece = GetPiece(move.From());
 
@@ -1225,6 +1263,18 @@ void Board::MakeMove(const Move& move) {
     SetPiece(move.To(), piece);
   }
 
+  // --- NEW HASHING LOGIC (Part 2: Set new state) ---
+  // 3. Set new en passant square if pawn pushed two squares
+  if (piece.GetPieceType() == PAWN && move.ManhattanDistance() == 2) {
+    int dr = move.To().GetRow() - move.From().GetRow();
+    int dc = move.To().GetCol() - move.From().GetCol();
+    BoardLocation new_en_passant_target = move.From().Relative(dr / 2, dc / 2);
+    en_passant_target_[current_color] = new_en_passant_target;
+    UpdateEnPassantHash(new_en_passant_target);
+  }
+  // --- END HASHING LOGIC (Part 2) ---
+
+
   // En-passant
   const auto enpassant_location = move.GetEnpassantLocation();
   if (enpassant_location.Present()) {
@@ -1238,12 +1288,7 @@ void Board::MakeMove(const Move& move) {
       RemovePiece(rook_move.From());
       SetPiece(rook_move.To(), rook);
     }
-
-    // Castling: rights update
-    const auto castling_rights = move.GetCastlingRights();
-    if (castling_rights.Present()) {
-      castling_rights_[turn_.GetColor()] = castling_rights;
-    }
+    // Castling: rights update is now handled by the hashing logic above
   }
 
   int t = static_cast<int>(turn_.GetColor());
@@ -1251,7 +1296,7 @@ void Board::MakeMove(const Move& move) {
   UpdateTurnHash((t+1)%4);
 
   turn_ = GetNextPlayer(turn_);
-  moves_.push_back(move);
+  moves_.push_back(move_to_store); // Push the copy with history
 }
 
 void Board::UndoMove() {
@@ -1265,6 +1310,34 @@ void Board::UndoMove() {
   assert(!moves_.empty());
   const Move& move = moves_.back();
   Player turn_before = GetPreviousPlayer(turn_);
+  PlayerColor color_before = turn_before.GetColor();
+
+  // --- NEW HASHING LOGIC (Undo Part 1: Clear new state) ---
+  // 1. Undo new en passant square creation
+  const auto piece_moved_after = GetPiece(move.To());
+  const auto piece_moved_before = move.GetPromotionPieceType() != NO_PIECE ? Piece(color_before, PAWN) : piece_moved_after;
+  if (piece_moved_before.GetPieceType() == PAWN && move.ManhattanDistance() == 2) {
+      BoardLocation new_en_passant_target = en_passant_target_[color_before];
+      if (new_en_passant_target.Present()) {
+          UpdateEnPassantHash(new_en_passant_target);
+      }
+      en_passant_target_[color_before] = BoardLocation::kNoLocation;
+  }
+  
+  // 2. Undo castling rights changes
+  const auto initial_castling_rights = move.GetInitialCastlingRights();
+  const auto final_castling_rights = move.GetCastlingRights();
+  if (final_castling_rights.Present()) {
+      if (initial_castling_rights.Kingside() != final_castling_rights.Kingside()) {
+          UpdateCastlingHash(color_before, KINGSIDE);
+      }
+      if (initial_castling_rights.Queenside() != final_castling_rights.Queenside()) {
+          UpdateCastlingHash(color_before, QUEENSIDE);
+      }
+      castling_rights_[color_before] = initial_castling_rights;
+  }
+  // --- END HASHING LOGIC (Undo Part 1) ---
+
 
   const BoardLocation& to = move.To();
   const BoardLocation& from = move.From();
@@ -1304,13 +1377,17 @@ void Board::UndoMove() {
       RemovePiece(rook_move.To());
       SetPiece(rook_move.From(), Piece(turn_before.GetColor(), ROOK));
     }
-
-    // Castling: rights update
-    const auto initial_castling_rights = move.GetInitialCastlingRights();
-    if (initial_castling_rights.Present()) {
-      castling_rights_[turn_before.GetColor()] = initial_castling_rights;
-    }
+    // Castling: rights update is handled by hashing logic above
   }
+
+  // --- NEW HASHING LOGIC (Undo Part 2: Restore old state) ---
+  // 3. Restore the previously cleared en passant square for this player
+  BoardLocation old_en_passant_target = move.GetPreviousEnPassantTarget();
+  if (old_en_passant_target.Present()) {
+    UpdateEnPassantHash(old_en_passant_target);
+  }
+  en_passant_target_[color_before] = old_en_passant_target;
+  // --- END HASHING LOGIC (Undo Part 2) ---
 
   turn_ = turn_before;
   moves_.pop_back();
@@ -1385,7 +1462,7 @@ Board::Board(
     Player turn,
     std::unordered_map<BoardLocation, Piece> location_to_piece,
     std::optional<std::unordered_map<Player, CastlingRights>> castling_rights,
-    std::optional<EnpassantInitialization> enp)
+    std::optional<std::array<BoardLocation, 4>> en_passant_targets)
   : turn_(std::move(turn))
     {
 
@@ -1400,9 +1477,16 @@ Board::Board(
       }
     }
   }
-  if (enp.has_value()) {
-    enp_ = std::move(*enp);
+  // NEW: Initialize en_passant_target_
+  for (int i = 0; i < 4; ++i) {
+      en_passant_target_[i] = BoardLocation::kNoLocation;
   }
+  if (en_passant_targets.has_value()) {
+      for (int i = 0; i < 4; ++i) {
+          en_passant_target_[i] = (*en_passant_targets)[i];
+      }
+  }
+  
   move_buffer_.reserve(1000);
 
   // OPTIMIZATION: Initialize 1D arrays
@@ -1493,6 +1577,17 @@ Board::Board(
         }
       }
     }
+  }
+
+  // NEW: Initialize hashes for en passant and castling rights
+  for (int row = 0; row < 14; ++row) {
+    for (int col = 0; col < 14; ++col) {
+        en_passant_hashes_[row][col] = rand64();
+    }
+  }
+  for (int color = 0; color < 4; ++color) {
+      castling_hashes_[color][KINGSIDE] = rand64();
+      castling_hashes_[color][QUEENSIDE] = rand64();
   }
 
   InitializeHash();
