@@ -1507,28 +1507,45 @@ Board::Board(
     king_locations_[i] = BoardLocation::kNoLocation;
   }
 
+  // --- START OF THE FIX ---
+
+  // 1. First, populate our internal 1D array from the (non-deterministic) input map.
+  // This gives us fast, O(1) access to any piece by its location.
   for (const auto& it : location_to_piece) {
-    const auto& location = it.first;
-    const auto& piece = it.second;
-    PlayerColor color = piece.GetColor();
+    location_to_piece_[it.first.GetIndex()] = it.second;
+  }
 
-    // OPTIMIZATION: Populate 1D array and piece_indices
-    location_to_piece_[location.GetIndex()] = piece;
-    auto& placed_pieces = piece_list_[color];
-    piece_indices_[location.GetIndex()] = placed_pieces.size();
-    placed_pieces.push_back(PlacedPiece(location, piece));
+  // 2. Now, iterate over the board in a FIXED, DETERMINISTIC order (row-by-row, col-by-col)
+  // to populate the piece_list_ vectors. This guarantees the initial order is always the same.
+  for (int r = 0; r < 14; ++r) {
+    for (int c = 0; c < 14; ++c) {
+      Piece piece = location_to_piece_[r * 14 + c];
+      if (piece.Present()) {
+        BoardLocation location(r, c);
+        PlayerColor color = piece.GetColor();
 
-    PieceType piece_type = piece.GetPieceType();
-    if (piece.GetTeam() == RED_YELLOW) {
-      piece_evaluation_ += kPieceEvaluations[static_cast<int>(piece_type)];
-    } else {
-      piece_evaluation_ -= kPieceEvaluations[static_cast<int>(piece_type)];
-    }
-    player_piece_evaluations_[piece.GetColor()] += kPieceEvaluations[static_cast<int>(piece_type)];
-    if (piece.GetPieceType() == KING) {
-      king_locations_[color] = location;
+        // Add the piece to its color's list
+        auto& placed_pieces = piece_list_[color];
+        piece_indices_[location.GetIndex()] = placed_pieces.size();
+        placed_pieces.emplace_back(location, piece);
+
+        // Also update evaluations and king locations while we're here
+        PieceType piece_type = piece.GetPieceType();
+        if (piece.GetTeam() == RED_YELLOW) {
+          piece_evaluation_ += kPieceEvaluations[static_cast<int>(piece_type)];
+        } else {
+          piece_evaluation_ -= kPieceEvaluations[static_cast<int>(piece_type)];
+        }
+        player_piece_evaluations_[piece.GetColor()] += kPieceEvaluations[static_cast<int>(piece_type)];
+        if (piece.GetPieceType() == KING) {
+          king_locations_[color] = location;
+        }
+      }
     }
   }
+
+  // --- END OF THE FIX ---
+
 
   // Deduce the setup type based on the initial position of the Blue King.
   // In the classic setup, the Blue King is on a8 (row 6), in modern it's on a7 (row 7).
@@ -1552,7 +1569,14 @@ Board::Board(
 
       int order_a = piece_move_order_scores[a.GetPiece().GetPieceType()];
       int order_b = piece_move_order_scores[b.GetPiece().GetPieceType()];
-      return order_a < order_b;
+      
+      // --- FIX PART 2: Add a tie-breaker to the sort ---
+      if (order_a != order_b) {
+        return order_a < order_b;
+      }
+      // If piece types are the same, sort by location to guarantee a stable order.
+      return a.GetLocation().GetIndex() < b.GetLocation().GetIndex();
+      // --- END FIX PART 2 ---
     }
   } customLess;
 
