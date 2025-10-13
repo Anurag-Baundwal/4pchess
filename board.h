@@ -562,6 +562,11 @@ class Board {
   }
   const std::vector<std::vector<PlacedPiece>>& GetPieceList() { return piece_list_; };
 
+  // NEW: Getter for testing en passant state.
+  const BoardLocation& GetEnPassantTarget(PlayerColor color) const {
+    return en_passant_target_[color];
+  }
+
  private:
   void AddMovesFromIncrMovement(
       std::vector<Move>& moves,
