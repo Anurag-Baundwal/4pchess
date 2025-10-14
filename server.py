@@ -7,7 +7,7 @@ import re
 import requests
 import tablebase
 import time
-import uci_wrapper
+import uci_wrapper_old as uci_wrapper
 
 parser = argparse.ArgumentParser(
     prog='Server',
