@@ -179,7 +179,7 @@ class UciWrapper:
         time_limit_ms: int,
         gameover_callback: Callable[[], None],
         pv_callback: Optional[Callable[[list[str]], None]] = None,
-        depth_callback: Optional[Callable[[int, int, str], None]] = None,
+        depth_callback: Optional[Callable[[int, int, str, List[str]], None]] = None,
         last_move: Optional[str] = None
     ):
         self.maybe_recreate_process()
@@ -235,7 +235,7 @@ class UciWrapper:
                             depth = int(d_match.group(1))
                             response['depth'] = depth
                             if depth_callback:
-                                depth_callback(depth, score, current_move)
+                                depth_callback(depth, score, current_move, pv)
                 
                 if line.startswith('bestmove'):
                     m = re.search('bestmove (.*)', line)

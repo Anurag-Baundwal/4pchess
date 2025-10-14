@@ -161,10 +161,12 @@ class TimeManager:
     - It stops at a 2x "soft limit" unless the position is complex.
     - It enforces a 3x "hard limit" as the absolute maximum thinking time.
     """
-    def __init__(self, controller_uci, initial_budget_ms, is_time_pressure, max_extension_factor=3.0):
+    def __init__(self, controller_uci, initial_budget_ms, is_time_pressure, max_extension_factor=3.0, controller=None, current_turn_char=None):
         self.uci = controller_uci
         self.initial_budget_ms = initial_budget_ms
         self.is_time_pressure = is_time_pressure
+        self.controller = controller
+        self.current_turn_char = current_turn_char
         
         if self.is_time_pressure:
             self.max_budget_ms = initial_budget_ms
@@ -191,10 +193,15 @@ class TimeManager:
             'sign_flips': 0     # How many times the evaluation flipped from +/- to -/+
         }
 
-    def process_depth_result(self, depth, score, move):
+    def process_depth_result(self, depth, score, move, pv):
         """Callback function called by the UCI wrapper for each completed depth."""
         if self.should_stop:
             return
+
+        # --- NEW: Arrow Drawing Logic ---
+        if self.controller and self.controller.arrows_enabled and depth >= 12:
+            self.controller._draw_pv_arrows(pv, self.current_turn_char)
+        # ------------------------------
 
         # --- 1. Track instability and complication factors (after min depth) ---
         if depth > 8:
@@ -269,13 +276,14 @@ class TimeManager:
 
 class GameController:
     """Manages the overall game state, engine communication, and GUI interaction."""
-    def __init__(self, window_config, colors: str, ponder: bool, use_tablebase: bool, tc_config: tuple, asymmetric_eval: bool, url: str, setup: str):
+    def __init__(self, window_config, colors: str, ponder: bool, use_tablebase: bool, tc_config: tuple, asymmetric_eval: bool, url: str, setup: str, arrows: bool):
         self.window_config = window_config
         self.ponder_enabled = ponder
         self.tablebase_enabled = use_tablebase
         self.asymmetric_eval = asymmetric_eval
         self.game_url = url
         self.setup = setup  # Store the setup mode ('modern' or 'classic')
+        self.arrows_enabled = arrows
 
         # --- Initialize TC state variables ---
         self.tc_mode, self.tc_params = tc_config
@@ -339,6 +347,46 @@ class GameController:
             print("[INIT] Engine is controlling Red. Proactively checking for first move...")
             initial_move_thread = threading.Thread(target=self._initial_move_thread_target, daemon=True)
             initial_move_thread.start()
+
+    def _draw_pv_arrows(self, pv: List[str], current_turn_char: str):
+        """Draws the first 4 moves of the PV on the board using right-click-drag arrows."""
+        if not self.arrows_enabled:
+            return
+
+        perspective = ('R' if self.self_partner_mode and 'R' in self.controlled_colors else
+                     'B' if self.self_partner_mode and 'B' in self.controlled_colors else
+                     current_turn_char)
+
+        target_window = self.windows.get(current_turn_char)
+        if not target_window:
+            print(f"[ARROWS] Window for {current_turn_char} not found. Cannot draw.")
+            return
+
+        if not switch_to_window_robust(target_window.title):
+            print(f"[ARROWS] Failed to activate window for arrows. Aborting.")
+            return
+
+        try:
+            # Clear previous arrows with a single right-click on a safe, static corner.
+            clear_px = self.algebraic_to_pixels("a1", perspective)
+            pyautogui.rightClick(clear_px)
+            time.sleep(0.01)
+        except Exception as e:
+            print(f"[ARROWS] Failed to clear arrows: {e}")
+            return
+
+        # Draw arrows for the first 4 moves of the PV.
+        for move_str in pv[:4]:
+            try:
+                from_sq, to_sq = move_str.split('-')[0], move_str.split('-')[1].split('=')[0]
+                from_px = self.algebraic_to_pixels(from_sq, perspective)
+                to_px = self.algebraic_to_pixels(to_sq, perspective)
+
+                pyautogui.moveTo(from_px)
+                time.sleep(0.005)  # 5ms pause
+                pyautogui.dragTo(to_px[0], to_px[1], duration=0.02, button='right')  # 20ms duration
+            except Exception as e:
+                print(f"[ARROWS] Failed to draw arrow for move '{move_str}': {e}")
 
     def shutdown(self):
         """Gracefully shuts down the controller and engine, saving any pending evals."""
@@ -761,7 +809,10 @@ class GameController:
                     is_in_time_pressure = True
             
             # Create the time manager. It will decide when to stop the search.
-            time_manager = TimeManager(self.uci, initial_time_to_think_ms, is_in_time_pressure, max_extension_factor=3.0)
+            time_manager = TimeManager(
+                self.uci, initial_time_to_think_ms, is_in_time_pressure, max_extension_factor=3.0,
+                controller=self, current_turn_char=current_turn_char
+            )
 
             if self.asymmetric_eval:
                 self.uci.set_team('red_yellow' if current_turn_char in 'RY' else 'blue_green')
@@ -892,6 +943,7 @@ if __name__ == "__main__":
         '--setup', default='modern', choices=['modern', 'classic'],
         help="The game setup being played (modern or classic). Default is 'modern'."
     )
+    parser.add_argument('--arrows', action='store_true', help="Enable drawing PV arrows on the board during search.")
     parser.add_argument('--asymmetric_eval', action='store_true', help="Enable asymmetric evaluation.")
     parser.add_argument('--ponder', action='store_true', help="Enable thinking on the opponent's turn.")
     parser.add_argument('--tablebase', dest='tablebase', action='store_true', help="Enable opening tablebase.")
@@ -930,7 +982,7 @@ if __name__ == "__main__":
         WINDOW_CONFIG, colors=args.colors, ponder=args.ponder,
         use_tablebase=args.tablebase, tc_config=args.tc,
         asymmetric_eval=args.asymmetric_eval, url=args.url,
-        setup=args.setup
+        setup=args.setup, arrows=args.arrows
     )
 
     tc_mode, tc_params = args.tc
@@ -947,6 +999,8 @@ if __name__ == "__main__":
     else: print("[CONFIG] Pondering is DISABLED.")
     if args.tablebase: print("[CONFIG] Opening move tablebase is ENABLED.")
     else: print("[CONFIG] Opening move tablebase is DISABLED.")
+    if args.arrows: print("[CONFIG] PV arrows are ENABLED.")
+    else: print("[CONFIG] PV arrows are DISABLED.")
 
 
     print("\n--- 4-Player Chess Game Controller ---")
