@@ -36,7 +36,7 @@ parser.add_argument(
     default=True)
 parser.add_argument(
     '-ponder', '--ponder', type=parse_bool, required=False,
-    default=True)
+    default=False)
 args = parser.parse_args()
 
 
@@ -291,7 +291,8 @@ class Server:
 #            self._api.chat('gg')
         play_response = self._api.play(move)
 
-        self._uci.ponder(fen, move, self._handle_gameover)
+        if args.ponder:
+          self._uci.ponder(fen, move, self._handle_gameover)
 
       else:
         return False
@@ -329,5 +330,3 @@ class Server:
 
 if __name__ == '__main__':
   Server().run()
-
-
