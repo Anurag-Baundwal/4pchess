@@ -1,5 +1,5 @@
 # game_controller.py
-# v31 (Implements strict time-pressure safeguards and refined stability checks)
+# v32 (Implements thread-safe, stateful, and final PV arrow drawing)
 import os
 import sys
 import time
@@ -119,19 +119,16 @@ class WindowFinder:
 
 def switch_to_window_robust(partial_title: str) -> bool:
     """Finds and activates a window using pywin32, bypassing focus-stealing prevention."""
-    print(f"\n[ROBUST SWITCH] Searching for window: '{partial_title}'...")
+    # This function is now more lightweight as it is called more frequently
     try:
         finder = WindowFinder(partial_title)
         win32gui.EnumWindows(finder.callback, None)
         hwnd = finder.hwnd
-        if hwnd == 0:
-            print(f"!!! ERROR: Window not found with title containing '{partial_title}'.")
-            return False
-
-        window_title = win32gui.GetWindowText(hwnd)
-        print(f"Found window: '{window_title}' (HWND: {hwnd})")
+        if hwnd == 0: return False
 
         fg_hwnd = win32gui.GetForegroundWindow()
+        if fg_hwnd == hwnd: return True # Already in focus
+
         fg_tid, _ = win32process.GetWindowThreadProcessId(fg_hwnd)
         current_tid = win32api.GetCurrentThreadId()
         win32process.AttachThreadInput(current_tid, fg_tid, True)
@@ -142,16 +139,10 @@ def switch_to_window_robust(partial_title: str) -> bool:
         win32gui.SetForegroundWindow(hwnd)
 
         win32process.AttachThreadInput(current_tid, fg_tid, False)
-        time.sleep(0.1)
+        time.sleep(0.05)
 
-        if win32gui.GetForegroundWindow() == hwnd:
-            print(f"SUCCESS: Window '{window_title}' is now active.")
-            return True
-        else:
-            print(f"!!! WARNING: Activation failed for '{window_title}'.")
-            return False
-    except Exception as e:
-        print(f"!!! CRITICAL ERROR in robust switch: {e}")
+        return win32gui.GetForegroundWindow() == hwnd
+    except Exception:
         return False
 
 class TimeManager:
@@ -198,10 +189,10 @@ class TimeManager:
         if self.should_stop:
             return
 
-        # --- NEW: Arrow Drawing Logic ---
-        if self.controller and self.controller.arrows_enabled and depth >= 12:
-            self.controller._draw_pv_arrows(pv, self.current_turn_char)
-        # ------------------------------
+        # --- Arrow Drawing Logic is now offloaded to a thread ---
+        if self.controller and self.controller.arrows_enabled and depth >= 14:
+            # Launch the drawing function in a new thread to avoid blocking this callback
+            threading.Thread(target=self.controller._draw_pv_arrows, args=(pv, self.current_turn_char)).start()
 
         # --- 1. Track instability and complication factors (after min depth) ---
         if depth > 8:
@@ -284,6 +275,8 @@ class GameController:
         self.game_url = url
         self.setup = setup  # Store the setup mode ('modern' or 'classic')
         self.arrows_enabled = arrows
+        self.arrow_lock = threading.Lock() # Lock to prevent GUI race conditions
+        self.last_arrowed_pv = [] # State to prevent re-drawing identical arrows
 
         # --- Initialize TC state variables ---
         self.tc_mode, self.tc_params = tc_config
@@ -349,45 +342,51 @@ class GameController:
             initial_move_thread.start()
 
     def _draw_pv_arrows(self, pv: List[str], current_turn_char: str):
-        """Draws the first 4 moves of the PV on the board using right-click-drag arrows."""
+        """Draws the first 4 moves of the PV. This method is thread-safe and stateful."""
         if not self.arrows_enabled:
             return
-
-        perspective = ('R' if self.self_partner_mode and 'R' in self.controlled_colors else
-                     'B' if self.self_partner_mode and 'B' in self.controlled_colors else
-                     current_turn_char)
-
-        target_window = self.windows.get(current_turn_char)
-        if not target_window:
-            print(f"[ARROWS] Window for {current_turn_char} not found. Cannot draw.")
+        
+        # Requirement 3: If the PV hasn't changed, do nothing.
+        if pv[:4] == self.last_arrowed_pv:
             return
 
-        if not switch_to_window_robust(target_window.title):
-            print(f"[ARROWS] Failed to activate window for arrows. Aborting.")
-            return
+        with self.arrow_lock:
+            # Re-check inside lock to handle race conditions
+            if pv[:4] == self.last_arrowed_pv:
+                return
 
-        try:
-            # Clear previous arrows with a single right-click on a safe, static corner.
-            clear_px = self.algebraic_to_pixels("a1", perspective)
-            pyautogui.rightClick(clear_px)
-            time.sleep(0.01)
-        except Exception as e:
-            print(f"[ARROWS] Failed to clear arrows: {e}")
-            return
+            perspective = ('R' if self.self_partner_mode and 'R' in self.controlled_colors else
+                         'B' if self.self_partner_mode and 'B' in self.controlled_colors else
+                         current_turn_char)
 
-        # Draw arrows for the first 4 moves of the PV.
-        for move_str in pv[:4]:
+            target_window = self.windows.get(current_turn_char)
+            if not target_window: return
+            if not switch_to_window_robust(target_window.title): return
+
             try:
-                from_sq, to_sq = move_str.split('-')[0], move_str.split('-')[1].split('=')[0]
-                from_px = self.algebraic_to_pixels(from_sq, perspective)
-                to_px = self.algebraic_to_pixels(to_sq, perspective)
-
-                pyautogui.moveTo(from_px)
-                time.sleep(0.005)  # 5ms pause
-                pyautogui.dragTo(to_px[0], to_px[1], duration=0.02, button='right')  # 20ms duration
+                # Requirement 1: Clear previous arrows with a LEFT-click on h8.
+                clear_px = self.algebraic_to_pixels("h8", perspective)
+                pyautogui.click(clear_px)
+                time.sleep(0.01)
             except Exception as e:
-                print(f"[ARROWS] Failed to draw arrow for move '{move_str}': {e}")
+                print(f"[ARROWS] Failed to clear arrows: {e}")
+                return
 
+            for move_str in pv[:4]:
+                try:
+                    from_sq, to_sq = move_str.split('-')[0], move_str.split('-')[1].split('=')[0]
+                    from_px = self.algebraic_to_pixels(from_sq, perspective)
+                    to_px = self.algebraic_to_pixels(to_sq, perspective)
+
+                    pyautogui.moveTo(from_px)
+                    time.sleep(0.005)
+                    pyautogui.dragTo(to_px[0], to_px[1], duration=0.02, button='right')
+                except Exception as e:
+                    print(f"[ARROWS] Failed to draw arrow for move '{move_str}': {e}")
+            
+            # Update the state to the newly drawn PV
+            self.last_arrowed_pv = pv[:4]
+    
     def shutdown(self):
         """Gracefully shuts down the controller and engine, saving any pending evals."""
         print("\nShutting down controller...")
@@ -789,6 +788,9 @@ class GameController:
             if self.ponder_enabled:
                 self.uci.stop()
             
+            # Reset the last arrowed PV for the new turn
+            self.last_arrowed_pv = []
+
             perspective = 'R' if self.self_partner_mode and 'R' in self.controlled_colors else \
                         'B' if self.self_partner_mode and 'B' in self.controlled_colors else \
                         current_turn_char
@@ -801,14 +803,12 @@ class GameController:
 
             initial_time_to_think_ms = self.get_time_to_think_ms(current_turn_char)
             
-            # --- REQUIREMENT #4: Check if we are in time pressure ---
             is_in_time_pressure = False
             if self.tc_mode == 'dynamic':
                 clock_sec = self.clock_times_sec.get(current_turn_char, self.base_time_ms / 1000)
                 if (clock_sec * 1000) < self.safe_time_buffer_ms:
                     is_in_time_pressure = True
             
-            # Create the time manager. It will decide when to stop the search.
             time_manager = TimeManager(
                 self.uci, initial_time_to_think_ms, is_in_time_pressure, max_extension_factor=3.0,
                 controller=self, current_turn_char=current_turn_char
@@ -819,7 +819,6 @@ class GameController:
 
             self.uci.set_position(self.get_current_fen(), self.board_moves)
             
-            # The TimeManager is told the MAX time; it decides internally whether to use it.
             result = self.uci.get_best_move(
                 time_limit_ms=time_manager.max_budget_ms,
                 gameover_callback=lambda: None,
@@ -830,6 +829,12 @@ class GameController:
             print(f"[TIME] Final Search Time: {actual_think_time_ms / 1000:.2f}s (Initial budget was {initial_time_to_think_ms / 1000:.2f}s).")
 
             if 'best_move' in result:
+                # Requirement 4: Draw the final, definitive PV arrows before making the move.
+                if self.arrows_enabled and 'pv' in result:
+                    final_pv = result['pv']
+                    # This final draw ensures the chosen move is always arrowed.
+                    self._draw_pv_arrows(final_pv, current_turn_char)
+
                 print(f"Engine chose move: {result['best_move']}")
                 score = result.get('score') 
                 self._log_evaluation(ply_number, score)
@@ -860,7 +865,10 @@ class GameController:
         from_px = self.algebraic_to_pixels(from_pos, perspective)
         to_px = self.algebraic_to_pixels(to_pos, perspective)
 
+        # Requirement 2: Add a small delay before the click action.
+        time.sleep(0.01)
         print(f"Clicking from {from_pos} at {from_px} to {to_pos} at {to_px} (Visual Perspective: {perspective})")
+        
         pyautogui.click(from_px)
         time.sleep(0.025)
         pyautogui.dragTo(to_px[0], to_px[1], duration=0.05, button='left')
