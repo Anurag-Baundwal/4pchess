@@ -359,7 +359,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       && !in_check // not in check
       && !is_verification_search // <-- RECURSION GUARD
       && current_eval >= beta + 50 // Use refined eval
-      && ss->static_eval >= beta - (19 * depth) + 389 // ss->static_eval is the refined one
+      && ss->static_eval >= beta - (35 * depth) + 250 // ss->static_eval is the refined one
       && beta > -kMateValue
       && !partner_checked
       ) {
