@@ -14,7 +14,13 @@ TranspositionTable::TranspositionTable(size_t table_size) {
       (hash_table_ != nullptr) && 
       "Can't create transposition table. Try using a smaller size.");
   a_mutexes_ = std::make_unique<std::mutex[]>(kNumMutexes);
+  // Initialize all eval fields to the 'none' value so we can reliably
+  // check if a static evaluation has been stored.
+  for (size_t i = 0; i < table_size_; ++i) {
+    hash_table_[i].eval = value_none_tt;
+  }
 }
+
 
 const HashTableEntry* TranspositionTable::Get(int64_t key) {
   size_t n = key % table_size_;

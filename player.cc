@@ -293,19 +293,32 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
           maximizing_player, deadline, pvinfo);
     }
 
-    int eval = Evaluate(thread_state, board, maximizing_player, alpha, beta);
+    int static_eval = Evaluate(thread_state, board, maximizing_player, alpha, beta);
     if (options_.enable_transposition_table) {
-      transposition_table_->Save(board.HashKey(), 0, std::nullopt, eval, eval, EXACT, is_pv_node);
+      transposition_table_->Save(board.HashKey(), 0, std::nullopt, static_eval, static_eval, EXACT, is_pv_node);
     }
 
-    return std::make_tuple(eval, std::nullopt);
+    return std::make_tuple(static_eval, std::nullopt);
   }
 
-  int eval;
+  int raw_static_eval;
   if (tt_hit && tte->eval != value_none_tt) {
-    eval = tte->eval;
+    raw_static_eval = tte->eval;
   } else {
-    eval = Evaluate(thread_state, board, maximizing_player, alpha, beta);
+    raw_static_eval = Evaluate(thread_state, board, maximizing_player, alpha, beta);
+  }
+
+  // This is the evaluation we will use for pruning in this node.
+  // It starts as the static evaluation but can be refined by the TT search score.
+  int current_eval = raw_static_eval;
+  if (tt_hit && tte->score != value_none_tt) {
+      if (tte->bound == EXACT) {
+          current_eval = tte->score;
+      } else if (tte->bound == LOWER_BOUND) {
+          current_eval = std::max(current_eval, tte->score);
+      } else if (tte->bound == UPPER_BOUND) {
+          current_eval = std::min(current_eval, tte->score);
+      }
   }
 
   (ss+2)->killers[0] = (ss+2)->killers[1] = Move();
@@ -314,7 +327,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     ss->root_depth = depth;
   }
   (ss+1)->root_depth = ss->root_depth;
-  ss->static_eval = eval;
+  ss->static_eval = current_eval; // Use the refined evaluation for child nodes and some heuristics.
   bool improving = ply > 2
     && (ss-2)->current_move.Present()
     && (ss-2)->static_eval + 150 < ss->static_eval;
@@ -331,8 +344,8 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       && !is_pv_node
       && !is_tt_pv
       && depth <= 1
-      && eval - 150 * depth >= beta
-      && eval < kMateValue) {
+      && current_eval - 150 * depth >= beta // Use refined eval
+      && current_eval < kMateValue) {
     return std::make_tuple(beta, std::nullopt);
   }
 
@@ -345,8 +358,8 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       && null_moves == 0 // last move wasn't null
       && !in_check // not in check
       && !is_verification_search // <-- RECURSION GUARD
-      && eval >= beta + 50
-      && ss->static_eval >= beta - (19 * depth) + 389
+      && current_eval >= beta + 50 // Use refined eval
+      && ss->static_eval >= beta - (19 * depth) + 389 // ss->static_eval is the refined one
       && beta > -kMateValue
       && !partner_checked
       ) {
@@ -624,7 +637,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
         && !in_check) {
       Piece capture_piece = move.GetCapturePiece();
       PieceType capture_piece_type = capture_piece.GetPieceType();
-      int futility_eval = eval + 400 + 291 * lmr_depth + kPieceEvaluations[capture_piece_type];
+      int futility_eval = current_eval + 400 + 291 * lmr_depth + kPieceEvaluations[capture_piece_type];
       if (futility_eval < alpha) {
         continue;
       }
@@ -782,7 +795,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
   if (options_.enable_transposition_table) {
     ScoreBound bound = beta <= alpha ? LOWER_BOUND : is_pv_node &&
       best_move.has_value() ? EXACT : UPPER_BOUND;
-    transposition_table_->Save(board.HashKey(), depth, best_move, score, ss->static_eval, bound, is_pv_node);
+    transposition_table_->Save(board.HashKey(), depth, best_move, score, raw_static_eval, bound, is_pv_node);
   }
 
   if (best_move.has_value()
@@ -868,32 +881,54 @@ AlphaBetaPlayer::QSearch(
   ss->in_check = in_check;
   //bool partner_checked = board.IsKingInCheck(GetPartner(player));
 
-  // initialize score
   int best_value;
   int futility_base = -kMateValue;
-  int static_eval_q = value_none_tt;
+  int raw_static_eval = value_none_tt;
+
   if (in_check) {
     best_value = -kMateValue;
   } else {
     // stand pat
     if (tt_hit && tte->eval != value_none_tt) {
-      best_value = tte->eval;
+      raw_static_eval = tte->eval;
     } else {
-      best_value = Evaluate(thread_state, board, maximizing_player, alpha, beta);
+      raw_static_eval = Evaluate(thread_state, board, maximizing_player, alpha, beta);
     }
-    static_eval_q = best_value;
+
+    // The stand-pat score starts as the raw static eval.
+    best_value = raw_static_eval;
+
+    // Refine with TT search score if it provides a better bound.
+    if (tt_hit && tte->score != value_none_tt) {
+        if (tte->bound == EXACT) {
+            best_value = tte->score;
+        } else if (tte->bound == LOWER_BOUND) {
+            best_value = std::max(best_value, tte->score);
+        } else if (tte->bound == UPPER_BOUND) {
+            best_value = std::min(best_value, tte->score);
+        }
+    }
+
     if (best_value >= beta) {
       if (options_.enable_transposition_table) {
+        // We have a cutoff, so best_value is a lower bound score.
         transposition_table_->Save(
-            board.HashKey(), 0, std::nullopt, best_value, static_eval_q, LOWER_BOUND, is_pv_node);
+            board.HashKey(), 0, std::nullopt, best_value, raw_static_eval, LOWER_BOUND, is_pv_node);
       }
-
       return std::make_tuple(best_value, std::nullopt);
     }
-    // delta pruning
-    if (best_value + kPieceEvaluations[QUEEN] < alpha) {
+    
+    // After stand-pat, alpha can be raised with the refined score.
+    if (best_value > alpha) {
+        alpha = best_value;
+    }
+
+    // delta pruning is based on material, so use raw static eval
+    if (raw_static_eval + kPieceEvaluations[QUEEN] < alpha) {
       return std::make_tuple(alpha, std::nullopt);
     }
+    
+    // futility base for captures should use the refined score.
     futility_base = best_value;
   }
 
@@ -1074,7 +1109,7 @@ AlphaBetaPlayer::QSearch(
   if (options_.enable_transposition_table) {
     ScoreBound bound = fail_high ? LOWER_BOUND : (fail_low && is_pv_node ? EXACT : UPPER_BOUND);
     transposition_table_->Save(board.HashKey(), tt_depth, best_move, score,
-        static_eval_q, bound, is_pv_node);
+        raw_static_eval, bound, is_pv_node);
   }
 
   thread_state.ReleaseMoveBufferPartition();
@@ -2114,4 +2149,4 @@ std::shared_ptr<PVInfo> PVInfo::Copy() const {
   return copy;
 }
 
-} // namespace chesss
+} // namespace chess
