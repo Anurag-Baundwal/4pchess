@@ -917,11 +917,6 @@ AlphaBetaPlayer::QSearch(
       }
       return std::make_tuple(best_value, std::nullopt);
     }
-    
-    // After stand-pat, alpha can be raised with the refined score.
-    if (best_value > alpha) {
-        alpha = best_value;
-    }
 
     // delta pruning is based on material, so use raw static eval
     if (raw_static_eval + kPieceEvaluations[QUEEN] < alpha) {
