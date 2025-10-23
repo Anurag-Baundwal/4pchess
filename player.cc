@@ -1378,7 +1378,7 @@ int AlphaBetaPlayer::Evaluate(
 
     // Asymmetric evaluation for playing style.
     // If engine_team is NO_TEAM, then the eval is symmetric.
-    constexpr int kAsymmetricQueenBonus = 0;
+    constexpr int kAsymmetricQueenBonus = 200;
     constexpr int kStartEvaluation =
       16 * kPieceEvaluations[PAWN]
       + 4 * kPieceEvaluations[KNIGHT]
@@ -1388,7 +1388,7 @@ int AlphaBetaPlayer::Evaluate(
       + 2 * kPieceEvaluations[KING]
       ;
     constexpr float kAsymmetricPieceEvalFactor = 0.05f;
-    constexpr float kAsymmetricActivationEvalFactor = 0.00;
+    constexpr float kAsymmetricActivationEvalFactor = 0.05f;
     constexpr int kAsymmetricQueenBonus2 = 0.5 * kAsymmetricPieceEvalFactor * kPieceEvaluations[QUEEN];
 
     auto asym_eval = [&](
