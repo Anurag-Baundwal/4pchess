@@ -351,6 +351,8 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
 
   bool partner_checked = board.IsKingInCheck(GetPartner(player));
 
+  bool extend_for_mate_threat = false;
+
   // null move pruning
   if (options_.enable_null_move_pruning
       && !is_root_node // not root
@@ -383,10 +385,15 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     // if it failed high, consider pruning or verification
     if (value_and_move_or.has_value()) {
       int nmp_score = -std::get<0>(*value_and_move_or);
-      if (nmp_score >= beta && nmp_score < kMateValue) {
-        
+      if (nmp_score >= beta) {
+          
+        // The null move was refuted. This indicates a strong threat from our side.
+        // This is the correct place to check for a mate threat.
+        if (nmp_score >= kMateValue - 200) { // If the score is near mate, it's a clear threat.
+            extend_for_mate_threat = true;
+        }
+
         // At low depths, we trust NMP without verification.
-        // This is a tunable parameter; Stockfish uses 16. Let's start with 8.
         constexpr int VERIFICATION_DEPTH_THRESHOLD = 12;
         if (depth < VERIFICATION_DEPTH_THRESHOLD) {
           num_null_moves_pruned_++;
@@ -394,7 +401,6 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
         }
 
         // At higher depths, perform a verification search.
-        // This search is done on the ORIGINAL position, with NMP disabled.
         PVInfo verification_pvinfo;
         auto verification_res = Search(
             ss, NonPV, thread_state, board, ply, nmp_depth, // Note: ply, not ply+1
@@ -413,6 +419,11 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
         // We don't prune and the search continues normally.
       }
     }
+  }
+
+  // Apply the extension here, AFTER the null move block is finished.
+  if (extend_for_mate_threat) {
+      depth++;
   }
 
   // Internal Iterative Reductions (IIR)
