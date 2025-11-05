@@ -1352,14 +1352,24 @@ int AlphaBetaPlayer::Evaluate(
           if (options_.enable_knight_bonus
               && piece_type == KNIGHT) {
             int knight_bonus = 0;
+            PlayerColor enemies[2];
+            if (color == RED || color == YELLOW) {
+              enemies[0] = BLUE;
+              enemies[1] = GREEN;
+            } else { // BLUE or GREEN
+              enemies[0] = RED;
+              enemies[1] = YELLOW;
+            }
+
             for (int i = 0; i < 2; i++) {
-              PlayerColor other_color = static_cast<PlayerColor>(
-                  (color + 2 * i + 1) % 4);
-              auto king_loc = board.GetKingLocation(other_color);
-              int king_row = king_loc.GetRow();
-              int king_col = king_loc.GetCol();
-              if (knight_to_king_[row][col][king_row][king_col]) {
-                knight_bonus += 100;
+              PlayerColor enemy_color = enemies[i];
+              auto king_loc = board.GetKingLocation(enemy_color);
+              if (king_loc.Present()) { // Good practice to check if the king is on the board
+                  int king_row = king_loc.GetRow();
+                  int king_col = king_loc.GetCol();
+                  if (knight_to_king_[row][col][king_row][king_col]) {
+                    knight_bonus += 100; // Bonus for attacking each enemy king
+                  }
               }
             }
             if (color == RED || color == YELLOW) {
