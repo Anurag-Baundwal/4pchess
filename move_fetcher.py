@@ -1,6 +1,6 @@
 # move_fetcher.py
-# v14 (Adds support for classic setup)
-
+# v15 (Removes manual driver caching for robust, automatic updates)
+ 
 import time
 import random
 import os
@@ -77,21 +77,6 @@ def load_cookies(driver, cookie_file):
     except Exception as e:
         print(f"❌ Error loading cookies: {e}")
         return False
-    
-def get_chrome_driver_path():
-    """Get cached Chrome driver path to avoid repeated downloads."""
-    cache_file = "chromedriver_path.txt"
-    if os.path.exists(cache_file):
-        with open(cache_file, 'r') as f:
-            cached_path = f.read().strip()
-            if os.path.exists(cached_path):
-                return cached_path
-    
-    # Download and cache the path
-    driver_path = ChromeDriverManager().install()
-    with open(cache_file, 'w') as f:
-        f.write(driver_path)
-    return driver_path
 
 def _parse_clock_str(time_str: str) -> float:
     """Converts a 'M:SS' or 'S.s' string to total seconds."""
@@ -270,11 +255,15 @@ if __name__ == "__main__":
 
     print("\nInitializing Selenium WebDriver...")
     try:
-        service = ChromeService(get_chrome_driver_path())
+        # Let webdriver-manager handle the driver automatically.
+        # It will download/update if necessary and use its own cache.
+        service = ChromeService(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
-        print("Done initializing WebDriver.")
+        print("✅ WebDriver initialized successfully.")
     except Exception as e:
         print(f"\n--- ❌ CRITICAL ERROR INITIALIZING WEBDRIVER ❌ ---\nError: {e}")
+        print("If the error mentions a version mismatch, try updating the webdriver-manager library:")
+        print("pip install --upgrade webdriver-manager")
         sys.exit(1)
 
     if not load_cookies(driver, COOKIE_FILE):
