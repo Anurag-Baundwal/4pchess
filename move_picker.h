@@ -9,6 +9,7 @@
 #include <optional>
 #include <tuple>
 #include <type_traits>
+#include <vector>
 
 #include "board.h"
 
@@ -85,20 +86,19 @@ using ContinuationHistory = Stats<PieceToHistory, NOT_USED, 7, 14, 14>;
 
 class MovePicker {
  public:
+  // CORRECTED CONSTRUCTOR
   MovePicker(
     Board& board,
     const std::optional<Move>& pvmove,
     Move* killers,
-    const int piece_evaluations[6],
-    int history_heuristic[6][14][14][14][14],
-    int capture_heuristic[6][4][6][4][14][14],
-    int piece_move_order_scores[6],
+    const int* piece_evaluations,
+    int (*history_heuristic)[14][14][14][14],
+    int (*capture_heuristic)[4][6][4][14][14],
+    const int* piece_move_order_scores,
     bool enable_move_order_checks,
-    Move* buffer,
-    size_t buffer_size,
     Move* counter_moves,
-    bool include_quiets = true,
-    const PieceToHistory** piece_to_history = nullptr
+    bool include_quiets,
+    const PieceToHistory** piece_to_history
     );
 
   // If this returns nullptr then there are no more moves
@@ -106,21 +106,48 @@ class MovePicker {
   int GetNumMoves() const { return num_moves_; };
 
  private:
-  struct Item {
-    unsigned short index;
-    float score;
-
-    Item(short idx, float sco) : index(idx), score(sco) { }
+  enum Stage {
+    PV_MOVE,
+    GENERATE_CAPTURES,
+    GOOD_CAPTURES,
+    KILLERS,
+    GENERATE_QUIETS,
+    QUIET_MOVES,
+    BAD_CAPTURES,
+    DONE
   };
 
-  Board* board_ = nullptr;
-  Move* moves_ = nullptr;
-  size_t num_moves_ = 0;
-  uint8_t stage_ = 0;
-  uint8_t stage_idx_ = 0;
-  std::vector<std::vector<Item>> stages_;
-  bool init_stages_[5] = {false, false, false, false, false};
-  bool enable_move_order_checks_;
+  struct MoveScore {
+      Move move;
+      int score;
+  };
+  
+  void score_captures();
+  void score_quiets();
+
+  Board& board_;
+  std::optional<Move> pv_move_; // Store a copy
+  Move* killers_;
+  const int* piece_evals_;
+  int (*history_heuristic_)[14][14][14][14];
+  int (*capture_heuristic_)[4][6][4][14][14];
+  const int* piece_scores_;
+  Move* counter_moves_;
+  const PieceToHistory** piece_to_history_;
+
+
+  Stage stage_ = PV_MOVE;
+  int num_moves_ = 0; // Moves in current stage's buffer
+  bool include_quiets_;
+  bool move_order_checks_;
+
+  static constexpr int kMaxMoves = 256;
+  Move move_buffer_[kMaxMoves];
+  MoveScore scored_moves_[kMaxMoves];
+  int current_move_idx_ = 0;
+  int num_scored_moves_ = 0;
+  int good_captures_end_idx_ = 0; // New member to track end of good captures
+  int killer_idx_ = 0;
 };
 
 }  // namespace chess

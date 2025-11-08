@@ -372,7 +372,8 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
   };
 
   std::optional<Move> pv_move = pvinfo.GetBestMove();
-  Move* moves = thread_state.GetNextMoveBufferPartition();
+  
+  // CORRECTED CONSTRUCTOR CALL
   MovePicker move_picker(
     board,
     pv_move.has_value() ? pv_move : tt_move,
@@ -382,12 +383,11 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     capture_heuristic,
     piece_move_order_scores_,
     options_.enable_move_order_checks,
-    moves,
-    kBufferPartitionSize,
     counter_moves,
-    true,
+    true, // include_quiets
     cont_hist
     );
+
 
   bool has_legal_moves = false;
   int move_count = 0;
@@ -780,11 +780,12 @@ AlphaBetaPlayer::QSearch(
   };
 
   std::optional<Move> pv_move = pv_info.GetBestMove();
-  Move* moves = thread_state.GetNextMoveBufferPartition();
+
+  // CORRECTED CONSTRUCTOR CALL
   MovePicker move_picker(
     board, pv_move, ss->killers, kPieceEvaluations,
     history_heuristic, capture_heuristic, piece_move_order_scores_,
-    options_.enable_move_order_checks, moves, kBufferPartitionSize,
+    options_.enable_move_order_checks,
     counter_moves, in_check, cont_hist
   );
 

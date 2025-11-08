@@ -802,15 +802,17 @@ bool Board::IsAttackedByTeam(Team team, int sq) const {
 }
 
 namespace {
-void AddMovesFromBB(MoveBuffer& moves, int from_idx, Bitboard to_bb, const Board& board,
+// Note: These helpers are used by the new staged generators.
+Move* AddMovesFromBB(Move* moveList, int from_idx, Bitboard to_bb, Piece captured_piece,
                     CastlingRights initial_cr = CastlingRights::kMissingRights,
                     CastlingRights final_cr = CastlingRights::kMissingRights) {
     BoardLocation from = IndexToLocation(from_idx);
     while (!to_bb.is_zero()) {
         int to_idx = to_bb.ctz();
         to_bb &= to_bb - 1;
-        moves.emplace_back(from, IndexToLocation(to_idx), board.GetPiece(to_idx), initial_cr, final_cr);
+        *moveList++ = Move(from, IndexToLocation(to_idx), captured_piece, initial_cr, final_cr);
     }
+    return moveList;
 }
 void AddPawnMovesFromBB(MoveBuffer& moves, int from_idx, Bitboard to_bb, PlayerColor color,
                         const Piece& capture, const BoardLocation& ep_loc, const Piece& ep_capture) {
@@ -1110,7 +1112,13 @@ void Board::GetKnightMoves2(MoveBuffer& moves, const Player& player) const {
         int from_idx = knights.ctz();
         knights &= knights - 1;
         Bitboard attacks = kKnightAttacks[from_idx] & ~friendly_pieces;
-        AddMovesFromBB(moves, from_idx, attacks, *this);
+        // Legacy AddMovesFromBB took a board reference, new one doesn't
+        BoardLocation from = IndexToLocation(from_idx);
+        while(!attacks.is_zero()){
+            int to_idx = attacks.ctz();
+            attacks &= attacks - 1;
+            moves.emplace_back(from, IndexToLocation(to_idx), GetPiece(to_idx));
+        }
     }
 }
 
@@ -1136,7 +1144,12 @@ void Board::GetRookMoves2(MoveBuffer& moves, const Player& player) const {
         }
         
         Bitboard attacks = GetRookAttacks(from_idx, all_pieces) & ~friendly_pieces;
-        AddMovesFromBB(moves, from_idx, attacks, *this, initial_cr, final_cr.Present() ? final_cr : CastlingRights::kMissingRights);
+        BoardLocation from = IndexToLocation(from_idx);
+        while(!attacks.is_zero()){
+            int to_idx = attacks.ctz();
+            attacks &= attacks - 1;
+            moves.emplace_back(from, IndexToLocation(to_idx), GetPiece(to_idx), initial_cr, final_cr.Present() ? final_cr : CastlingRights::kMissingRights);
+        }
     }
 }
 
@@ -1150,7 +1163,12 @@ void Board::GetBishopMoves2(MoveBuffer& moves, const Player& player) const {
         int from_idx = bishops.ctz();
         bishops &= bishops - 1;
         Bitboard attacks = GetBishopAttacks(from_idx, all_pieces) & ~friendly_pieces;
-        AddMovesFromBB(moves, from_idx, attacks, *this);
+        BoardLocation from = IndexToLocation(from_idx);
+        while(!attacks.is_zero()){
+            int to_idx = attacks.ctz();
+            attacks &= attacks - 1;
+            moves.emplace_back(from, IndexToLocation(to_idx), GetPiece(to_idx));
+        }
     }
 }
 
@@ -1164,7 +1182,12 @@ void Board::GetQueenMoves2(MoveBuffer& moves, const Player& player) const {
         int from_idx = queens.ctz();
         queens &= queens - 1;
         Bitboard attacks = GetQueenAttacks(from_idx, all_pieces) & ~friendly_pieces;
-        AddMovesFromBB(moves, from_idx, attacks, *this);
+        BoardLocation from = IndexToLocation(from_idx);
+        while(!attacks.is_zero()){
+            int to_idx = attacks.ctz();
+            attacks &= attacks - 1;
+            moves.emplace_back(from, IndexToLocation(to_idx), GetPiece(to_idx));
+        }
     }
 }
 
@@ -1179,7 +1202,12 @@ void Board::GetKingMoves2(MoveBuffer& moves, const Player& player) const {
     CastlingRights final_cr(false, false);
     
     Bitboard attacks = kKingAttacks[from_idx] & ~friendly_pieces;
-    AddMovesFromBB(moves, from_idx, attacks, *this, initial_cr, final_cr);
+    BoardLocation from = IndexToLocation(from_idx);
+    while(!attacks.is_zero()){
+        int to_idx = attacks.ctz();
+        attacks &= attacks - 1;
+        moves.emplace_back(from, IndexToLocation(to_idx), GetPiece(to_idx), initial_cr, final_cr);
+    }
 
     // Castling
     if (initial_cr.Present() && !IsAttackedByTeam(OtherTeam(player.GetTeam()), from_idx)) {
@@ -1250,21 +1278,364 @@ void Board::GetKingMoves2(MoveBuffer& moves, const Player& player) const {
 }
 
 size_t Board::GetPseudoLegalMoves2(Move* buffer, size_t limit) {
-    MoveBuffer move_buffer;
-    move_buffer.buffer = buffer;
-    move_buffer.limit = limit;
-    move_buffer.pos = 0; // Ensure buffer starts at 0
-
-    Player player = GetTurn();
-    GetPawnMoves2(move_buffer, player);
-    GetKnightMoves2(move_buffer, player);
-    GetBishopMoves2(move_buffer, player);
-    GetRookMoves2(move_buffer, player);
-    GetQueenMoves2(move_buffer, player);
-    GetKingMoves2(move_buffer, player);
-
-    return move_buffer.pos;
+    // This function now uses the new templated generator to get all moves.
+    Move* end = generate<ALL>(buffer);
+    return end - buffer;
 }
+
+// ============================================================================
+// Staged Move Generation Implementation
+// ============================================================================
+
+template<MoveGenType Type>
+Move* Board::generate(Move* moveList) const {
+    moveList = GeneratePawnMoves<Type>(moveList);
+    moveList = GenerateKnightMoves<Type>(moveList);
+    moveList = GenerateBishopMoves<Type>(moveList);
+    moveList = GenerateRookMoves<Type>(moveList);
+    moveList = GenerateQueenMoves<Type>(moveList);
+    moveList = GenerateKingMoves<Type>(moveList);
+    return moveList;
+}
+
+// Explicit instantiations for the linker
+template Move* Board::generate<CAPTURES>(Move*) const;
+template Move* Board::generate<QUIETS>(Move*) const;
+template Move* Board::generate<ALL>(Move*) const;
+
+
+template<MoveGenType Type>
+Move* Board::GenerateKnightMoves(Move* moveList) const {
+    const Player& player = GetTurn();
+    const Bitboard knights = piece_bitboards_[player.GetColor()][KNIGHT];
+    const Bitboard friendly_pieces = team_bitboards_[player.GetTeam()];
+
+    Bitboard target;
+    if constexpr (Type == CAPTURES)      target = team_bitboards_[OtherTeam(player.GetTeam())];
+    else if constexpr (Type == QUIETS)   target = ~(team_bitboards_[0] | team_bitboards_[1]);
+    else /* ALL */                      target = ~friendly_pieces;
+    
+    Bitboard k = knights;
+    while(!k.is_zero()) {
+        int from_idx = k.ctz();
+        k &= k - 1;
+        Bitboard attacks = kKnightAttacks[from_idx] & target;
+        Piece captured = (Type == CAPTURES) ? GetPiece(attacks.ctz()) : Piece::kNoPiece;
+        moveList = AddMovesFromBB(moveList, from_idx, attacks, captured);
+    }
+    return moveList;
+}
+
+template<MoveGenType Type>
+Move* Board::GenerateBishopMoves(Move* moveList) const {
+    const Player& player = GetTurn();
+    const Bitboard bishops = piece_bitboards_[player.GetColor()][BISHOP];
+    const Bitboard friendly_pieces = team_bitboards_[player.GetTeam()];
+    const Bitboard all_pieces = team_bitboards_[0] | team_bitboards_[1];
+
+    Bitboard target;
+    if constexpr (Type == CAPTURES)      target = team_bitboards_[OtherTeam(player.GetTeam())];
+    else if constexpr (Type == QUIETS)   target = ~all_pieces;
+    else /* ALL */                      target = ~friendly_pieces;
+
+    Bitboard b = bishops;
+    while(!b.is_zero()) {
+        int from_idx = b.ctz();
+        b &= b - 1;
+        Bitboard attacks = GetBishopAttacks(from_idx, all_pieces) & target;
+        Piece captured = (Type == CAPTURES) ? GetPiece(attacks.ctz()) : Piece::kNoPiece;
+        moveList = AddMovesFromBB(moveList, from_idx, attacks, captured);
+    }
+    return moveList;
+}
+
+
+template<MoveGenType Type>
+Move* Board::GenerateRookMoves(Move* moveList) const {
+    const Player& player = GetTurn();
+    PlayerColor color = player.GetColor();
+    const Bitboard rooks = piece_bitboards_[color][ROOK];
+    const Bitboard friendly_pieces = team_bitboards_[player.GetTeam()];
+    const Bitboard all_pieces = team_bitboards_[0] | team_bitboards_[1];
+
+    Bitboard target;
+    if constexpr (Type == CAPTURES)      target = team_bitboards_[OtherTeam(player.GetTeam())];
+    else if constexpr (Type == QUIETS)   target = ~all_pieces;
+    else /* ALL */                      target = ~friendly_pieces;
+    
+    const auto& initial_cr = castling_rights_[color];
+
+    Bitboard r = rooks;
+    while(!r.is_zero()) {
+        int from_idx = r.ctz();
+        r &= r - 1;
+        
+        CastlingRights final_cr = initial_cr;
+        if(initial_cr.Present()){
+            if(from_idx == kInitialRookSq[color][KINGSIDE] && initial_cr.Kingside()){
+                final_cr = CastlingRights(false, initial_cr.Queenside());
+            } else if (from_idx == kInitialRookSq[color][QUEENSIDE] && initial_cr.Queenside()){
+                final_cr = CastlingRights(initial_cr.Kingside(), false);
+            }
+        }
+        
+        Bitboard attacks = GetRookAttacks(from_idx, all_pieces) & target;
+        Piece captured = (Type == CAPTURES) ? GetPiece(attacks.ctz()) : Piece::kNoPiece;
+        moveList = AddMovesFromBB(moveList, from_idx, attacks, captured, initial_cr, final_cr.Present() ? final_cr : CastlingRights::kMissingRights);
+    }
+    return moveList;
+}
+
+template<MoveGenType Type>
+Move* Board::GenerateQueenMoves(Move* moveList) const {
+    const Player& player = GetTurn();
+    const Bitboard queens = piece_bitboards_[player.GetColor()][QUEEN];
+    const Bitboard friendly_pieces = team_bitboards_[player.GetTeam()];
+    const Bitboard all_pieces = team_bitboards_[0] | team_bitboards_[1];
+
+    Bitboard target;
+    if constexpr (Type == CAPTURES)      target = team_bitboards_[OtherTeam(player.GetTeam())];
+    else if constexpr (Type == QUIETS)   target = ~all_pieces;
+    else /* ALL */                      target = ~friendly_pieces;
+
+    Bitboard q = queens;
+    while(!q.is_zero()) {
+        int from_idx = q.ctz();
+        q &= q - 1;
+        Bitboard attacks = GetQueenAttacks(from_idx, all_pieces) & target;
+        Piece captured = (Type == CAPTURES) ? GetPiece(attacks.ctz()) : Piece::kNoPiece;
+        moveList = AddMovesFromBB(moveList, from_idx, attacks, captured);
+    }
+    return moveList;
+}
+
+template<MoveGenType Type>
+Move* Board::GenerateKingMoves(Move* moveList) const {
+    const Player& player = GetTurn();
+    PlayerColor color = player.GetColor();
+    const Bitboard king = piece_bitboards_[color][KING];
+    if (king.is_zero()) return moveList;
+
+    const Bitboard friendly_pieces = team_bitboards_[player.GetTeam()];
+    const Bitboard all_pieces = team_bitboards_[0] | team_bitboards_[1];
+    
+    Bitboard target;
+    if constexpr (Type == CAPTURES)      target = team_bitboards_[OtherTeam(player.GetTeam())];
+    else if constexpr (Type == QUIETS)   target = ~all_pieces;
+    else /* ALL */                      target = ~friendly_pieces;
+
+    int from_idx = king.ctz();
+    const auto& initial_cr = castling_rights_[color];
+    CastlingRights final_cr(false, false);
+    
+    Bitboard attacks = kKingAttacks[from_idx] & target;
+    Piece captured = (Type == CAPTURES) ? GetPiece(attacks.ctz()) : Piece::kNoPiece;
+    moveList = AddMovesFromBB(moveList, from_idx, attacks, captured, initial_cr, final_cr);
+
+    // Castling is a quiet move
+    if constexpr (Type == QUIETS || Type == ALL) {
+        if (initial_cr.Present() && !IsAttackedByTeam(OtherTeam(player.GetTeam()), from_idx)) {
+            Team enemy_team = OtherTeam(player.GetTeam());
+            BoardLocation king_from_loc = IndexToLocation(from_idx);
+
+            // KINGSIDE
+            if (initial_cr.Kingside() && (all_pieces & kCastlingEmptyMask[color][KINGSIDE]).is_zero()) {
+                Bitboard attack_mask = kCastlingAttackMask[color][KINGSIDE];
+                bool is_safe = true;
+                while(!attack_mask.is_zero()){
+                    if(IsAttackedByTeam(enemy_team, attack_mask.ctz())){ is_safe = false; break; }
+                    attack_mask &= (attack_mask-1);
+                }
+                if(is_safe){
+                    BoardLocation king_to_loc, rook_from_loc, rook_to_loc;
+                    rook_from_loc = IndexToLocation(kInitialRookSq[color][KINGSIDE]);
+                    switch(color) {
+                        case RED:    king_to_loc = king_from_loc.Relative(0, 2); rook_to_loc = king_from_loc.Relative(0, 1); break;
+                        case BLUE:   king_to_loc = king_from_loc.Relative(2, 0); rook_to_loc = king_from_loc.Relative(1, 0); break;
+                        case YELLOW: king_to_loc = king_from_loc.Relative(0, -2); rook_to_loc = king_from_loc.Relative(0, -1); break;
+                        case GREEN:  king_to_loc = king_from_loc.Relative(-2, 0); rook_to_loc = king_from_loc.Relative(-1, 0); break;
+                    }
+                    *moveList++ = Move(king_from_loc, king_to_loc, SimpleMove(rook_from_loc, rook_to_loc), initial_cr, final_cr);
+                }
+            }
+
+            // QUEENSIDE
+            if (initial_cr.Queenside() && (all_pieces & kCastlingEmptyMask[color][QUEENSIDE]).is_zero()) {
+                Bitboard attack_mask = kCastlingAttackMask[color][QUEENSIDE];
+                bool is_safe = true;
+                while(!attack_mask.is_zero()){
+                    if(IsAttackedByTeam(enemy_team, attack_mask.ctz())){ is_safe = false; break; }
+                    attack_mask &= (attack_mask-1);
+                }
+                if(is_safe){
+                    BoardLocation king_to_loc, rook_from_loc, rook_to_loc;
+                    rook_from_loc = IndexToLocation(kInitialRookSq[color][QUEENSIDE]);
+                    switch(color) {
+                        case RED:    king_to_loc = king_from_loc.Relative(0, -2); rook_to_loc = king_from_loc.Relative(0, -1); break;
+                        case BLUE:   king_to_loc = king_from_loc.Relative(-2, 0); rook_to_loc = king_from_loc.Relative(-1, 0); break;
+                        case YELLOW: king_to_loc = king_from_loc.Relative(0, 2); rook_to_loc = king_from_loc.Relative(0, 1); break;
+                        case GREEN:  king_to_loc = king_from_loc.Relative(2, 0); rook_to_loc = king_from_loc.Relative(1, 0); break;
+                    }
+                    *moveList++ = Move(king_from_loc, king_to_loc, SimpleMove(rook_from_loc, rook_to_loc), initial_cr, final_cr);
+                }
+            }
+        }
+    }
+    return moveList;
+}
+
+
+template<MoveGenType Type>
+Move* Board::GeneratePawnMoves(Move* moveList) const {
+    const Player& player = GetTurn();
+    PlayerColor color = player.GetColor();
+    const Bitboard my_pawns = piece_bitboards_[color][PAWN];
+    if (my_pawns.is_zero()) return moveList;
+
+    const Bitboard all_pieces = team_bitboards_[0] | team_bitboards_[1];
+    const Bitboard promotion_rank = kPawnPromotionMask[color];
+    
+    if constexpr (Type == QUIETS || Type == ALL) {
+        const Bitboard empty_squares = ~all_pieces;
+        Bitboard single_pushes, double_pushes;
+        switch (color) {
+            case RED:    single_pushes = shift<PUSH_N>(my_pawns) & empty_squares; double_pushes = shift<PUSH_N>(single_pushes & shift<PUSH_N>(kPawnStartMask[RED])) & empty_squares; break;
+            case BLUE:   single_pushes = shift<PUSH_E>(my_pawns) & empty_squares; double_pushes = shift<PUSH_E>(single_pushes & shift<PUSH_E>(kPawnStartMask[BLUE])) & empty_squares; break;
+            case YELLOW: single_pushes = shift<PUSH_S>(my_pawns) & empty_squares; double_pushes = shift<PUSH_S>(single_pushes & shift<PUSH_S>(kPawnStartMask[YELLOW])) & empty_squares; break;
+            case GREEN:  single_pushes = shift<PUSH_W>(my_pawns) & empty_squares; double_pushes = shift<PUSH_W>(single_pushes & shift<PUSH_W>(kPawnStartMask[GREEN])) & empty_squares; break;
+        }
+
+        // Quiet moves
+        Bitboard quiet_targets = single_pushes & ~promotion_rank;
+        while (!quiet_targets.is_zero()) {
+            int to_idx = quiet_targets.ctz();
+            int from_idx;
+            switch(color) {
+                case RED: from_idx = to_idx - PUSH_N; break; case BLUE: from_idx = to_idx - PUSH_E; break;
+                case YELLOW: from_idx = to_idx - PUSH_S; break; case GREEN: from_idx = to_idx - PUSH_W; break;
+            }
+            if((my_pawns & IndexToBitboard(from_idx)).is_zero()) { quiet_targets &= quiet_targets - 1; continue; }
+            *moveList++ = Move(IndexToLocation(from_idx), IndexToLocation(to_idx));
+            quiet_targets &= quiet_targets - 1;
+        }
+        
+        // Double pushes
+        while (!double_pushes.is_zero()) {
+            int to_idx = double_pushes.ctz();
+            int from_idx;
+            switch(color) {
+                case RED: from_idx = to_idx - PUSH_N - PUSH_N; break; case BLUE: from_idx = to_idx - PUSH_E - PUSH_E; break;
+                case YELLOW: from_idx = to_idx - PUSH_S - PUSH_S; break; case GREEN: from_idx = to_idx - PUSH_W - PUSH_W; break;
+            }
+            *moveList++ = Move(IndexToLocation(from_idx), IndexToLocation(to_idx));
+            double_pushes &= double_pushes - 1;
+        }
+
+        // Quiet promotions
+        Bitboard promo_pushes = single_pushes & promotion_rank;
+        while (!promo_pushes.is_zero()) {
+            int to_idx = promo_pushes.ctz();
+            int from_idx;
+            switch(color) {
+                case RED: from_idx = to_idx - PUSH_N; break; case BLUE: from_idx = to_idx - PUSH_E; break;
+                case YELLOW: from_idx = to_idx - PUSH_S; break; case GREEN: from_idx = to_idx - PUSH_W; break;
+            }
+            BoardLocation from = IndexToLocation(from_idx); BoardLocation to = IndexToLocation(to_idx);
+            *moveList++ = Move(from, to, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, QUEEN);
+            *moveList++ = Move(from, to, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, ROOK);
+            *moveList++ = Move(from, to, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, BISHOP);
+            *moveList++ = Move(from, to, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, KNIGHT);
+            promo_pushes &= promo_pushes - 1;
+        }
+    }
+
+    if constexpr (Type == CAPTURES || Type == ALL) {
+        const Bitboard enemy_pieces = team_bitboards_[OtherTeam(player.GetTeam())];
+        constexpr int capture_offsets[4][2] = {{PUSH_NW, PUSH_NE}, {PUSH_NE, PUSH_SE}, {PUSH_SW, PUSH_SE}, {PUSH_NW, PUSH_SW}};
+        Bitboard captures1, captures2;
+        switch (color) {
+            case RED:    captures1 = shift<capture_offsets[RED][0]>(my_pawns) & enemy_pieces; captures2 = shift<capture_offsets[RED][1]>(my_pawns) & enemy_pieces; break;
+            case BLUE:   captures1 = shift<capture_offsets[BLUE][0]>(my_pawns) & enemy_pieces; captures2 = shift<capture_offsets[BLUE][1]>(my_pawns) & enemy_pieces; break;
+            case YELLOW: captures1 = shift<capture_offsets[YELLOW][0]>(my_pawns) & enemy_pieces; captures2 = shift<capture_offsets[YELLOW][1]>(my_pawns) & enemy_pieces; break;
+            case GREEN:  captures1 = shift<capture_offsets[GREEN][0]>(my_pawns) & enemy_pieces; captures2 = shift<capture_offsets[GREEN][1]>(my_pawns) & enemy_pieces; break;
+        }
+        
+        // Normal captures
+        Bitboard all_captures = (captures1 | captures2) & ~promotion_rank;
+        while (!all_captures.is_zero()) {
+            int to_idx = all_captures.ctz();
+            Bitboard from_bb;
+            switch (color) {
+                case RED:    from_bb = (shift<-capture_offsets[RED][0]>(IndexToBitboard(to_idx)) | shift<-capture_offsets[RED][1]>(IndexToBitboard(to_idx))) & my_pawns; break;
+                case BLUE:   from_bb = (shift<-capture_offsets[BLUE][0]>(IndexToBitboard(to_idx)) | shift<-capture_offsets[BLUE][1]>(IndexToBitboard(to_idx))) & my_pawns; break;
+                case YELLOW: from_bb = (shift<-capture_offsets[YELLOW][0]>(IndexToBitboard(to_idx)) | shift<-capture_offsets[YELLOW][1]>(IndexToBitboard(to_idx))) & my_pawns; break;
+                case GREEN:  from_bb = (shift<-capture_offsets[GREEN][0]>(IndexToBitboard(to_idx)) | shift<-capture_offsets[GREEN][1]>(IndexToBitboard(to_idx))) & my_pawns; break;
+            }
+            while (!from_bb.is_zero()) { *moveList++ = Move(IndexToLocation(from_bb.ctz()), IndexToLocation(to_idx), GetPiece(to_idx)); from_bb &= from_bb - 1; }
+            all_captures &= all_captures - 1;
+        }
+
+        // Promotion captures
+        Bitboard promo_captures = (captures1 | captures2) & promotion_rank;
+        while (!promo_captures.is_zero()) {
+            int to_idx = promo_captures.ctz();
+            Bitboard from_bb;
+            switch (color) {
+                case RED:    from_bb = (shift<-capture_offsets[RED][0]>(IndexToBitboard(to_idx)) | shift<-capture_offsets[RED][1]>(IndexToBitboard(to_idx))) & my_pawns; break;
+                case BLUE:   from_bb = (shift<-capture_offsets[BLUE][0]>(IndexToBitboard(to_idx)) | shift<-capture_offsets[BLUE][1]>(IndexToBitboard(to_idx))) & my_pawns; break;
+                case YELLOW: from_bb = (shift<-capture_offsets[YELLOW][0]>(IndexToBitboard(to_idx)) | shift<-capture_offsets[YELLOW][1]>(IndexToBitboard(to_idx))) & my_pawns; break;
+                case GREEN:  from_bb = (shift<-capture_offsets[GREEN][0]>(IndexToBitboard(to_idx)) | shift<-capture_offsets[GREEN][1]>(IndexToBitboard(to_idx))) & my_pawns; break;
+            }
+            Piece captured = GetPiece(to_idx); BoardLocation to = IndexToLocation(to_idx);
+            while (!from_bb.is_zero()) {
+                BoardLocation from = IndexToLocation(from_bb.ctz());
+                *moveList++ = Move(from, to, captured, BoardLocation::kNoLocation, Piece::kNoPiece, QUEEN);
+                *moveList++ = Move(from, to, captured, BoardLocation::kNoLocation, Piece::kNoPiece, ROOK);
+                *moveList++ = Move(from, to, captured, BoardLocation::kNoLocation, Piece::kNoPiece, BISHOP);
+                *moveList++ = Move(from, to, captured, BoardLocation::kNoLocation, Piece::kNoPiece, KNIGHT);
+                from_bb &= from_bb - 1;
+            }
+            promo_captures &= promo_captures - 1;
+        }
+        
+        // En Passant
+        auto find_relevant_move = [&](PlayerColor opponent_color) -> const Move* {
+            int turns_ago = (color - opponent_color + 4) % 4;
+            if (turns_ago > 0 && moves_.size() >= turns_ago) return &moves_[moves_.size() - turns_ago];
+            const auto& enp_move = enp_.enp_moves[opponent_color];
+            return enp_move.has_value() ? &*enp_move : nullptr;
+        };
+        const PlayerColor opponents[2] = {GetNextPlayer(player).GetColor(), GetPreviousPlayer(player).GetColor()};
+        for (const PlayerColor opponent_color : opponents) {
+            const Move* opponent_last_move = find_relevant_move(opponent_color);
+            if (!opponent_last_move || !opponent_last_move->Present()) continue;
+            
+            const auto& move_from = opponent_last_move->From(); const auto& move_to = opponent_last_move->To();
+            Piece moved_piece = GetPiece(move_to);
+            if (moved_piece.GetPieceType() != PAWN || moved_piece.GetColor() != opponent_color || opponent_last_move->ManhattanDistance() != 2 || (move_from.GetRow() != move_to.GetRow() && move_from.GetCol() != move_to.GetCol())) continue;
+            
+            int moved_to_idx = LocationToIndex(move_to); Bitboard capturer_square_bb;
+            switch (color) {
+                case RED:    capturer_square_bb = shift<-PUSH_N>(IndexToBitboard(moved_to_idx)); break;
+                case BLUE:   capturer_square_bb = shift<-PUSH_E>(IndexToBitboard(moved_to_idx)); break;
+                case YELLOW: capturer_square_bb = shift<-PUSH_S>(IndexToBitboard(moved_to_idx)); break;
+                case GREEN:  capturer_square_bb = shift<-PUSH_W>(IndexToBitboard(moved_to_idx)); break;
+            }
+            Bitboard capturer_pawn = capturer_square_bb & my_pawns;
+            if (!capturer_pawn.is_zero()) {
+                int our_pawn_idx = capturer_pawn.ctz();
+                int ep_capture_dest_idx = (LocationToIndex(move_from) + moved_to_idx) / 2;
+                *moveList++ = Move(IndexToLocation(our_pawn_idx), IndexToLocation(ep_capture_dest_idx), GetPiece(ep_capture_dest_idx), move_to, moved_piece);
+            }
+        }
+    }
+    return moveList;
+}
+
+// ============================================================================
+// END OF Staged Move Generation
+// ============================================================================
+
 
 void Board::MakeMove(const Move& move) {
     const Player player = turn_;
@@ -1768,7 +2139,7 @@ int StaticExchangeEvaluationCapture(const int piece_evaluations[6], const Board&
     return initial_gain - opponent_gain;
 }
 
-int Move::SEE(Board& board, const int* piece_evaluations) {
+int Move::SEE(const Board& board, const int* piece_evaluations) const {
   if (see_ == kSeeNotSet) {
     see_ = StaticExchangeEvaluationCapture(piece_evaluations, board, *this);
   }

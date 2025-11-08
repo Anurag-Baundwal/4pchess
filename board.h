@@ -78,6 +78,14 @@ enum Team : int8_t {
   RED_YELLOW = 0, BLUE_GREEN = 1, NO_TEAM = 2, CURRENT_TEAM = 3,
 };
 
+// NEW: Enum to define the type of moves to generate, for staged move generation.
+enum MoveGenType {
+  CAPTURES, // Generate only captures (including promotions-by-capture and en-passant)
+  QUIETS,   // Generate only non-captures (including quiet promotions and castling)
+  ALL       // Generate all pseudo-legal moves (used by GetPseudoLegalMoves2)
+};
+
+
 // Forward declarations for classes and functions
 class Board;
 class Move;
@@ -363,7 +371,7 @@ class Move {
       std::ostream& os, const Move& move);
   std::string PrettyStr() const;
   bool DeliversCheck(Board& board);
-  int SEE(Board& board, const int* piece_evaluations);
+  int SEE(const Board& board, const int* piece_evaluations) const;
   int ApproxSEE(const Board& board, const int* piece_evaluations) const;
 
  private:
@@ -378,7 +386,7 @@ class Move {
   CastlingRights castling_rights_;
   int8_t delivers_check_ = -1;
   static constexpr int kSeeNotSet = -9999999;
-  int see_ = kSeeNotSet;
+  mutable int see_ = kSeeNotSet;
 };
 
 enum GameResult {
@@ -442,6 +450,11 @@ class Board {
 
   size_t GetPseudoLegalMoves2(Move* buffer, size_t limit);
 
+  // NEW: Templated entry point for staged move generation
+  template<MoveGenType Type>
+  Move* generate(Move* moveList) const;
+
+
   bool IsKingInCheck(const Player& player) const;
   bool IsKingInCheck(Team team) const;
 
@@ -499,12 +512,21 @@ class Board {
   friend int GetLeastValuableAttacker(const Board&, int, Team, const Bitboard&, PieceType&);
  
  private:
+  // Legacy move generation (kept for compatibility)
   void GetPawnMoves2(MoveBuffer& moves, const Player& player) const;
   void GetKnightMoves2(MoveBuffer& moves, const Player& player) const;
   void GetBishopMoves2(MoveBuffer& moves, const Player& player) const;
   void GetRookMoves2(MoveBuffer& moves, const Player& player) const;
   void GetQueenMoves2(MoveBuffer& moves, const Player& player) const;
   void GetKingMoves2(MoveBuffer& moves, const Player& player) const;
+
+  // NEW: Private templated generators for staged move generation
+  template<MoveGenType Type> Move* GeneratePawnMoves(Move* moveList) const;
+  template<MoveGenType Type> Move* GenerateKnightMoves(Move* moveList) const;
+  template<MoveGenType Type> Move* GenerateBishopMoves(Move* moveList) const;
+  template<MoveGenType Type> Move* GenerateRookMoves(Move* moveList) const;
+  template<MoveGenType Type> Move* GenerateQueenMoves(Move* moveList) const;
+  template<MoveGenType Type> Move* GenerateKingMoves(Move* moveList) const;
   
   void SetPiece(const BoardLocation& location, const Piece& piece);
   void RemovePiece(const BoardLocation& location);
