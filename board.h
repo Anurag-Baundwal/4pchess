@@ -12,6 +12,7 @@
 #include <vector>
 #include <iostream>
 #include <array>
+#include <cstdint>
 
 namespace chess {
 
