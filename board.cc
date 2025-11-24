@@ -535,6 +535,8 @@ Board::Board(
       pinners_[c] = Bitboard(0);
   }
 
+  safety_history_.reserve(300); // Reserve space for a typical game length
+
   for (int color = 0; color < 4; color++) {
     castling_rights_[color] = CastlingRights(false, false);
     if (castling_rights.has_value()) {
@@ -1424,6 +1426,16 @@ size_t Board::GetPseudoLegalMoves2(Move* buffer, size_t limit) {
 }
 
 void Board::MakeMove(const Move& move) {
+    // 1. SAVE the current safety state into a struct
+    SafetyInfo backup;
+    backup.checkers = checkers_;
+    for(int i = 0; i < 4; ++i) {
+        backup.blockers_for_king[i] = blockers_for_king_[i];
+        backup.pinners[i] = pinners_[i];
+    }
+    // Push onto the history stack
+    safety_history_.push_back(backup);
+
     const Player player = turn_;
     const BoardLocation from = move.From();
     const BoardLocation to = move.To();
@@ -1506,6 +1518,19 @@ void Board::UndoMove() {
     // Restore en-passant capture
     if (move.GetEnpassantLocation().Present()) {
         SetPiece(move.GetEnpassantLocation(), move.GetEnpassantCapture());
+    }
+
+    // RESTORE the safety state from the history stack
+    if (!safety_history_.empty()) {
+        const SafetyInfo& backup = safety_history_.back();
+        
+        checkers_ = backup.checkers;
+        for(int i = 0; i < 4; ++i) {
+            blockers_for_king_[i] = backup.blockers_for_king[i];
+            pinners_[i] = backup.pinners[i];
+        }
+        
+        safety_history_.pop_back();
     }
     
     moves_.pop_back();

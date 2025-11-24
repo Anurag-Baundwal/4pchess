@@ -544,6 +544,14 @@ class Board {
   Bitboard blockers_for_king_[4];     // Friendly pieces pinned to the king [color]
   Bitboard pinners_[4];               // Enemy pieces pinning the blockers [color of pinned piece]
 
+  // Used by MakeMove/UndoMove to save state
+  struct SafetyInfo {
+      Bitboard checkers;
+      Bitboard blockers_for_king[4];
+      Bitboard pinners[4];
+  };
+  std::vector<SafetyInfo> safety_history_;
+  
   Piece piece_on_square_[256];
   
   CastlingRights castling_rights_[4];

@@ -11,42 +11,29 @@ namespace chess {
 
 // Perft function to count leaf nodes
 uint64_t perft(Board& board, int depth) {
-  if (depth == 0) {
-    return 1;
-  }
+  if (depth == 0) return 1;
 
-  // Refresh safety info (checkers, pins) for the current position
-  // so IsLegal can use it.
-  board.RefreshKingSafety();
+  // Calculate ONCE at the start of the node
+  board.RefreshKingSafety(); 
 
   uint64_t nodes = 0;
   Move move_buffer[300];
-  
   size_t num_moves = board.GetPseudoLegalMoves2(move_buffer, 300);
 
   for (size_t i = 0; i < num_moves; i++) {
     const auto& move = move_buffer[i];
 
-    // OPTIMIZATION: Check legality using cached bitboards before making the move.
-    if (!board.IsLegal(move)) {
-        continue;
-    }
+    if (!board.IsLegal(move)) continue;
 
     board.MakeMove(move);
-    
-    // Recursively call perft. The child node will call RefreshKingSafety 
-    // for the new board state.
     nodes += perft(board, depth - 1);
-
-    board.UndoMove();
-
-    // RESTORE STATE: Since the recursive call modified the board's 
-    // internal safety members (checkers_, pinners_), and UndoMove 
-    // doesn't restore them, we must refresh them for the next iteration 
-    // of this loop.
-    if (i < num_moves - 1) {
-        board.RefreshKingSafety();
-    }
+    board.UndoMove(); 
+    
+    // DELETE THIS BLOCK:
+    // if (i < num_moves - 1) {
+    //     board.RefreshKingSafety();
+    // }
+    // Reason: UndoMove now restores the cached state instantly.
   }
 
   return nodes;
