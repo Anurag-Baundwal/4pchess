@@ -15,23 +15,38 @@ uint64_t perft(Board& board, int depth) {
     return 1;
   }
 
+  // Refresh safety info (checkers, pins) for the current position
+  // so IsLegal can use it.
+  board.RefreshKingSafety();
+
   uint64_t nodes = 0;
   Move move_buffer[300];
-  Player player_to_move = board.GetTurn();
-
+  
   size_t num_moves = board.GetPseudoLegalMoves2(move_buffer, 300);
 
   for (size_t i = 0; i < num_moves; i++) {
     const auto& move = move_buffer[i];
-    board.MakeMove(move);
 
-    // After making a move, check if the king of the player who just moved is in check.
-    // If so, the move was illegal.
-    if (!board.IsKingInCheck(player_to_move)) {
-      nodes += perft(board, depth - 1);
+    // OPTIMIZATION: Check legality using cached bitboards before making the move.
+    if (!board.IsLegal(move)) {
+        continue;
     }
 
+    board.MakeMove(move);
+    
+    // Recursively call perft. The child node will call RefreshKingSafety 
+    // for the new board state.
+    nodes += perft(board, depth - 1);
+
     board.UndoMove();
+
+    // RESTORE STATE: Since the recursive call modified the board's 
+    // internal safety members (checkers_, pinners_), and UndoMove 
+    // doesn't restore them, we must refresh them for the next iteration 
+    // of this loop.
+    if (i < num_moves - 1) {
+        board.RefreshKingSafety();
+    }
   }
 
   return nodes;
@@ -47,21 +62,31 @@ uint64_t divide(Board& board, int depth) {
   std::cout << "Divide for depth " << depth << ":" << std::endl;
   uint64_t total_nodes = 0;
 
+  // Refresh once at root
+  board.RefreshKingSafety();
+
   Move move_buffer[300];
-  Player player_to_move = board.GetTurn();
   size_t num_moves = board.GetPseudoLegalMoves2(move_buffer, 300);
 
   for (size_t i = 0; i < num_moves; i++) {
     const auto& move = move_buffer[i];
-    board.MakeMove(move);
 
-    if (!board.IsKingInCheck(player_to_move)) {
-      uint64_t nodes = perft(board, depth - 1);
-      total_nodes += nodes;
-      std::cout << move.PrettyStr() << ": " << nodes << std::endl;
+    if (!board.IsLegal(move)) {
+        continue;
     }
 
+    board.MakeMove(move);
+
+    uint64_t nodes = perft(board, depth - 1);
+    total_nodes += nodes;
+    std::cout << move.PrettyStr() << ": " << nodes << std::endl;
+
     board.UndoMove();
+    
+    // Restore safety for next root move
+    if (i < num_moves - 1) {
+        board.RefreshKingSafety();
+    }
   }
   std::cout << "\nTotal Nodes: " << total_nodes << std::endl;
   return total_nodes;
@@ -151,10 +176,3 @@ int main(int argc, char* argv[]) {
 
   return 0;
 }
-
-// Compile:
-// g++ -std=c++17 -O3 -march=native -Wall -I . perft_standalone.cc board.cc utils.cc -o perft.exe
-
-// Run:
-// ./perft.exe --depth 1
-// ./perft.exe --depth 4 --fen "G-0,0,0,0-0,0,0,0-0,0,1,0-0,0,0,0-0-x,x,x,1,bR,yB,yK,3,yR,x,x,x/x,x,x,2,yP,5,x,x,x/x,x,x,2,bB,yP,yP,1,yP,1,x,x,x/bR,7,yP,yP,4/5,bP,8/9,gK,1,gP,gP,yB/1,bP,1,bP,6,gP,gB,2/2,bP,8,gP,2/1,bP,bN,3,rB,4,gP,2/bK,bP,3,rP,5,rN,rB,yQ/3,bP,rP,4,rP,1,gP,2/x,x,x,rP,7,x,x,x/x,x,x,3,rP,4,x,x,x/x,x,x,3,rK,1,rR,2,x,x,x" --divide

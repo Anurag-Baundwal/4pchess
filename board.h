@@ -20,7 +20,7 @@ using Bitboard = my_math::FastUint256;
 
 namespace chess {
 
-class BoardLocation; // <-- FIX: Forward-declare BoardLocation
+class BoardLocation; // Forward-declare BoardLocation
 
 // This namespace contains helper functions and data for the bitboard implementation.
 namespace BitboardImpl {
@@ -41,6 +41,7 @@ namespace BitboardImpl {
     extern Bitboard kKnightAttacks[kNumSquares]; 
     extern Bitboard kKingAttacks[kNumSquares];   
     extern Bitboard kRayAttacks[kNumSquares][8]; 
+    extern Bitboard kLineBetween[kNumSquares][kNumSquares];
 
     extern Bitboard kBackRankMasks[4];
     extern Bitboard kSecondRankMasks[4];
@@ -440,6 +441,12 @@ class Board {
 
   Board(const Board&) = default;
 
+  // Calculates cached safety data (checkers, pins). Must be called before IsLegal if state changed manually.
+  void RefreshKingSafety();
+
+  // Optimized check if a move is legal without making it. Requires RefreshKingSafety() to be up to date.
+  bool IsLegal(const Move& move) const;
+
   size_t GetPseudoLegalMoves2(Move* buffer, size_t limit);
 
   bool IsKingInCheck(const Player& player) const;
@@ -514,6 +521,9 @@ class Board {
   Bitboard GetBishopAttacks(int sq, Bitboard blockers) const;
   Bitboard GetQueenAttacks(int sq, Bitboard blockers) const;
 
+  void UpdateSliderBlockers(PlayerColor color);
+  bool AttackersToExist(int sq, Bitboard occupied, Team team) const;
+
   void InitializeHash();
   void UpdatePieceHash(const Piece& piece, int index) {
     hash_key_ ^= piece_hashes_[piece.GetColor()][piece.GetPieceType()][index];
@@ -528,6 +538,11 @@ class Board {
   Bitboard piece_bitboards_[4][6]; // [PlayerColor][PieceType]
   Bitboard color_bitboards_[4];    // [PlayerColor] all pieces for a color
   Bitboard team_bitboards_[2];     // [Team] all pieces for a team
+
+  // Cached safety data for legality checks
+  Bitboard checkers_;                 // Enemies attacking the king
+  Bitboard blockers_for_king_[4];     // Friendly pieces pinned to the king [color]
+  Bitboard pinners_[4];               // Enemy pieces pinning the blockers [color of pinned piece]
 
   Piece piece_on_square_[256];
   

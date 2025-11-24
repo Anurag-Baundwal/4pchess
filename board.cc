@@ -78,25 +78,18 @@ namespace magics {
 
 // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 //                      RUNTIME TABLE GENERATION
-// This section contains the logic to generate sliding piece attack tables
-// at runtime, removing the dependency on `magic_tables.bin`. This will
-// cause a one-time performance cost on the first board initialization.
 // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 namespace TableGenerator {
 
-// This function correctly calculates the attacks for a single ray,
-// including the blocking piece itself, which is required for lookup tables.
 Bitboard get_ray_attack(int sq, RayDirection dir, const Bitboard& blockers) {
     Bitboard ray = kRayAttacks[sq][dir];
     Bitboard b = ray & blockers;
     if (!b.is_zero()) {
         int blocker_idx;
-        // Increasing directions: first blocker is LSB
         bool is_increasing_ray = (dir == D_S || dir == D_E || dir == D_SE || dir == D_SW);
         if (is_increasing_ray) {
             blocker_idx = b.ctz();
         }
-        // Decreasing directions: first blocker is MSB
         else {
             blocker_idx = 255 - b.clz();
         }
@@ -105,13 +98,10 @@ Bitboard get_ray_attack(int sq, RayDirection dir, const Bitboard& blockers) {
     return ray;
 }
 
-// Calculates attacks for a pair of rays (e.g., North/South for a vertical rook).
 Bitboard calculate_attacks_for_rays(int sq, Bitboard blockers, RayDirection d1, RayDirection d2) {
     return get_ray_attack(sq, d1, blockers) | get_ray_attack(sq, d2, blockers);
 }
 
-// Generates the attack mask for a "half-piece" (e.g., only horizontal moves for a rook).
-// It excludes the squares on the very edge of the board.
 Bitboard get_attack_mask(int sq, RayDirection d1, RayDirection d2) {
     Bitboard mask = (kRayAttacks[sq][d1] | kRayAttacks[sq][d2]);
     Bitboard ray1 = kRayAttacks[sq][d1];
@@ -134,7 +124,6 @@ Bitboard get_attack_mask(int sq, RayDirection d1, RayDirection d2) {
 #if defined(__BMI2__)
 // --- PEXT Generation Logic (for BMI2-enabled builds) ---
 
-// Helper function to perform PDEP on our 256-bit bitboard
 Bitboard pdep_256(uint64_t source, Bitboard mask) {
     Bitboard result = {};
     uint64_t current_source = source;
@@ -157,7 +146,6 @@ void GeneratePextTablesForSquare(int sq, RayDirection d1, RayDirection d2, PextE
     int bits = mask.popcount();
     uint64_t num_configs = 1ULL << bits;
     
-    // Add all possible attack patterns to the global table
     pext_entry.offset = current_offset;
     uint32_t initial_size = global_attack_table.size();
     global_attack_table.resize(initial_size + num_configs);
@@ -174,8 +162,7 @@ void GeneratePextTables() {
     auto gen_pext_set = [&](const char* name, PextEntry entries[], std::vector<Bitboard>& attacks, RayDirection d1, RayDirection d2){
         current_offset = 0;
         attacks.clear();
-        attacks.reserve(140000); // Pre-allocate memory to reduce reallocations
-        // std::cerr << "Generating PEXT tables for " << name << "..." << std::endl;
+        attacks.reserve(140000); 
         for (int sq = 0; sq < kNumSquares; ++sq) {
             GeneratePextTablesForSquare(sq, d1, d2, entries[sq], attacks, current_offset);
         }
@@ -191,13 +178,12 @@ void GeneratePextTables() {
 #else
 // --- Magic Bitboard Generation Logic (for non-BMI2 builds) ---
 
-// Portable fallback for PDEP, used to generate blocker permutations
 Bitboard pdep_fallback(uint64_t index, Bitboard mask) {
     Bitboard result(0);
     Bitboard temp_mask = mask;
     for (uint64_t i = index; i != 0; i >>= 1) {
         int lsb_idx = temp_mask.ctz();
-        temp_mask &= temp_mask - 1; // clear lsb
+        temp_mask &= temp_mask - 1; 
         if (i & 1) {
             result |= IndexToBitboard(lsb_idx);
         }
@@ -205,15 +191,12 @@ Bitboard pdep_fallback(uint64_t index, Bitboard mask) {
     return result;
 }
 
-// Random number generator for finding magic numbers
-std::mt19937_64 rng(0xBADF00D5EED); // Fixed seed for deterministic generation
+std::mt19937_64 rng(0xBADF00D5EED); 
 
-// Generates a sparse 256-bit number, a good candidate for a magic number.
 Bitboard generate_magic_candidate() {
     return Bitboard(rng(), rng(), rng(), rng()) & Bitboard(rng(), rng(), rng(), rng()) & Bitboard(rng(), rng(), rng(), rng());
 }
 
-// The core magic finding function for one square.
 void FindMagicForSquare(int sq, RayDirection d1, RayDirection d2, magics::MagicEntry& magic_entry, std::vector<Bitboard>& global_attack_table, uint32_t& current_offset) {
     if ((kLegalSquares & IndexToBitboard(sq)).is_zero()) {
         magic_entry = {Bitboard(0), Bitboard(0), 0, 0};
@@ -229,18 +212,15 @@ void FindMagicForSquare(int sq, RayDirection d1, RayDirection d2, magics::MagicE
     std::vector<Bitboard> local_attacks(num_configs);
     std::vector<Bitboard> blockers(num_configs);
 
-    // 1. Generate all blocker configurations and their corresponding attacks.
     for (uint64_t i = 0; i < num_configs; ++i) {
         blockers[i] = pdep_fallback(i, mask);
         local_attacks[i] = calculate_attacks_for_rays(sq, blockers[i], d1, d2);
     }
     
-    // 2. Find a magic number that works.
     std::vector<Bitboard> used_attacks(num_configs);
     for (int attempts = 0; attempts < 10000000; ++attempts) {
         Bitboard magic = generate_magic_candidate();
         
-        // Skip bad magic numbers
         if (((mask * magic) >> (256-8)).popcount() < 6) continue;
 
         magic_entry.magic = magic;
@@ -277,7 +257,6 @@ void GenerateMagicTables() {
         current_offset = 0;
         attacks.clear();
         attacks.reserve(140000);
-        // std::cerr << "Generating Magic tables for " << name << "..." << std::endl;
         for (int sq = 0; sq < kNumSquares; ++sq) {
             FindMagicForSquare(sq, d1, d2, entries[sq], attacks, current_offset);
         }
@@ -423,8 +402,6 @@ void InitBitboards() {
     }
     
     // Castling Masks
-    // King start squares: R(13,7), B(7,0), Y(0,6), G(6,13)
-    // Rook start squares are more complex
     BoardLocation king_starts[] = {{13, 7}, {7, 0}, {0, 6}, {6, 13}};
     kInitialRookSq[RED][KINGSIDE] = LocationToIndex({13, 10});
     kInitialRookSq[RED][QUEENSIDE] = LocationToIndex({13, 3});
@@ -465,7 +442,7 @@ void InitBitboards() {
             kBackRankMasks[GREEN] |= IndexToBitboard(LocationToIndex(loc_g));
     }
 
-    // Second-to-last Rank Masks (for mobility calculation)
+    // Second-to-last Rank Masks
     for (int c = 0; c < 14; ++c) {
         BoardLocation loc_r(12, (int8_t)c); // RED's 2nd rank
         if (loc_r.Present())
@@ -501,7 +478,6 @@ void InitBitboards() {
     #endif
     auto end_time = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed = end_time - start_time;
-    // std::cout << "Info: Attack table generation took " << elapsed.count() << " seconds." << std::endl;
     
     is_initialized = true;
 }
@@ -516,8 +492,7 @@ constexpr int PUSH_NW = PUSH_N + PUSH_W; // -17
 constexpr int PUSH_SE = PUSH_S + PUSH_E; // +17
 constexpr int PUSH_SW = PUSH_S + PUSH_W; // +15
 
-// A generic, templated shift function, just like Stockfish.
-// This is much more efficient than a runtime-variable shift.
+// A generic, templated shift function.
 template<int ShiftOffset>
 inline Bitboard shift(Bitboard b) {
     if constexpr (ShiftOffset > 0) {
@@ -552,6 +527,13 @@ Board::Board(
   for (auto& bb_arr : piece_bitboards_) for(auto& bb : bb_arr) bb.limbs.fill(0);
   for (auto& bb : color_bitboards_) bb.limbs.fill(0);
   for (auto& bb : team_bitboards_) bb.limbs.fill(0);
+
+  // Initialize cached safety bitboards
+  checkers_ = Bitboard(0);
+  for(int c=0; c<4; ++c) {
+      blockers_for_king_[c] = Bitboard(0);
+      pinners_[c] = Bitboard(0);
+  }
 
   for (int color = 0; color < 4; color++) {
     castling_rights_[color] = CastlingRights(false, false);
@@ -801,6 +783,220 @@ bool Board::IsAttackedByTeam(Team team, int sq) const {
     return !GetAttackersBB(sq, team).is_zero();
 }
 
+// ============================================================================
+// Proactive Legality Checking
+// ============================================================================
+
+bool Board::AttackersToExist(int sq, Bitboard occupied, Team team) const {
+    // Adapted from GetAttackersBB but uses specific 'occupied' mask
+    // useful for checking if a square is attacked when the king moves (preventing self-block)
+    
+    PlayerColor c1 = (team == RED_YELLOW) ? RED : BLUE;
+    PlayerColor c2 = (team == RED_YELLOW) ? YELLOW : GREEN;
+
+    // Pawns
+    if (!(BitboardImpl::kPawnAttacks[GetPartner(Player(c1)).GetColor()][sq] & piece_bitboards_[c1][PAWN]).is_zero()) return true;
+    if (!(BitboardImpl::kPawnAttacks[GetPartner(Player(c2)).GetColor()][sq] & piece_bitboards_[c2][PAWN]).is_zero()) return true;
+    
+    // Knights & King
+    if (!(BitboardImpl::kKnightAttacks[sq] & (piece_bitboards_[c1][KNIGHT] | piece_bitboards_[c2][KNIGHT])).is_zero()) return true;
+    if (!(BitboardImpl::kKingAttacks[sq] & (piece_bitboards_[c1][KING] | piece_bitboards_[c2][KING])).is_zero()) return true;
+
+    // Sliding pieces (Use passed 'occupied')
+    Bitboard rooks_queens = piece_bitboards_[c1][ROOK] | piece_bitboards_[c2][ROOK] |
+                            piece_bitboards_[c1][QUEEN] | piece_bitboards_[c2][QUEEN];
+    if (!(GetRookAttacks(sq, occupied) & rooks_queens).is_zero()) return true;
+    
+    Bitboard bishops_queens = piece_bitboards_[c1][BISHOP] | piece_bitboards_[c2][BISHOP] |
+                              piece_bitboards_[c1][QUEEN] | piece_bitboards_[c2][QUEEN];
+    if (!(GetBishopAttacks(sq, occupied) & bishops_queens).is_zero()) return true;
+
+    return false;
+}
+
+void Board::RefreshKingSafety() {
+    PlayerColor us = turn_.GetColor();
+    Team us_team = turn_.GetTeam();
+    
+    // 1. Calculate Checkers
+    BoardLocation king_loc = GetKingLocation(us);
+    
+    // If king is missing, treat as everything attacking
+    if (!king_loc.Present()) {
+        checkers_ = Bitboard::max(); 
+        for(int c=0; c<4; ++c) { blockers_for_king_[c] = Bitboard(0); pinners_[c] = Bitboard(0); }
+        return;
+    }
+
+    int king_sq = LocationToIndex(king_loc);
+    checkers_ = GetAttackersBB(king_sq, OtherTeam(us_team));
+
+    // 2. Calculate Pins (Blockers)
+    UpdateSliderBlockers(us);
+}
+
+void Board::UpdateSliderBlockers(PlayerColor c) {
+    // Reset
+    blockers_for_king_[c] = Bitboard(0);
+    pinners_[c] = Bitboard(0);
+
+    BoardLocation king_loc = GetKingLocation(c);
+    if (!king_loc.Present()) return;
+    int king_sq = LocationToIndex(king_loc);
+
+    Team team = GetTeam(c);
+    Team enemy_team = OtherTeam(team);
+    
+    PlayerColor e1 = (enemy_team == RED_YELLOW) ? RED : BLUE;
+    PlayerColor e2 = (enemy_team == RED_YELLOW) ? YELLOW : GREEN;
+    
+    Bitboard enemy_rooks = (piece_bitboards_[e1][ROOK] | piece_bitboards_[e2][ROOK] |
+                            piece_bitboards_[e1][QUEEN] | piece_bitboards_[e2][QUEEN]);
+    
+    Bitboard enemy_bishops = (piece_bitboards_[e1][BISHOP] | piece_bitboards_[e2][BISHOP] |
+                              piece_bitboards_[e1][QUEEN] | piece_bitboards_[e2][QUEEN]);
+
+    Bitboard all_pieces = team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN];
+
+    // --- Orthogonal Pins (Rook/Queen) ---
+    Bitboard ortho_candidates = GetRookAttacks(king_sq, Bitboard(0)) & enemy_rooks;
+    
+    while (!ortho_candidates.is_zero()) {
+        int sniper_sq = ortho_candidates.ctz();
+        ortho_candidates &= (ortho_candidates - 1);
+
+        Bitboard between = BitboardImpl::kLineBetween[king_sq][sniper_sq] & all_pieces;
+
+        if (!between.is_zero() && (between & (between - 1)).is_zero()) {
+            if (!(between & team_bitboards_[team]).is_zero()) {
+                blockers_for_king_[c] |= between;
+                pinners_[c] |= BitboardImpl::IndexToBitboard(sniper_sq);
+            }
+        }
+    }
+
+    // --- Diagonal Pins (Bishop/Queen) ---
+    Bitboard diag_candidates = GetBishopAttacks(king_sq, Bitboard(0)) & enemy_bishops;
+
+    while (!diag_candidates.is_zero()) {
+        int sniper_sq = diag_candidates.ctz();
+        diag_candidates &= (diag_candidates - 1);
+
+        Bitboard between = BitboardImpl::kLineBetween[king_sq][sniper_sq] & all_pieces;
+
+        if (!between.is_zero() && (between & (between - 1)).is_zero()) {
+            if (!(between & team_bitboards_[team]).is_zero()) {
+                blockers_for_king_[c] |= between;
+                pinners_[c] |= BitboardImpl::IndexToBitboard(sniper_sq);
+            }
+        }
+    }
+}
+
+bool Board::IsLegal(const Move& move) const {
+    if (!move.Present()) return false;
+
+    PlayerColor us = turn_.GetColor();
+    int from_sq = LocationToIndex(move.From());
+    int to_sq = LocationToIndex(move.To());
+    int king_sq = LocationToIndex(GetKingLocation(us));
+    
+    // 1. En Passant Special Case
+    if (move.GetEnpassantLocation().Present()) {
+        BoardLocation cap_loc = move.GetEnpassantLocation();
+        int cap_sq = LocationToIndex(cap_loc);
+        
+        Bitboard occupied = (team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN]);
+        
+        // Simulate: Remove 'from', Remove 'cap_sq', Add 'to'
+        occupied &= ~BitboardImpl::IndexToBitboard(from_sq);
+        occupied &= ~BitboardImpl::IndexToBitboard(cap_sq);
+        occupied |= BitboardImpl::IndexToBitboard(to_sq);
+
+        Team enemy_team = OtherTeam(turn_.GetTeam());
+        PlayerColor e1 = (enemy_team == RED_YELLOW) ? RED : BLUE;
+        PlayerColor e2 = (enemy_team == RED_YELLOW) ? YELLOW : GREEN;
+        
+        Bitboard rooks = piece_bitboards_[e1][ROOK] | piece_bitboards_[e2][ROOK] |
+                         piece_bitboards_[e1][QUEEN] | piece_bitboards_[e2][QUEEN];
+        if (!(GetRookAttacks(king_sq, occupied) & rooks).is_zero()) return false;
+        
+        Bitboard bishops = piece_bitboards_[e1][BISHOP] | piece_bitboards_[e2][BISHOP] |
+                           piece_bitboards_[e1][QUEEN] | piece_bitboards_[e2][QUEEN];
+        if (!(GetBishopAttacks(king_sq, occupied) & bishops).is_zero()) return false;
+        
+        return true; 
+    }
+
+    // 2. King Moves
+    if (GetPiece(from_sq).GetPieceType() == KING) {
+        if (move.GetRookMove().Present()) {
+            // Castling: cannot castle out of check
+            if (!checkers_.is_zero()) return false;
+            // Note: Standard chess rules also check path safety, which move gen should provide.
+            // We assume pseudo-legal generator handled path attacks.
+            return true;
+        }
+
+        // Simulate king removal
+        Bitboard occupied = (team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN]) ^ BitboardImpl::IndexToBitboard(from_sq);
+        if (AttackersToExist(to_sq, occupied, OtherTeam(turn_.GetTeam()))) return false;
+        
+        return true;
+    }
+
+    // 3. Non-King Moves
+    
+    // Double Check
+    if ((checkers_ & (checkers_ - 1)).operator bool()) {
+        return false;
+    }
+
+    // Pinned Pieces
+    if ((blockers_for_king_[us] & BitboardImpl::IndexToBitboard(from_sq)).operator bool()) {
+        // Find alignment
+        bool aligned = false;
+        
+        // Scan rays to find the pinner alignment
+        for(int d=0; d<8; ++d) {
+            if ((BitboardImpl::kRayAttacks[king_sq][d] & BitboardImpl::IndexToBitboard(from_sq)).operator bool()) {
+                Bitboard ray = BitboardImpl::kRayAttacks[king_sq][d];
+                Bitboard pinner_on_ray = ray & pinners_[us];
+                
+                if (pinner_on_ray.is_zero()) continue; 
+                
+                int pinner_sq = pinner_on_ray.ctz();
+                Bitboard valid_squares = BitboardImpl::kLineBetween[king_sq][pinner_sq] | BitboardImpl::IndexToBitboard(pinner_sq);
+                
+                if ((valid_squares & BitboardImpl::IndexToBitboard(to_sq)).is_zero()) {
+                    return false;
+                }
+                aligned = true;
+                break;
+            }
+        }
+        if (!aligned) return false;
+    }
+
+    // Single Check
+    if (!checkers_.is_zero()) {
+        int checker_sq = checkers_.ctz();
+        if (to_sq == checker_sq) return true; // Capture
+        
+        // Block
+        Bitboard blocking_squares = BitboardImpl::kLineBetween[king_sq][checker_sq];
+        if ((blocking_squares & BitboardImpl::IndexToBitboard(to_sq)).is_zero()) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// ============================================================================
+// End of Legality Checking
+// ============================================================================
+
 namespace {
 void AddMovesFromBB(MoveBuffer& moves, int from_idx, Bitboard to_bb, const Board& board,
                     CastlingRights initial_cr = CastlingRights::kMissingRights,
@@ -850,18 +1046,11 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
     const Bitboard enemy_pieces = team_bitboards_[OtherTeam(team)];
     const Bitboard promotion_rank = kPawnPromotionMask[color];
 
-    // =======================================================================
-    // 1. Generate Pushes (Single and Double) - CORRECTED LOGIC
-    // =======================================================================
-    
     Bitboard single_pushes, double_pushes;
     
     switch (color) {
         case RED: {
-            // 1a. All single pushes for ALL pawns
             single_pushes = shift<PUSH_N>(my_pawns) & empty_squares;
-            
-            // 1b. Double pushes, which can only originate from the start rank
             Bitboard pawns_on_start_rank = my_pawns & kPawnStartMask[RED];
             Bitboard first_step_of_double = shift<PUSH_N>(pawns_on_start_rank) & empty_squares;
             double_pushes = shift<PUSH_N>(first_step_of_double) & empty_squares;
@@ -890,9 +1079,6 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
         }
     }
 
-    // --- The rest of the logic for adding moves remains the same ---
-
-    // Add single push moves (excluding promotions, which are handled later)
     Bitboard single_targets = single_pushes & ~promotion_rank;
     while (!single_targets.is_zero()) {
         int to_idx = single_targets.ctz();
@@ -904,13 +1090,10 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
             case YELLOW: from_idx = to_idx - PUSH_S; break;
             case GREEN:  from_idx = to_idx - PUSH_W; break;
         }
-        // A double push target can also be a single push target for another pawn.
-        // We must ensure the pawn we are moving actually existed.
         if((my_pawns & IndexToBitboard(from_idx)).is_zero()) continue;
         moves.emplace_back(IndexToLocation(from_idx), IndexToLocation(to_idx), Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, NO_PIECE);
     }
     
-    // Add double push moves
     while (!double_pushes.is_zero()) {
         int to_idx = double_pushes.ctz();
         double_pushes &= double_pushes - 1;
@@ -923,10 +1106,6 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
         }
         moves.emplace_back(IndexToLocation(from_idx), IndexToLocation(to_idx), Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, NO_PIECE);
     }
-    
-    // =======================================================================
-    // 2. Generate Captures (This logic was correct)
-    // =======================================================================
     
     constexpr int capture_offsets[4][2] = {
         { PUSH_NW, PUSH_NE }, { PUSH_NE, PUSH_SE },
@@ -974,14 +1153,9 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
         }
     }
     
-    // =======================================================================
-    // 3. Generate Promotions (This logic was correct)
-    // =======================================================================
-    
     Bitboard promo_pushes = single_pushes & promotion_rank;
     Bitboard promo_captures = (captures1 | captures2) & promotion_rank;
 
-    // Promotion pushes...
     while (!promo_pushes.is_zero()) {
         int to_idx = promo_pushes.ctz();
         promo_pushes &= promo_pushes - 1;
@@ -1000,7 +1174,6 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
         moves.emplace_back(from, to, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, KNIGHT);
     }
     
-    // Promotion captures...
     while (!promo_captures.is_zero()) {
         int to_idx = promo_captures.ctz();
         Bitboard to_bb = IndexToBitboard(to_idx);
@@ -1028,10 +1201,6 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
         }
     }
     
-    // =======================================================================
-    // 4. Generate En Passant (Optimized)
-    // =======================================================================
-
     auto find_relevant_move = [&](PlayerColor opponent_color) -> const Move* {
         int turns_ago = (color - opponent_color + 4) % 4;
         if (turns_ago > 0 && moves_.size() >= turns_ago) {
@@ -1043,9 +1212,6 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
 
     const PlayerColor opponents[2] = { GetNextPlayer(player).GetColor(), GetPreviousPlayer(player).GetColor() };
     
-    // Define push directions for all colors for easy lookup
-    constexpr int push_offsets[] = {PUSH_N, PUSH_E, PUSH_S, PUSH_W};
-    
     for (const PlayerColor opponent_color : opponents) {
         const Move* opponent_last_move = find_relevant_move(opponent_color);
 
@@ -1053,7 +1219,6 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
             continue;
         }
 
-        // Check if it was a 2-square straight pawn push
         const auto& move_from = opponent_last_move->From();
         const auto& move_to = opponent_last_move->To();
         Piece moved_piece = GetPiece(move_to);
@@ -1065,10 +1230,6 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
             continue;
         }
         
-        // --- THIS IS THE CORE OPTIMIZATION ---
-        // The opponent pawn landed on 'move_to'.
-        // Our capturing pawn must be on the square BEHIND 'move_to' (relative to our push direction).
-        // We find this square by shifting 'move_to' backwards.
         int moved_to_idx = LocationToIndex(move_to);
         Bitboard capturer_square_bb;
 
@@ -1079,23 +1240,19 @@ void Board::GetPawnMoves2(MoveBuffer& moves, const Player& player) const {
             case GREEN:  capturer_square_bb = shift<-PUSH_W>(IndexToBitboard(moved_to_idx)); break;
         }
 
-        // Now, check if one of our pawns is actually on that square.
         Bitboard capturer_pawn = capturer_square_bb & my_pawns;
 
         if (!capturer_pawn.is_zero()) {
             int our_pawn_idx = capturer_pawn.ctz();
-            
-            // Calculate the capture destination (the square the opponent pawn skipped)
             int moved_from_idx = LocationToIndex(move_from);
             int ep_capture_dest_idx = (moved_from_idx + moved_to_idx) / 2;
             
-            // Create the move. No loops needed.
             moves.emplace_back(
                 IndexToLocation(our_pawn_idx),
                 IndexToLocation(ep_capture_dest_idx),
-                GetPiece(ep_capture_dest_idx), // Standard capture (if any)
-                move_to,                        // En-passant location
-                moved_piece                     // En-passant capture
+                GetPiece(ep_capture_dest_idx), 
+                move_to,                        
+                moved_piece                     
             );
         }
     }
@@ -1253,7 +1410,7 @@ size_t Board::GetPseudoLegalMoves2(Move* buffer, size_t limit) {
     MoveBuffer move_buffer;
     move_buffer.buffer = buffer;
     move_buffer.limit = limit;
-    move_buffer.pos = 0; // Ensure buffer starts at 0
+    move_buffer.pos = 0; 
 
     Player player = GetTurn();
     GetPawnMoves2(move_buffer, player);
@@ -1369,10 +1526,10 @@ GameResult Board::GetGameResult() {
       UndoMove();
       return king_capture_result;
     }
-    bool legal = !IsKingInCheck(player); // Check if the move was legal
+    bool legal = !IsKingInCheck(player); 
     UndoMove();
     if (legal) {
-      return IN_PROGRESS; // <-- Exit immediately on the FIRST legal move.
+      return IN_PROGRESS; 
     }
   }
   if (!IsKingInCheck(player)) {
@@ -1384,7 +1541,7 @@ GameResult Board::GetGameResult() {
 bool Board::IsKingInCheck(const Player& player) const {
   const auto king_location = GetKingLocation(player.GetColor());
   if (king_location.Missing()) {
-    return true; // A missing king is a lost king
+    return true; 
   }
   return IsAttackedByTeam(OtherTeam(player.GetTeam()), LocationToIndex(king_location));
 }
@@ -1532,7 +1689,6 @@ bool Board::DiscoversCheck(const Move& move) const {
     const Team my_team = turn_.GetTeam();
     const Team enemy_team = OtherTeam(my_team);
 
-    // 1. Identify all enemy kings and our own sliders (Bishops, Rooks, Queens).
     const PlayerColor e1 = (enemy_team == RED_YELLOW) ? RED : BLUE;
     const PlayerColor e2 = (enemy_team == RED_YELLOW) ? YELLOW : GREEN;
     Bitboard enemy_kings = piece_bitboards_[e1][KING] | piece_bitboards_[e2][KING];
@@ -1545,34 +1701,25 @@ bool Board::DiscoversCheck(const Move& move) const {
 
     const Bitboard occupied = team_bitboards_[0] | team_bitboards_[1];
 
-    // 2. Loop through each enemy king to see if the moving piece is pinned to it.
     while (!enemy_kings.is_zero()) {
         int king_sq = enemy_kings.ctz();
         enemy_kings &= enemy_kings - 1;
 
-        // 3. Find all of our sliders that have a line-of-sight to this king.
-        //    This tells us which of our pieces *could* be pinning something to this king.
         Bitboard potential_pinners = GetQueenAttacks(king_sq, occupied) & my_sliders;
 
-        // 4. For each potential pinner, check if 'from_sq' is the only piece between it and the king.
         while (!potential_pinners.is_zero()) {
             int slider_sq = potential_pinners.ctz();
             potential_pinners &= potential_pinners - 1;
             
-            // Check if the moving piece is the *only* piece on the line between the king and our slider.
             if ((BitboardImpl::kLineBetween[king_sq][slider_sq] & occupied) == BitboardImpl::IndexToBitboard(from_sq)) {
-                // The piece at 'from_sq' is pinned to the enemy king by our slider.
                 
-                // A discovered check occurs if the piece moves OFF the pin line.
-                // If 'to_sq' is also on the line, it's a move along the pin, not a discovery.
                 if ((BitboardImpl::kLineBetween[king_sq][slider_sq] & BitboardImpl::IndexToBitboard(to_sq)).is_zero()) {
-                    return true; // The move discovers check!
+                    return true; 
                 }
             }
         }
     }
     
-    // No discovered checks were found.
     return false;
 }
 
@@ -1621,45 +1768,23 @@ int Move::ApproxSEE(const Board& board, const int* piece_evaluations) const {
   const auto capture = GetCapturePiece();
   if(!capture.Present()) return 0;
   const auto piece = board.GetPiece(From());
-  if (!piece.Present()) return 0; // Should not happen in a valid move
+  if (!piece.Present()) return 0; 
   int captured_val = piece_evaluations[capture.GetPieceType()];
   int attacker_val = piece_evaluations[piece.GetPieceType()];
   return captured_val - attacker_val;
 }
 
-// ============================================================================
-// Static Exchange Evaluation (SEE) Implementation - FINAL CORRECTED VERSION
-// ============================================================================
-
-/**
- * @brief Finds the square of the least valuable attacker for a given team on a square.
- *
- * This is a specialized helper for SEE that uses a dynamic 'occupied' bitboard
- * to correctly calculate sliding attacks, thereby accounting for discovered attacks
- * that arise during the simulated capture sequence.
- *
- * @param board The board state (used to get piece locations and attack patterns).
- * @param sq The target square where the exchange is happening.
- * @param team The attacking team.
- * @param occupied The simulated bitboard of all occupied squares.
- * @param out_type A reference to store the PieceType of the found attacker.
- * @return The square index of the least valuable attacker, or -1 if none exists.
- */
 int GetLeastValuableAttacker(const Board& board, int sq, Team team, const Bitboard& occupied, PieceType& out_type) {
-    // This function generates attacks from a team towards 'sq', considering 'occupied'
-    // as the set of blockers for sliding pieces.
     Bitboard attackers = Bitboard(0);
     const PlayerColor c1 = (team == RED_YELLOW) ? RED : BLUE;
     const PlayerColor c2 = (team == RED_YELLOW) ? YELLOW : GREEN;
     const Bitboard team_pieces = board.color_bitboards_[c1] | board.color_bitboards_[c2];
 
-    // Non-sliding pieces: their attacks are independent of other pieces on the board.
     attackers |= (BitboardImpl::kPawnAttacks[GetPartner(Player(c1)).GetColor()][sq] & board.piece_bitboards_[c1][PAWN]);
     attackers |= (BitboardImpl::kPawnAttacks[GetPartner(Player(c2)).GetColor()][sq] & board.piece_bitboards_[c2][PAWN]);
     attackers |= (BitboardImpl::kKnightAttacks[sq] & (board.piece_bitboards_[c1][KNIGHT] | board.piece_bitboards_[c2][KNIGHT]));
     attackers |= (BitboardImpl::kKingAttacks[sq] & (board.piece_bitboards_[c1][KING] | board.piece_bitboards_[c2][KING]));
 
-    // Sliding pieces: these attacks depend on the dynamic 'occupied' bitboard.
     const Bitboard rooks_and_queens = (board.piece_bitboards_[c1][ROOK] | board.piece_bitboards_[c2][ROOK] |
                                      board.piece_bitboards_[c1][QUEEN] | board.piece_bitboards_[c2][QUEEN]);
     attackers |= (board.GetRookAttacks(sq, occupied) & rooks_and_queens);
@@ -1668,54 +1793,39 @@ int GetLeastValuableAttacker(const Board& board, int sq, Team team, const Bitboa
                                        board.piece_bitboards_[c1][QUEEN] | board.piece_bitboards_[c2][QUEEN]);
     attackers |= (board.GetBishopAttacks(sq, occupied) & bishops_and_queens);
     
-    // We only care about attackers that are actually still on the board in our simulation.
     Bitboard valid_attackers = attackers & occupied;
 
     if (valid_attackers.is_zero()) {
         return -1;
     }
 
-    // Find the cheapest piece type among the valid attackers.
     for (int pt_idx = PAWN; pt_idx <= KING; ++pt_idx) {
         const PieceType pt = static_cast<PieceType>(pt_idx);
         const Bitboard type_attackers = (board.piece_bitboards_[c1][pt] | board.piece_bitboards_[c2][pt]) & valid_attackers;
         if (!type_attackers.is_zero()) {
             out_type = pt;
-            return type_attackers.ctz(); // Return the first one found (guaranteed to be cheapest).
+            return type_attackers.ctz(); 
         }
     }
-    return -1; // Should be unreachable if valid_attackers is not zero.
+    return -1; 
 }
 
 
-/**
- * @brief Recursively calculates the gain of a capture sequence on a square.
- */
 int SeeRecursive(const Board& board, const int piece_evaluations[6], int target_sq, Bitboard occupied, Team side_to_attack, int victim_value) {
     PieceType lva_type;
     int lva_sq = GetLeastValuableAttacker(board, target_sq, side_to_attack, occupied, lva_type);
 
-    // Base case: If the current side has no more attackers for the square, they can't
-    // recapture, so their gain from this point is 0.
     if (lva_sq == -1) {
         return 0;
     }
 
-    // Simulate the recapture: the least valuable attacker is now considered "off the board"
     Bitboard next_occupied = occupied ^ BitboardImpl::IndexToBitboard(lva_sq);
 
-    // The gain is the value of the piece captured, minus what the opponent gains in return.
     int gain = victim_value - SeeRecursive(board, piece_evaluations, target_sq, next_occupied, OtherTeam(side_to_attack), piece_evaluations[lva_type]);
 
-    // A player will not continue a losing exchange ("stand pat" principle).
     return std::max(0, gain);
 }
 
-/**
- * @brief Main function to calculate the Static Exchange Evaluation for a move.
- * This is the public-facing entry point, which sets up and starts the recursion.
- * The board parameter should be const, as SEE is a static analysis and does not change the board.
- */
 int StaticExchangeEvaluationCapture(const int piece_evaluations[6], const Board& board, const Move& move) {
     if (!move.IsCapture()) {
         return 0;
@@ -1725,29 +1835,20 @@ int StaticExchangeEvaluationCapture(const int piece_evaluations[6], const Board&
     const Piece attacker_piece = board.GetPiece(move.From());
 
     if (!captured_piece.Present() || !attacker_piece.Present()) {
-        return 0; // Should not happen for a valid capture
+        return 0; 
     }
 
     const int from_sq = BitboardImpl::LocationToIndex(move.From());
     const int to_sq = BitboardImpl::LocationToIndex(move.To());
 
-    // The initial gain is simply the value of the piece we are capturing.
     const int initial_gain = piece_evaluations[captured_piece.GetPieceType()];
     
-    // The attacker now becomes the victim for the opponent's first recapture.
     const int new_victim_value = piece_evaluations[attacker_piece.GetPieceType()];
     
-    // === ROBUST BOARD STATE SIMULATION ===
-    // This logic now perfectly mirrors what a MakeMove/UndoMove pair would do,
-    // handling both standard and en-passant captures correctly.
-
     Bitboard occupied_before_move = board.team_bitboards_[RED_YELLOW] | board.team_bitboards_[BLUE_GREEN];
     
-    // Step 1: Simulate the attacker moving from its original square to the destination.
-    // This leaves the 'from' square empty and the 'to' square occupied by the attacker.
     Bitboard occupied_after_move = (occupied_before_move & ~BitboardImpl::IndexToBitboard(from_sq)) | BitboardImpl::IndexToBitboard(to_sq);
 
-    // Step 2: If it was an en-passant capture, we must also explicitly remove the captured pawn.
     if (move.GetEnpassantLocation().Present()) {
         int ep_captured_sq = BitboardImpl::LocationToIndex(move.GetEnpassantLocation());
         occupied_after_move &= ~BitboardImpl::IndexToBitboard(ep_captured_sq);
@@ -1755,7 +1856,6 @@ int StaticExchangeEvaluationCapture(const int piece_evaluations[6], const Board&
     
     const Team opponent_team = OtherTeam(board.GetTurn().GetTeam());
 
-    // Calculate what the opponent can gain from this new, correctly simulated board state.
     int opponent_gain = SeeRecursive(
         board,
         piece_evaluations,
