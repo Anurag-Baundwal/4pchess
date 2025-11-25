@@ -16,6 +16,23 @@ uint64_t perft(Board& board, int depth) {
   // Calculate ONCE at the start of the node
   board.RefreshKingSafety(); 
 
+  // --- OPTIMIZATION START ---
+  // If depth is 1, we only need to count legal moves.
+  // We avoid the overhead of MakeMove/UndoMove for leaf nodes.
+  if (depth == 1) {
+      uint64_t nodes = 0;
+      Move move_buffer[300];
+      size_t num_moves = board.GetPseudoLegalMoves2(move_buffer, 300);
+
+      for (size_t i = 0; i < num_moves; i++) {
+          if (board.IsLegal(move_buffer[i])) {
+              nodes++;
+          }
+      }
+      return nodes;
+  }
+  // --- OPTIMIZATION END ---
+
   uint64_t nodes = 0;
   Move move_buffer[300];
   size_t num_moves = board.GetPseudoLegalMoves2(move_buffer, 300);
@@ -28,12 +45,6 @@ uint64_t perft(Board& board, int depth) {
     board.MakeMove(move);
     nodes += perft(board, depth - 1);
     board.UndoMove(); 
-    
-    // DELETE THIS BLOCK:
-    // if (i < num_moves - 1) {
-    //     board.RefreshKingSafety();
-    // }
-    // Reason: UndoMove now restores the cached state instantly.
   }
 
   return nodes;
@@ -64,6 +75,7 @@ uint64_t divide(Board& board, int depth) {
 
     board.MakeMove(move);
 
+    // perft(depth - 1) will now hit the optimized block if depth-1 == 1
     uint64_t nodes = perft(board, depth - 1);
     total_nodes += nodes;
     std::cout << move.PrettyStr() << ": " << nodes << std::endl;
