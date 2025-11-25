@@ -15,19 +15,45 @@ uint64_t perft(Board& board, int depth) {
 
   // Calculate ONCE at the start of the node
   board.RefreshKingSafety(); 
+  
+  // Cache safety data for the filter
+  const Player player = board.GetTurn();
+  const Bitboard checkers = board.Checkers();
+  const Bitboard pinned = board.PinnedPieces(player.GetColor());
+  const bool in_check = !checkers.is_zero();
 
-  // --- OPTIMIZATION START ---
-  // If depth is 1, we only need to count legal moves.
-  // We avoid the overhead of MakeMove/UndoMove for leaf nodes.
+  // --- OPTIMIZATION START (Bulk Counting) ---
   if (depth == 1) {
       uint64_t nodes = 0;
       Move move_buffer[300];
       size_t num_moves = board.GetPseudoLegalMoves2(move_buffer, 300);
 
       for (size_t i = 0; i < num_moves; i++) {
-          if (board.IsLegal(move_buffer[i])) {
-              nodes++;
+          const auto& move = move_buffer[i];
+          
+          // Apply the SAME lazy filter here. 
+          // Checking IsLegal is expensive even without MakeMove.
+          bool needs_legality_check = false;
+
+          if (in_check) {
+              needs_legality_check = true;
+          } else {
+              if (board.GetPiece(move.From()).GetPieceType() == KING) {
+                  needs_legality_check = true;
+              }
+              else if (move.GetEnpassantLocation().Present()) {
+                  needs_legality_check = true;
+              }
+              else if ((BitboardImpl::IndexToBitboard(BitboardImpl::LocationToIndex(move.From())) & pinned).operator bool()) {
+                  needs_legality_check = true;
+              }
           }
+
+          if (needs_legality_check) {
+              if (!board.IsLegal(move)) continue;
+          }
+          
+          nodes++;
       }
       return nodes;
   }
@@ -40,7 +66,27 @@ uint64_t perft(Board& board, int depth) {
   for (size_t i = 0; i < num_moves; i++) {
     const auto& move = move_buffer[i];
 
-    if (!board.IsLegal(move)) continue;
+    // --- LAZY VERIFICATION FILTER ---
+    bool needs_legality_check = false;
+
+    if (in_check) {
+        needs_legality_check = true;
+    } else {
+        if (board.GetPiece(move.From()).GetPieceType() == KING) {
+            needs_legality_check = true;
+        }
+        else if (move.GetEnpassantLocation().Present()) {
+            needs_legality_check = true;
+        }
+        else if ((BitboardImpl::IndexToBitboard(BitboardImpl::LocationToIndex(move.From())) & pinned).operator bool()) {
+            needs_legality_check = true;
+        }
+    }
+
+    if (needs_legality_check) {
+        if (!board.IsLegal(move)) continue;
+    }
+    // --------------------------------
 
     board.MakeMove(move);
     nodes += perft(board, depth - 1);
@@ -62,6 +108,11 @@ uint64_t divide(Board& board, int depth) {
 
   // Refresh once at root
   board.RefreshKingSafety();
+  
+  const Player player = board.GetTurn();
+  const Bitboard checkers = board.Checkers();
+  const Bitboard pinned = board.PinnedPieces(player.GetColor());
+  const bool in_check = !checkers.is_zero();
 
   Move move_buffer[300];
   size_t num_moves = board.GetPseudoLegalMoves2(move_buffer, 300);
@@ -69,23 +120,36 @@ uint64_t divide(Board& board, int depth) {
   for (size_t i = 0; i < num_moves; i++) {
     const auto& move = move_buffer[i];
 
-    if (!board.IsLegal(move)) {
-        continue;
+    // --- LAZY VERIFICATION FILTER ---
+    bool needs_legality_check = false;
+
+    if (in_check) {
+        needs_legality_check = true;
+    } else {
+        if (board.GetPiece(move.From()).GetPieceType() == KING) {
+            needs_legality_check = true;
+        }
+        else if (move.GetEnpassantLocation().Present()) {
+            needs_legality_check = true;
+        }
+        else if ((BitboardImpl::IndexToBitboard(BitboardImpl::LocationToIndex(move.From())) & pinned).operator bool()) {
+            needs_legality_check = true;
+        }
     }
+
+    if (needs_legality_check) {
+        if (!board.IsLegal(move)) continue;
+    }
+    // --------------------------------
 
     board.MakeMove(move);
 
-    // perft(depth - 1) will now hit the optimized block if depth-1 == 1
+    // perft(depth - 1) will hit the optimized block if depth-1 == 1
     uint64_t nodes = perft(board, depth - 1);
     total_nodes += nodes;
     std::cout << move.PrettyStr() << ": " << nodes << std::endl;
 
     board.UndoMove();
-    
-    // Restore safety for next root move
-    if (i < num_moves - 1) {
-        board.RefreshKingSafety();
-    }
   }
   std::cout << "\nTotal Nodes: " << total_nodes << std::endl;
   return total_nodes;

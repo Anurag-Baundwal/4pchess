@@ -504,6 +504,15 @@ class Board {
   friend int StaticExchangeEvaluationCapture(const int[6], const Board&, const Move&);
   friend int SeeRecursive(const Board&, const int[6], int, Bitboard, Team, int);
   friend int GetLeastValuableAttacker(const Board&, int, Team, const Bitboard&, PieceType&);
+
+  // NEW ACCESSORS for Perft Optimization
+  Bitboard Checkers() const { return checkers_; }
+  Bitboard PinnedPieces(PlayerColor c) const { return blockers_for_king_[c]; }
+  
+  // Fast check if a specific square contains a pinned piece
+  bool IsPinned(int sq) const {
+      return (blockers_for_king_[turn_.GetColor()] & BitboardImpl::IndexToBitboard(sq)).operator bool();
+  }
  
  private:
   void GetPawnMoves2(MoveBuffer& moves, const Player& player) const;
@@ -550,7 +559,11 @@ class Board {
       Bitboard blockers_for_king[4];
       Bitboard pinners[4];
   };
-  std::vector<SafetyInfo> safety_history_;
+
+  static constexpr int kMaxGameDepth = 512;
+  
+  SafetyInfo safety_stack_[kMaxGameDepth];
+  int safety_stack_ptr_ = 0; 
   
   Piece piece_on_square_[256];
   

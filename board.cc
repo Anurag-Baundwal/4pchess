@@ -535,8 +535,6 @@ Board::Board(
       pinners_[c] = Bitboard(0);
   }
 
-  safety_history_.reserve(300); // Reserve space for a typical game length
-
   for (int color = 0; color < 4; color++) {
     castling_rights_[color] = CastlingRights(false, false);
     if (castling_rights.has_value()) {
@@ -895,6 +893,9 @@ void Board::UpdateSliderBlockers(PlayerColor c) {
     }
 }
 
+// ---------------------------------------------------------
+// OPTIMIZED IsLegal (Part 3 Implementation)
+// ---------------------------------------------------------
 bool Board::IsLegal(const Move& move) const {
     if (!move.Present()) return false;
 
@@ -903,7 +904,7 @@ bool Board::IsLegal(const Move& move) const {
     int to_sq = LocationToIndex(move.To());
     int king_sq = LocationToIndex(GetKingLocation(us));
     
-    // 1. En Passant Special Case
+    // 1. En Passant Special Case (Always tricky, check thoroughly)
     if (move.GetEnpassantLocation().Present()) {
         BoardLocation cap_loc = move.GetEnpassantLocation();
         int cap_sq = LocationToIndex(cap_loc);
@@ -919,6 +920,7 @@ bool Board::IsLegal(const Move& move) const {
         PlayerColor e1 = (enemy_team == RED_YELLOW) ? RED : BLUE;
         PlayerColor e2 = (enemy_team == RED_YELLOW) ? YELLOW : GREEN;
         
+        // Check if King is attacked through the "gap"
         Bitboard rooks = piece_bitboards_[e1][ROOK] | piece_bitboards_[e2][ROOK] |
                          piece_bitboards_[e1][QUEEN] | piece_bitboards_[e2][QUEEN];
         if (!(GetRookAttacks(king_sq, occupied) & rooks).is_zero()) return false;
@@ -933,59 +935,59 @@ bool Board::IsLegal(const Move& move) const {
     // 2. King Moves
     if (GetPiece(from_sq).GetPieceType() == KING) {
         if (move.GetRookMove().Present()) {
-            // Castling: cannot castle out of check
             if (!checkers_.is_zero()) return false;
-            // Note: Standard chess rules also check path safety, which move gen should provide.
-            // We assume pseudo-legal generator handled path attacks.
             return true;
         }
-
-        // Simulate king removal
+        // Simulate king removal to check if destination is attacked
         Bitboard occupied = (team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN]) ^ BitboardImpl::IndexToBitboard(from_sq);
         if (AttackersToExist(to_sq, occupied, OtherTeam(turn_.GetTeam()))) return false;
         
         return true;
     }
 
-    // 3. Non-King Moves
-    
-    // Double Check
-    if ((checkers_ & (checkers_ - 1)).operator bool()) {
+    // 3. Double Check (Only King moves allowed)
+    // If not King move (handled above) and double check, it's illegal.
+    if (!checkers_.is_zero() && (checkers_ & (checkers_ - 1)).operator bool()) {
         return false;
     }
 
-    // Pinned Pieces
+    // 4. Pinned Pieces (OPTIMIZED PART 3)
+    // If the piece is in the pinned mask...
     if ((blockers_for_king_[us] & BitboardImpl::IndexToBitboard(from_sq)).operator bool()) {
-        // Find alignment
-        bool aligned = false;
         
-        // Scan rays to find the pinner alignment
+        // Find which ray aligns the King and the Pinned Piece
         for(int d=0; d<8; ++d) {
-            if ((BitboardImpl::kRayAttacks[king_sq][d] & BitboardImpl::IndexToBitboard(from_sq)).operator bool()) {
-                Bitboard ray = BitboardImpl::kRayAttacks[king_sq][d];
+            Bitboard ray = BitboardImpl::kRayAttacks[king_sq][d];
+            
+            // If the pinned piece is on this ray
+            if ((ray & BitboardImpl::IndexToBitboard(from_sq)).operator bool()) {
+                
+                // We know a pinner MUST exist on this ray because `blockers_for_king` says so.
+                // Intersection gives the specific pinner.
                 Bitboard pinner_on_ray = ray & pinners_[us];
                 
-                if (pinner_on_ray.is_zero()) continue; 
-                
+                // Get the square of that pinner
                 int pinner_sq = pinner_on_ray.ctz();
+                
+                // The pinned piece can only move on the line between King and Pinner,
+                // OR capture the Pinner itself.
                 Bitboard valid_squares = BitboardImpl::kLineBetween[king_sq][pinner_sq] | BitboardImpl::IndexToBitboard(pinner_sq);
                 
                 if ((valid_squares & BitboardImpl::IndexToBitboard(to_sq)).is_zero()) {
-                    return false;
+                    return false; // Moved off the pin line
                 }
-                aligned = true;
-                break;
+                
+                // If it moved along the line, it is legal (unless it's also a checker situation, handled below)
+                break; // Stop checking other rays
             }
         }
-        if (!aligned) return false;
     }
 
-    // Single Check
+    // 5. Single Check (Must capture or block)
     if (!checkers_.is_zero()) {
         int checker_sq = checkers_.ctz();
         if (to_sq == checker_sq) return true; // Capture
         
-        // Block
         Bitboard blocking_squares = BitboardImpl::kLineBetween[king_sq][checker_sq];
         if ((blocking_squares & BitboardImpl::IndexToBitboard(to_sq)).is_zero()) {
             return false;
@@ -994,10 +996,6 @@ bool Board::IsLegal(const Move& move) const {
 
     return true;
 }
-
-// ============================================================================
-// End of Legality Checking
-// ============================================================================
 
 namespace {
 void AddMovesFromBB(MoveBuffer& moves, int from_idx, Bitboard to_bb, const Board& board,
@@ -1426,15 +1424,20 @@ size_t Board::GetPseudoLegalMoves2(Move* buffer, size_t limit) {
 }
 
 void Board::MakeMove(const Move& move) {
-    // 1. SAVE the current safety state into a struct
-    SafetyInfo backup;
+    // 1. FAST SAVE (Stack instead of Vector)
+    // In debug mode, you might want: assert(safety_stack_ptr_ < kMaxGameDepth);
+    SafetyInfo& backup = safety_stack_[safety_stack_ptr_++];
+    
     backup.checkers = checkers_;
-    for(int i = 0; i < 4; ++i) {
-        backup.blockers_for_king[i] = blockers_for_king_[i];
-        backup.pinners[i] = pinners_[i];
-    }
-    // Push onto the history stack
-    safety_history_.push_back(backup);
+    // Unrolling this loop is also slightly faster
+    backup.blockers_for_king[0] = blockers_for_king_[0];
+    backup.blockers_for_king[1] = blockers_for_king_[1];
+    backup.blockers_for_king[2] = blockers_for_king_[2];
+    backup.blockers_for_king[3] = blockers_for_king_[3];
+    backup.pinners[0] = pinners_[0];
+    backup.pinners[1] = pinners_[1];
+    backup.pinners[2] = pinners_[2];
+    backup.pinners[3] = pinners_[3];
 
     const Player player = turn_;
     const BoardLocation from = move.From();
@@ -1520,18 +1523,19 @@ void Board::UndoMove() {
         SetPiece(move.GetEnpassantLocation(), move.GetEnpassantCapture());
     }
 
-    // RESTORE the safety state from the history stack
-    if (!safety_history_.empty()) {
-        const SafetyInfo& backup = safety_history_.back();
-        
-        checkers_ = backup.checkers;
-        for(int i = 0; i < 4; ++i) {
-            blockers_for_king_[i] = backup.blockers_for_king[i];
-            pinners_[i] = backup.pinners[i];
-        }
-        
-        safety_history_.pop_back();
-    }
+    // FAST RESTORE
+    --safety_stack_ptr_;
+    const SafetyInfo& backup = safety_stack_[safety_stack_ptr_];
+    
+    checkers_ = backup.checkers;
+    blockers_for_king_[0] = backup.blockers_for_king[0];
+    blockers_for_king_[1] = backup.blockers_for_king[1];
+    blockers_for_king_[2] = backup.blockers_for_king[2];
+    blockers_for_king_[3] = backup.blockers_for_king[3];
+    pinners_[0] = backup.pinners[0];
+    pinners_[1] = backup.pinners[1];
+    pinners_[2] = backup.pinners[2];
+    pinners_[3] = backup.pinners[3];
     
     moves_.pop_back();
 }
