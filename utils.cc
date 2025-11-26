@@ -410,14 +410,15 @@ std::optional<Move> ParseMove(Board& board, const std::string& move_str_ref) {
   BoardLocation to_loc = std::get<1>(*to);
   PieceType promotion_piece_type = std::get<1>(*promotion);
 
-  Move moves[300];
-  size_t num_moves = board.GetPseudoLegalMoves2(moves, 300);
+  // FIX STARTS HERE: Update to new API
+  ExtMove moves[300];
+  ExtMove* end_ptr = board.GetPseudoLegalMoves2(moves);
 
-  for (size_t i = 0; i < num_moves; i++) {
-    const auto& move = moves[i];
+  for (ExtMove* m_ptr = moves; m_ptr < end_ptr; ++m_ptr) {
+    const auto& move = *m_ptr;
     if (move.From() == from_loc && move.To() == to_loc
         && move.GetPromotionPieceType() == promotion_piece_type) {
-      return move;
+      return move; // ExtMove casts back to Move automatically
     }
   }
   return std::nullopt;
