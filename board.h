@@ -34,6 +34,10 @@ namespace BitboardImpl {
     extern Bitboard kKingAttacks[kNumSquares];   
     extern Bitboard kRayAttacks[kNumSquares][8]; 
     extern Bitboard kLineBetween[kNumSquares][kNumSquares];
+    
+    // OPTIMIZATION: Full line mask for O(1) alignment checks
+    extern Bitboard kLineMask[kNumSquares][kNumSquares];
+
     extern Bitboard kBackRankMasks[4];
     extern Bitboard kSecondRankMasks[4];
     extern Bitboard kCentralMask;
@@ -251,7 +255,6 @@ class Move {
   int see_ = kSeeNotSet;
 };
 
-// STOCKFISH STYLE EXTMOVE
 struct ExtMove : public Move {
     int value;
     ExtMove() = default;
@@ -288,7 +291,6 @@ class Board {
   void RefreshKingSafety();
   bool IsLegal(const Move& move) const;
 
-  // CHANGED: Use ExtMove* pointer-based generation
   ExtMove* GetPseudoLegalMoves2(ExtMove* buffer) const;
 
   bool IsKingInCheck(const Player& player) const;
@@ -305,7 +307,6 @@ class Board {
   const Player& GetTurn() const { return turn_; }
   bool IsAttackedByTeam(Team team, int sq) const;
 
-  // CHANGED: Pass Bitboard by reference
   Bitboard GetAttackersBB(int sq, Team team) const;
 
   BoardLocation GetKingLocation(PlayerColor color) const;
@@ -320,17 +321,14 @@ class Board {
   void MakeMove(const Move& move);
   void UndoMove();
 
-  // CHANGED: Optimized history access
   bool LastMoveWasCapture() const {
     return move_history_ptr_ > 0 && move_history_[move_history_ptr_ - 1].IsCapture();
   }
   const Move& GetLastMove() const {
-    // CAUTION: Ensure logic handles empty history check before calling this
     return move_history_[move_history_ptr_ - 1];
   }
   int NumMoves() const { return move_history_ptr_; }
   
-  // CAUTION: This creates a vector copy, expensive. Use only for debugging/display.
   std::vector<Move> Moves() const {
       return std::vector<Move>(move_history_, move_history_ + move_history_ptr_); 
   }
@@ -345,8 +343,6 @@ class Board {
   friend int SeeRecursive(const Board&, const int[6], int, Bitboard, Team, int);
   friend int GetLeastValuableAttacker(const Board&, int, Team, const Bitboard&, PieceType&);
 
-  // OPTIMIZED ACCESSORS FOR SAFETY
-  // Return by const reference to avoid copy
   const Bitboard& Checkers() const { return checkers_; }
   const Bitboard& PinnedPieces(PlayerColor c) const { return blockers_for_king_[c]; }
   
@@ -355,7 +351,6 @@ class Board {
   }
  
  private:
-  // CHANGED: Return pointer to end of list
   ExtMove* GetPawnMoves2(ExtMove* buffer, const Player& player) const;
   ExtMove* GetKnightMoves2(ExtMove* buffer, const Player& player) const;
   ExtMove* GetBishopMoves2(ExtMove* buffer, const Player& player) const;
@@ -367,7 +362,6 @@ class Board {
   void RemovePiece(const BoardLocation& location);
   void MovePiece(const BoardLocation& from, const BoardLocation& to);
 
-  // CHANGED: Pass Bitboard by reference
   Bitboard GetRookAttacks(int sq, const Bitboard& blockers) const;
   Bitboard GetBishopAttacks(int sq, const Bitboard& blockers) const;
   Bitboard GetQueenAttacks(int sq, const Bitboard& blockers) const;
@@ -389,20 +383,26 @@ class Board {
   Bitboard color_bitboards_[4];   
   Bitboard team_bitboards_[2];     
 
-  // Cached safety data
   Bitboard checkers_;                 
   Bitboard blockers_for_king_[4];     
   Bitboard pinners_[4];              
 
-  // Removed Safety Stack
+  // FIXED: Restored safety stack for state consistency in recursive search
+  struct SafetyInfo {
+      Bitboard checkers;
+      Bitboard blockers_for_king[4];
+      Bitboard pinners[4];
+  };
+
+  static constexpr int kMaxGameDepth = 512;
+  SafetyInfo safety_stack_[kMaxGameDepth];
+  int safety_stack_ptr_ = 0; 
   
   Piece piece_on_square_[256];
   
   CastlingRights castling_rights_[4];
   EnpassantInitialization enp_;
   
-  // CHANGED: Fixed size array for moves
-  static constexpr int kMaxGameDepth = 512;
   Move move_history_[kMaxGameDepth];
   int move_history_ptr_ = 0;
   
@@ -414,7 +414,6 @@ class Board {
   int64_t turn_hashes_[4];
 };
 
-// Inline helper functions remain the same...
 Team OtherTeam(Team team);
 Team GetTeam(PlayerColor color);
 Player GetNextPlayer(const Player& player);
@@ -422,7 +421,6 @@ Player GetPreviousPlayer(const Player& player);
 Player GetPartner(const Player& player);
 
 namespace BitboardImpl {
-// ... inline functions ...
 inline int LocationToIndex(const BoardLocation& loc) {
     if (!loc.Present()) return -1;
     return (loc.GetRow() + 1) * kBoardWidth + (loc.GetCol() + 1);

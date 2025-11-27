@@ -39,6 +39,10 @@ Bitboard kPawnDoublePush[4][kNumSquares];
 Bitboard kPawnAttacks[4][kNumSquares];
 Bitboard kRayAttacks[kNumSquares][8]; // 0-3: Bishop, 4-7: Rook
 Bitboard kLineBetween[kNumSquares][kNumSquares];
+
+// OPTIMIZATION: Full line mask for O(1) alignment
+Bitboard kLineMask[kNumSquares][kNumSquares];
+
 Bitboard kCastlingEmptyMask[4][2]; // [color][side]
 Bitboard kCastlingAttackMask[4][2]; // [color][side]
 Bitboard kBackRankMasks[4];
@@ -61,6 +65,12 @@ std::vector<Bitboard> kRookHorizAttacksTable;
 std::vector<Bitboard> kRookVertAttacksTable;
 std::vector<Bitboard> kBishopDiagAttacksTable;
 std::vector<Bitboard> kBishopAntiDiagAttacksTable;
+
+// OPTIMIZATION: Raw pointers to attack tables
+const Bitboard* g_RookHorizAttacksRaw = nullptr;
+const Bitboard* g_RookVertAttacksRaw = nullptr;
+const Bitboard* g_BishopDiagAttacksRaw = nullptr;
+const Bitboard* g_BishopAntiDiagAttacksRaw = nullptr;
 
 // --- Magic Bitboard Data ---
 namespace magics {
@@ -334,6 +344,8 @@ void InitBitboards() {
                         case D_W:  opposite_dir = D_E;  break;
                     }
                     kLineBetween[i][j] = kRayAttacks[i][d] & kRayAttacks[j][opposite_dir];
+                    // OPTIMIZATION: kLineMask
+                    kLineMask[i][j] = kRayAttacks[i][d] | kRayAttacks[i][opposite_dir] | IndexToBitboard(i);
                     break;
                 }
             }
@@ -395,6 +407,13 @@ void InitBitboards() {
     #else
         TableGenerator::GenerateMagicTables();
     #endif
+
+    // OPTIMIZATION: Capture pointers to generated tables
+    g_RookHorizAttacksRaw = kRookHorizAttacksTable.data();
+    g_RookVertAttacksRaw = kRookVertAttacksTable.data();
+    g_BishopDiagAttacksRaw = kBishopDiagAttacksTable.data();
+    g_BishopAntiDiagAttacksRaw = kBishopAntiDiagAttacksTable.data();
+
     is_initialized = true;
 }
 
@@ -439,13 +458,13 @@ Board::Board(
   for (auto& bb : color_bitboards_) bb.limbs.fill(0);
   for (auto& bb : team_bitboards_) bb.limbs.fill(0);
 
-  // Initialize safety vars
   checkers_ = Bitboard(0);
   for(int c=0; c<4; ++c) {
       blockers_for_king_[c] = Bitboard(0);
       pinners_[c] = Bitboard(0);
   }
   move_history_ptr_ = 0;
+  safety_stack_ptr_ = 0;
 
   for (int color = 0; color < 4; color++) {
     castling_rights_[color] = CastlingRights(false, false);
@@ -580,27 +599,27 @@ uint64_t pext_256(const Bitboard& source, const Bitboard& mask) {
 }
 #endif
 
-// CHANGE: Arguments by const reference
+// OPTIMIZATION: Raw pointer access
 Bitboard Board::GetRookAttacks(int sq, const Bitboard& blockers) const {
 #if defined(__BMI2__)
     const PextEntry& horiz_entry = kRookHorizPext[sq];
     uint64_t horiz_index = pext_256(blockers, horiz_entry.mask);
-    Bitboard horiz_attacks = kRookHorizAttacksTable[horiz_entry.offset + horiz_index];
+    Bitboard horiz_attacks = g_RookHorizAttacksRaw[horiz_entry.offset + horiz_index];
 
     const PextEntry& vert_entry = kRookVertPext[sq];
     uint64_t vert_index = pext_256(blockers, vert_entry.mask);
-    Bitboard vert_attacks = kRookVertAttacksTable[vert_entry.offset + vert_index];
+    Bitboard vert_attacks = g_RookVertAttacksRaw[vert_entry.offset + vert_index];
     return horiz_attacks | vert_attacks;
 #else
     const magics::MagicEntry& horiz_entry = magics::kRookHorizMagics[sq];
     Bitboard horiz_product = (blockers & horiz_entry.mask) * horiz_entry.magic;
     int horiz_index = static_cast<int>(static_cast<uint64_t>(horiz_product >> horiz_entry.shift));
-    Bitboard horiz_attacks = kRookHorizAttacksTable[horiz_entry.offset + horiz_index];
+    Bitboard horiz_attacks = g_RookHorizAttacksRaw[horiz_entry.offset + horiz_index];
 
     const magics::MagicEntry& vert_entry = magics::kRookVertMagics[sq];
     Bitboard vert_product = (blockers & vert_entry.mask) * vert_entry.magic;
     int vert_index = static_cast<int>(static_cast<uint64_t>(vert_product >> vert_entry.shift));
-    Bitboard vert_attacks = kRookVertAttacksTable[vert_entry.offset + vert_index];
+    Bitboard vert_attacks = g_RookVertAttacksRaw[vert_entry.offset + vert_index];
     return horiz_attacks | vert_attacks;
 #endif
 }
@@ -609,22 +628,22 @@ Bitboard Board::GetBishopAttacks(int sq, const Bitboard& blockers) const {
 #if defined(__BMI2__)
     const PextEntry& diag_entry = kBishopDiagPext[sq];
     uint64_t diag_index = pext_256(blockers, diag_entry.mask);
-    Bitboard diag_attacks = kBishopDiagAttacksTable[diag_entry.offset + diag_index];
+    Bitboard diag_attacks = g_BishopDiagAttacksRaw[diag_entry.offset + diag_index];
 
     const PextEntry& anti_diag_entry = kBishopAntiDiagPext[sq];
     uint64_t anti_diag_index = pext_256(blockers, anti_diag_entry.mask);
-    Bitboard anti_diag_attacks = kBishopAntiDiagAttacksTable[anti_diag_entry.offset + anti_diag_index];
+    Bitboard anti_diag_attacks = g_BishopAntiDiagAttacksRaw[anti_diag_entry.offset + anti_diag_index];
     return diag_attacks | anti_diag_attacks;
 #else
     const magics::MagicEntry& diag_entry = magics::kBishopDiagMagics[sq];
     Bitboard diag_product = (blockers & diag_entry.mask) * diag_entry.magic;
     int diag_index = static_cast<int>(static_cast<uint64_t>(diag_product >> diag_entry.shift));
-    Bitboard diag_attacks = kBishopDiagAttacksTable[diag_entry.offset + diag_index];
+    Bitboard diag_attacks = g_BishopDiagAttacksRaw[diag_entry.offset + diag_index];
 
     const magics::MagicEntry& anti_diag_entry = magics::kBishopAntiDiagMagics[sq];
     Bitboard anti_diag_product = (blockers & anti_diag_entry.mask) * anti_diag_entry.magic;
     int anti_diag_index = static_cast<int>(static_cast<uint64_t>(anti_diag_product >> anti_diag_entry.shift));
-    Bitboard anti_diag_attacks = kBishopAntiDiagAttacksTable[anti_diag_entry.offset + anti_diag_index];
+    Bitboard anti_diag_attacks = g_BishopAntiDiagAttacksRaw[anti_diag_entry.offset + anti_diag_index];
     return diag_attacks | anti_diag_attacks;
 #endif
 }
@@ -722,7 +741,6 @@ void Board::UpdateSliderBlockers(PlayerColor c) {
 
     Bitboard all_pieces = team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN];
     
-    // Optimization: Pass Bitboard(0) by const reference
     static const Bitboard kEmpty(0);
 
     Bitboard ortho_candidates = GetRookAttacks(king_sq, kEmpty) & enemy_rooks;
@@ -792,16 +810,10 @@ bool Board::IsLegal(const Move& move) const {
 
     if (!checkers_.is_zero() && (checkers_ & (checkers_ - 1)).operator bool()) return false;
 
+    // OPTIMIZATION: O(1) Pin Check using kLineMask
     if (IsPinned(from_sq)) {
-        for(int d=0; d<8; ++d) {
-            Bitboard ray = BitboardImpl::kRayAttacks[king_sq][d];
-            if ((ray & BitboardImpl::IndexToBitboard(from_sq)).operator bool()) {
-                Bitboard pinner_on_ray = ray & pinners_[us];
-                int pinner_sq = pinner_on_ray.ctz();
-                Bitboard valid_squares = BitboardImpl::kLineBetween[king_sq][pinner_sq] | BitboardImpl::IndexToBitboard(pinner_sq);
-                if ((valid_squares & BitboardImpl::IndexToBitboard(to_sq)).is_zero()) return false; 
-                break; 
-            }
+        if ((BitboardImpl::kLineMask[king_sq][from_sq] & BitboardImpl::IndexToBitboard(to_sq)).is_zero()) {
+            return false;
         }
     }
 
@@ -999,7 +1011,6 @@ ExtMove* Board::GetPawnMoves2(ExtMove* buffer, const Player& player) const {
     // EN PASSANT
     auto find_relevant_move = [&](PlayerColor opponent_color) -> const Move* {
         int turns_ago = (color - opponent_color + 4) % 4;
-        // Optimization: Use array history pointer
         if (turns_ago > 0 && move_history_ptr_ >= turns_ago) {
             return &move_history_[move_history_ptr_ - turns_ago];
         }
@@ -1193,7 +1204,11 @@ ExtMove* Board::GetPseudoLegalMoves2(ExtMove* buffer) const {
 }
 
 void Board::MakeMove(const Move& move) {
-    // REMOVED Safety Stack Backup
+    // FIXED: Save safety state to stack
+    SafetyInfo& backup = safety_stack_[safety_stack_ptr_++];
+    backup.checkers = checkers_;
+    std::memcpy(backup.blockers_for_king, blockers_for_king_, sizeof(blockers_for_king_));
+    std::memcpy(backup.pinners, pinners_, sizeof(pinners_));
 
     const Player player = turn_;
     const BoardLocation from = move.From();
@@ -1221,7 +1236,6 @@ void Board::MakeMove(const Move& move) {
     turn_ = GetNextPlayer(turn_);
     UpdateTurnHash(static_cast<int>(turn_.GetColor()));
 
-    // CHANGED: Use array history
     if (move_history_ptr_ < kMaxGameDepth) {
         move_history_[move_history_ptr_++] = move;
     } else {
@@ -1232,7 +1246,6 @@ void Board::MakeMove(const Move& move) {
 
 void Board::UndoMove() {
     assert(move_history_ptr_ > 0);
-    // CHANGED: Use array history
     const Move& move = move_history_[--move_history_ptr_];
     
     Player turn_before = GetPreviousPlayer(turn_);
@@ -1260,7 +1273,12 @@ void Board::UndoMove() {
     if (move.IsStandardCapture()) SetPiece(to, move.GetStandardCapture());
     if (move.GetEnpassantLocation().Present()) SetPiece(move.GetEnpassantLocation(), move.GetEnpassantCapture());
     
-    // REMOVED Safety Stack Restore
+    // FIXED: Restore safety state
+    --safety_stack_ptr_;
+    const SafetyInfo& backup = safety_stack_[safety_stack_ptr_];
+    checkers_ = backup.checkers;
+    std::memcpy(blockers_for_king_, backup.blockers_for_king, sizeof(blockers_for_king_));
+    std::memcpy(pinners_, backup.pinners, sizeof(pinners_));
 }
 
 GameResult Board::GetGameResult() {
@@ -1269,7 +1287,6 @@ GameResult Board::GetGameResult() {
   }
   Player player = turn_;
 
-  // FIX: Use a local constant or literal 300, consistent with other functions
   ExtMove move_buffer_internal[300];
   ExtMove* end_ptr = GetPseudoLegalMoves2(move_buffer_internal);
   
@@ -1290,6 +1307,10 @@ GameResult Board::GetGameResult() {
 }
 
 bool Board::IsKingInCheck(const Player& player) const {
+  // OPTIMIZATION: Use cached check status if asking about current turn
+  if (player.GetColor() == turn_.GetColor()) {
+      return !checkers_.is_zero();
+  }
   const auto king_location = GetKingLocation(player.GetColor());
   if (king_location.Missing()) return true; 
   return IsAttackedByTeam(OtherTeam(player.GetTeam()), LocationToIndex(king_location));
@@ -1491,7 +1512,6 @@ int Move::ApproxSEE(const Board& board, const int* piece_evaluations) const {
   return captured_val - attacker_val;
 }
 
-// CHANGE: Arguments by const reference
 int GetLeastValuableAttacker(const Board& board, int sq, Team team, const Bitboard& occupied, PieceType& out_type) {
     Bitboard attackers = Bitboard(0);
     const PlayerColor c1 = (team == RED_YELLOW) ? RED : BLUE;

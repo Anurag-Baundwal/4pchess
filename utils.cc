@@ -108,18 +108,6 @@ std::shared_ptr<Board> ParseBoardFromFEN(const std::string& fen) {
     return nullptr;  // invalid format
   }
 
-  // Not used for teams chess: eliminated players, points
-  // Also, currently we don't use the halfmove clock since we don't expect the
-  // 50-move rule to apply in real games.
-
-  // 0: Player to move
-  // 1: Eliminated players (unused)
-  // 2-3: Castling rights
-  // 4: Points (unused)
-  // 5: Halfmove clock (unused)
-  // 6 (optional?): En-passant
-  // 7: Piece placement
-
   const auto& player_str = parts[0];
   const auto& castling_availability_kingside = parts[2];
   const auto& castling_availability_queenside = parts[3];
@@ -137,39 +125,24 @@ std::shared_ptr<Board> ParseBoardFromFEN(const std::string& fen) {
   char pchar = player_str[0];
   Player player;
   switch (pchar) {
-  case 'R':
-    player = Player(RED);
-    break;
-  case 'B':
-    player = Player(BLUE);
-    break;
-  case 'Y':
-    player = Player(YELLOW);
-    break;
-  case 'G':
-    player = Player(GREEN);
-    break;
-  default:
-    return nullptr;  // invalid format
+  case 'R': player = Player(RED); break;
+  case 'B': player = Player(BLUE); break;
+  case 'Y': player = Player(YELLOW); break;
+  case 'G': player = Player(GREEN); break;
+  default: return nullptr;
   }
 
   // Parse castling availability
-  std::optional<std::vector<bool>> kingside = ParseCastlingAvailability(
-      castling_availability_kingside);
-  if (!kingside.has_value()) {
-    return nullptr;  // invalid format
-  }
-  std::optional<std::vector<bool>> queenside = ParseCastlingAvailability(
-      castling_availability_queenside);
-  if (!queenside.has_value()) {
-    return nullptr;  // invalid format
-  }
+  std::optional<std::vector<bool>> kingside = ParseCastlingAvailability(castling_availability_kingside);
+  if (!kingside.has_value()) return nullptr;
+  
+  std::optional<std::vector<bool>> queenside = ParseCastlingAvailability(castling_availability_queenside);
+  if (!queenside.has_value()) return nullptr;
 
   std::unordered_map<Player, CastlingRights> castling_rights;
   for (int player_color = 0; player_color < 4; player_color++) {
     Player pl(static_cast<PlayerColor>(player_color));
-    castling_rights[pl] = CastlingRights((*kingside)[player_color],
-                                         (*queenside)[player_color]);
+    castling_rights[pl] = CastlingRights((*kingside)[player_color], (*queenside)[player_color]);
   }
 
   // Parse enpassant
@@ -177,15 +150,11 @@ std::shared_ptr<Board> ParseBoardFromFEN(const std::string& fen) {
   if (!enpassant.empty()) {
     size_t lbrace_pos = enpassant.find('(');
     size_t rbrace_pos = enpassant.rfind(')');
-    if (lbrace_pos == std::string::npos || rbrace_pos == std::string::npos) {
-      // invalid enpassant string
-      return nullptr;
-    }
-    auto parts = SplitStr(
-        enpassant.substr(lbrace_pos + 1, rbrace_pos - lbrace_pos), ",");
-    if (parts.size() != 4) { // invalid
-      return nullptr;
-    }
+    if (lbrace_pos == std::string::npos || rbrace_pos == std::string::npos) return nullptr;
+    
+    auto parts = SplitStr(enpassant.substr(lbrace_pos + 1, rbrace_pos - lbrace_pos), ",");
+    if (parts.size() != 4) return nullptr;
+    
     for (int i = 0; i < 4; i++) {
       auto enp_location = ParseEnpLocation(parts[i]);
       if (enp_location.has_value()) {
@@ -193,20 +162,11 @@ std::shared_ptr<Board> ParseBoardFromFEN(const std::string& fen) {
         int from_row = to.GetRow();
         int from_col = to.GetCol();
         switch (static_cast<PlayerColor>(i)) {
-        case RED:
-          from_row += 2;
-          break;
-        case BLUE:
-          from_col -= 2;
-          break;
-        case YELLOW:
-          from_row -= 2;
-          break;
-        case GREEN:
-          from_col += 2;
-          break;
-        default:
-          break;
+        case RED: from_row += 2; break;
+        case BLUE: from_col -= 2; break;
+        case YELLOW: from_row -= 2; break;
+        case GREEN: from_col += 2; break;
+        default: break;
         }
         enp.enp_moves[i] = Move(BoardLocation(from_row, from_col), to);
       }
@@ -215,87 +175,49 @@ std::shared_ptr<Board> ParseBoardFromFEN(const std::string& fen) {
 
   // Parse piece placement
   std::vector<std::string> rows = SplitStr(piece_placement, "/");
-  if (rows.size() != 14) {
-    return nullptr;  // invalid format
-  }
+  if (rows.size() != 14) return nullptr;
+  
   std::unordered_map<BoardLocation, Piece> location_to_piece;
   for (size_t row = 0; row < rows.size(); row++) {
     std::vector<std::string> cols = SplitStr(rows[row], ",");
     int col = 0;
     for (const auto& col_str : cols) {
-
-      if (col_str.empty()) {
-        return nullptr;  // invalid format
-      }
+      if (col_str.empty()) return nullptr;
 
       char ch = col_str[0];
       if (ch == 'r' || ch == 'b' || ch == 'y' || ch == 'g') {
-        // Parse piece
-        if (col_str.size() != 2) {
-          return nullptr;  // invalid format
-        }
+        if (col_str.size() != 2) return nullptr;
         BoardLocation location(row, col);
 
         PlayerColor player_color;
         switch (ch) {
-        case 'r':
-          player_color = RED;
-          break;
-        case 'b':
-          player_color = BLUE;
-          break;
-        case 'y':
-          player_color = YELLOW;
-          break;
-        case 'g':
-          player_color = GREEN;
-          break;
-        default:
-          return nullptr;  // invalid format
+        case 'r': player_color = RED; break;
+        case 'b': player_color = BLUE; break;
+        case 'y': player_color = YELLOW; break;
+        case 'g': player_color = GREEN; break;
+        default: return nullptr;
         }
 
         PieceType piece_type;
         switch (col_str[1]) {
-        case 'P':
-          piece_type = PAWN;
-          break;
-        case 'R':
-          piece_type = ROOK;
-          break;
-        case 'N':
-          piece_type = KNIGHT;
-          break;
-        case 'B':
-          piece_type = BISHOP;
-          break;
-        case 'K':
-          piece_type = KING;
-          break;
-        case 'Q':
-          piece_type = QUEEN;
-          break;
-        default:
-          return nullptr;  // invalid format
+        case 'P': piece_type = PAWN; break;
+        case 'R': piece_type = ROOK; break;
+        case 'N': piece_type = KNIGHT; break;
+        case 'B': piece_type = BISHOP; break;
+        case 'K': piece_type = KING; break;
+        case 'Q': piece_type = QUEEN; break;
+        default: return nullptr;
         }
 
-        Player player(player_color);
-        Piece piece(player, piece_type);
-
-        location_to_piece[location] = piece;
-
+        location_to_piece[location] = Piece(Player(player_color), piece_type);
         col++;
       } else if (ch == 'x') {
-        // parse empty square
         col += 1;
       } else {
-        // Parse empty spaces
         std::optional<int> num_empty = ParseInt(col_str);
-        if (!num_empty.has_value() || *num_empty <= 0) {
-          return nullptr;  // invalid format
-        }
+        if (!num_empty.has_value() || *num_empty <= 0) return nullptr;
         col += *num_empty;
       }
-
     }
   }
 
@@ -316,30 +238,21 @@ namespace {
 
 std::optional<std::tuple<size_t, BoardLocation>> ParseLocation(
     const std::string& move_str, size_t start) {
-  // Skip '-' and 'x'
-  if (start < move_str.size() && (move_str[start] == '-'
-                                  || move_str[start] == 'x')) {
+  if (start < move_str.size() && (move_str[start] == '-' || move_str[start] == 'x')) {
     start++;
   }
-  if (move_str.size() < start + 2) {
-    return std::nullopt;
-  }
+  if (move_str.size() < start + 2) return std::nullopt;
 
-  // Skip piece name, if present
   char c = move_str[start];
   if (c == 'K' || c == 'Q' || c == 'N' || c == 'B' || c == 'R') {
     start++;
   }
 
   int col = move_str[start] - 'a';
-  if (col < 0 || col >= 14) {
-    return std::nullopt;
-  }
+  if (col < 0 || col >= 14) return std::nullopt;
   start++;
   int row = move_str[start] - '0';
-  if (row < 0 || row >= 10) {
-    return std::nullopt;
-  }
+  if (row < 0 || row >= 10) return std::nullopt;
   start++;
 
   if (start < move_str.size() && std::isdigit(move_str[start])) {
@@ -347,41 +260,24 @@ std::optional<std::tuple<size_t, BoardLocation>> ParseLocation(
     row = 10 * row + digit;
     start++;
   }
-  // transform 1-14 upwards to 0-13 downwards
   row = 14 - row;
   return std::make_tuple(start, BoardLocation(row, col));
 }
 
 std::optional<std::tuple<size_t, PieceType>> ParsePromotion(
     const std::string& move_str, size_t start) {
-  if (start >= move_str.size()) {
-    return std::make_tuple(start, NO_PIECE);
-  }
-  if (start < move_str.size() && move_str[start] == '=') {
-    start++;
-  }
-  if (start >= move_str.size()) {
-    return std::nullopt;
-  }
+  if (start >= move_str.size()) return std::make_tuple(start, NO_PIECE);
+  if (start < move_str.size() && move_str[start] == '=') start++;
+  if (start >= move_str.size()) return std::nullopt;
+  
   char c = move_str[start];
   switch (c) {
-  case 'N':
-  case 'n':
-    return std::make_tuple(start + 1, KNIGHT);
-  case 'B':
-  case 'b':
-    return std::make_tuple(start + 1, BISHOP);
-  case 'R':
-  case 'r':
-    return std::make_tuple(start + 1, ROOK);
-  case 'Q':
-  case 'q':
-    return std::make_tuple(start + 1, QUEEN);
-  default:
-    break;
+  case 'N': case 'n': return std::make_tuple(start + 1, KNIGHT);
+  case 'B': case 'b': return std::make_tuple(start + 1, BISHOP);
+  case 'R': case 'r': return std::make_tuple(start + 1, ROOK);
+  case 'Q': case 'q': return std::make_tuple(start + 1, QUEEN);
+  default: break;
   }
-
-  // unrecognized piece type
   return std::nullopt;
 }
 
@@ -392,25 +288,19 @@ std::optional<Move> ParseMove(Board& board, const std::string& move_str_ref) {
   if (!move_str.empty() && move_str[move_str.size() - 1] == '+') {
     move_str = move_str.substr(0, move_str.size() - 1);
   }
-  // Expected move string format: <letter-col><number-row>
+  
   auto from = ParseLocation(move_str, 0);
-  if (!from.has_value()) {
-    return std::nullopt;
-  }
+  if (!from.has_value()) return std::nullopt;
   auto to = ParseLocation(move_str, std::get<0>(*from));
-  if (!to.has_value()) {
-    return std::nullopt;
-  }
+  if (!to.has_value()) return std::nullopt;
   auto promotion = ParsePromotion(move_str, std::get<0>(*to));
-  if (!promotion.has_value()) {
-    return std::nullopt;
-  }
+  if (!promotion.has_value()) return std::nullopt;
 
   BoardLocation from_loc = std::get<1>(*from);
   BoardLocation to_loc = std::get<1>(*to);
   PieceType promotion_piece_type = std::get<1>(*promotion);
 
-  // FIX STARTS HERE: Update to new API
+  // FIXED: Updated to use ExtMove and pointer arithmetic
   ExtMove moves[300];
   ExtMove* end_ptr = board.GetPseudoLegalMoves2(moves);
 
@@ -418,12 +308,10 @@ std::optional<Move> ParseMove(Board& board, const std::string& move_str_ref) {
     const auto& move = *m_ptr;
     if (move.From() == from_loc && move.To() == to_loc
         && move.GetPromotionPieceType() == promotion_piece_type) {
-      return move; // ExtMove casts back to Move automatically
+      return move;
     }
   }
   return std::nullopt;
 }
 
-
 }  // namespace chess
-

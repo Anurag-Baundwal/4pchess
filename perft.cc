@@ -22,81 +22,49 @@ uint64_t perft(Board& board, int depth) {
   const Bitboard pinned = board.PinnedPieces(player.GetColor());
   const bool in_check = !checkers.is_zero();
 
-  // --- OPTIMIZATION START (Bulk Counting) ---
+  // --- OPTIMIZATION: Bulk Counting at Depth 1 ---
   if (depth == 1) {
       uint64_t nodes = 0;
       
-      // CHANGED: Use ExtMove buffer
+      // Use ExtMove stack buffer
       ExtMove move_buffer[300];
-      // CHANGED: Get pointer to end of list
+      // Get pointer to end of generated moves
       ExtMove* end_ptr = board.GetPseudoLegalMoves2(move_buffer);
 
-      // CHANGED: Iterate with pointers
       for (ExtMove* m_ptr = move_buffer; m_ptr < end_ptr; ++m_ptr) {
           const auto& move = *m_ptr;
-          
-          // Optimization: Compute index once
           int from_sq = BitboardImpl::LocationToIndex(move.From());
 
-          bool needs_legality_check = false;
+          // Lazy filter: Only check IsLegal if strictly necessary
+          bool needs_legality_check = in_check 
+              || board.GetPiece(from_sq).GetPieceType() == KING
+              || move.GetEnpassantLocation().Present()
+              || (BitboardImpl::IndexToBitboard(from_sq) & pinned).operator bool();
 
-          if (in_check) {
-              needs_legality_check = true;
-          } else {
-              if (board.GetPiece(from_sq).GetPieceType() == KING) {
-                  needs_legality_check = true;
-              }
-              else if (move.GetEnpassantLocation().Present()) {
-                  needs_legality_check = true;
-              }
-              // Using BitboardImpl directly as in your original code
-              else if ((BitboardImpl::IndexToBitboard(from_sq) & pinned).operator bool()) {
-                  needs_legality_check = true;
-              }
+          if (needs_legality_check && !board.IsLegal(move)) {
+              continue;
           }
-
-          if (needs_legality_check) {
-              if (!board.IsLegal(move)) continue;
-          }
-          
           nodes++;
       }
       return nodes;
   }
-  // --- OPTIMIZATION END ---
 
   uint64_t nodes = 0;
-  
-  // CHANGED: Use ExtMove buffer and pointers for recursion loop
   ExtMove move_buffer[300];
   ExtMove* end_ptr = board.GetPseudoLegalMoves2(move_buffer);
 
   for (ExtMove* m_ptr = move_buffer; m_ptr < end_ptr; ++m_ptr) {
     const auto& move = *m_ptr;
-    
     int from_sq = BitboardImpl::LocationToIndex(move.From());
 
-    // --- LAZY VERIFICATION FILTER ---
-    bool needs_legality_check = false;
+    bool needs_legality_check = in_check 
+        || board.GetPiece(from_sq).GetPieceType() == KING
+        || move.GetEnpassantLocation().Present()
+        || (BitboardImpl::IndexToBitboard(from_sq) & pinned).operator bool();
 
-    if (in_check) {
-        needs_legality_check = true;
-    } else {
-        if (board.GetPiece(from_sq).GetPieceType() == KING) {
-            needs_legality_check = true;
-        }
-        else if (move.GetEnpassantLocation().Present()) {
-            needs_legality_check = true;
-        }
-        else if ((BitboardImpl::IndexToBitboard(from_sq) & pinned).operator bool()) {
-            needs_legality_check = true;
-        }
+    if (needs_legality_check && !board.IsLegal(move)) {
+        continue;
     }
-
-    if (needs_legality_check) {
-        if (!board.IsLegal(move)) continue;
-    }
-    // --------------------------------
 
     board.MakeMove(move);
     nodes += perft(board, depth - 1);
@@ -116,7 +84,6 @@ uint64_t divide(Board& board, int depth) {
   std::cout << "Divide for depth " << depth << ":" << std::endl;
   uint64_t total_nodes = 0;
 
-  // Refresh once at root
   board.RefreshKingSafety();
   
   const Player player = board.GetTurn();
@@ -124,40 +91,25 @@ uint64_t divide(Board& board, int depth) {
   const Bitboard pinned = board.PinnedPieces(player.GetColor());
   const bool in_check = !checkers.is_zero();
 
-  // CHANGED: ExtMove buffer and pointers
   ExtMove move_buffer[300];
   ExtMove* end_ptr = board.GetPseudoLegalMoves2(move_buffer);
 
   for (ExtMove* m_ptr = move_buffer; m_ptr < end_ptr; ++m_ptr) {
     const auto& move = *m_ptr;
-    
     int from_sq = BitboardImpl::LocationToIndex(move.From());
 
-    // --- LAZY VERIFICATION FILTER ---
-    bool needs_legality_check = false;
+    bool needs_legality_check = in_check 
+        || board.GetPiece(from_sq).GetPieceType() == KING
+        || move.GetEnpassantLocation().Present()
+        || (BitboardImpl::IndexToBitboard(from_sq) & pinned).operator bool();
 
-    if (in_check) {
-        needs_legality_check = true;
-    } else {
-        if (board.GetPiece(from_sq).GetPieceType() == KING) {
-            needs_legality_check = true;
-        }
-        else if (move.GetEnpassantLocation().Present()) {
-            needs_legality_check = true;
-        }
-        else if ((BitboardImpl::IndexToBitboard(from_sq) & pinned).operator bool()) {
-            needs_legality_check = true;
-        }
+    if (needs_legality_check && !board.IsLegal(move)) {
+        continue;
     }
-
-    if (needs_legality_check) {
-        if (!board.IsLegal(move)) continue;
-    }
-    // --------------------------------
 
     board.MakeMove(move);
-
-    // perft(depth - 1) will hit the optimized bulk counting block
+    
+    // Recursive call will hit the bulk counting optimization if depth-1 == 1
     uint64_t nodes = perft(board, depth - 1);
     total_nodes += nodes;
     std::cout << move.PrettyStr() << ": " << nodes << std::endl;
@@ -182,7 +134,6 @@ int main(int argc, char* argv[]) {
   std::string fen = "";
   bool use_divide = false;
 
-  // Manual argument parsing
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
     if (arg == "--depth") {
