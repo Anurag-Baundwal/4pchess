@@ -74,6 +74,14 @@ enum Team : int8_t {
 class Board;
 class Move;
 
+// Structure to hold safety state (checkers, pinned pieces) on the stack
+// instead of inside the Board object to avoid expensive copies/restores.
+struct SafetyInfo {
+    Bitboard checkers;
+    Bitboard pinned;  // Pieces pinned to the king
+    Bitboard pinners; // Enemy pieces causing the pin
+};
+
 int StaticExchangeEvaluationCapture(const int piece_evaluations[6], const Board& board, const Move& move);
 int SeeRecursive(const Board& board, const int piece_evaluations[6], int target_sq, Bitboard occupied, Team side_to_attack, int victim_value);
 int GetLeastValuableAttacker(const Board& board, int sq, Team team, const Bitboard& occupied, PieceType& out_type);
@@ -303,15 +311,23 @@ class Board {
         std::optional<EnpassantInitialization> enp = std::nullopt);
   Board(const Board&) = default;
 
-  void RefreshKingSafety();
+  // New API: Calculate safety on demand (returns struct) instead of updating internal state
+  SafetyInfo CalculateSafety(PlayerColor us) const;
+  
+  // High-performance templated version
+  template<PlayerColor Us> SafetyInfo CalculateSafetyT() const;
+
+  // Legality Check now requires SafetyInfo to avoid re-calculation
+  bool IsLegal(const Move& move, const SafetyInfo& safety) const;
+  
+  // Legacy/Convenience overload (Calculates safety internally, slower)
   bool IsLegal(const Move& move) const;
 
   // Dispatcher for external use (Switch based)
   ExtMove* GetPseudoLegalMoves2(ExtMove* buffer) const;
 
-  // Templated API exposed for critical paths
-  template<PlayerColor Us> ExtMove* GenerateMovesT(ExtMove* buffer) const;
-  template<PlayerColor Us> void RefreshKingSafetyT();
+  // Templated API exposed for critical paths - Now takes SafetyInfo
+  template<PlayerColor Us> ExtMove* GenerateMovesT(ExtMove* buffer, const SafetyInfo& safety) const;
 
   bool IsKingInCheck(const Player& player) const;
   bool IsKingInCheck(Team team) const;
@@ -363,21 +379,19 @@ class Board {
   friend int SeeRecursive(const Board&, const int[6], int, Bitboard, Team, int);
   friend int GetLeastValuableAttacker(const Board&, int, Team, const Bitboard&, PieceType&);
 
-  const Bitboard& Checkers() const { return checkers_; }
-  const Bitboard& PinnedPieces(PlayerColor c) const { return blockers_for_king_[c]; }
-  
-  bool IsPinned(int sq) const {
-      return (blockers_for_king_[turn_.GetColor()] & BitboardImpl::kSquareBitboards[sq]).operator bool();
+  // Helper for checking if a square is pinned using calculated safety
+  bool IsPinned(int sq, const SafetyInfo& safety) const {
+      return (safety.pinned & BitboardImpl::IndexToBitboard(sq)).operator bool();
   }
  
  private:
-  // Templated Workers
-  template<PlayerColor Us> ExtMove* GetPawnMovesT(ExtMove* buffer) const;
-  template<PlayerColor Us> ExtMove* GetKnightMovesT(ExtMove* buffer) const;
-  template<PlayerColor Us> ExtMove* GetBishopMovesT(ExtMove* buffer) const;
-  template<PlayerColor Us> ExtMove* GetRookMovesT(ExtMove* buffer) const;
-  template<PlayerColor Us> ExtMove* GetQueenMovesT(ExtMove* buffer) const;
-  template<PlayerColor Us> ExtMove* GetKingMovesT(ExtMove* buffer) const;
+  // Templated Workers - Updated to accept SafetyInfo
+  template<PlayerColor Us> ExtMove* GetPawnMovesT(ExtMove* buffer, const SafetyInfo& safety) const;
+  template<PlayerColor Us> ExtMove* GetKnightMovesT(ExtMove* buffer, const SafetyInfo& safety) const;
+  template<PlayerColor Us> ExtMove* GetBishopMovesT(ExtMove* buffer, const SafetyInfo& safety) const;
+  template<PlayerColor Us> ExtMove* GetRookMovesT(ExtMove* buffer, const SafetyInfo& safety) const;
+  template<PlayerColor Us> ExtMove* GetQueenMovesT(ExtMove* buffer, const SafetyInfo& safety) const;
+  template<PlayerColor Us> ExtMove* GetKingMovesT(ExtMove* buffer, const SafetyInfo& safety) const;
   
   void SetPiece(const BoardLocation& location, const Piece& piece);
   void RemovePiece(const BoardLocation& location);
@@ -387,7 +401,6 @@ class Board {
   Bitboard GetBishopAttacks(int sq, const Bitboard& blockers) const;
   Bitboard GetQueenAttacks(int sq, const Bitboard& blockers) const;
 
-  void UpdateSliderBlockers(PlayerColor color);
   bool AttackersToExist(int sq, const Bitboard& occupied, Team team) const;
 
   void InitializeHash();
@@ -404,19 +417,10 @@ class Board {
   Bitboard color_bitboards_[4];   
   Bitboard team_bitboards_[2];     
 
-  Bitboard checkers_;                 
-  Bitboard blockers_for_king_[4];     
-  Bitboard pinners_[4];              
-
-  struct SafetyInfo {
-      Bitboard checkers;
-      Bitboard blockers_for_king[4];
-      Bitboard pinners[4];
-  };
+  // Removed expensive member variables: checkers_, blockers_for_king_, pinners_, safety_stack_
+  // Safety state is now passed via stack (SafetyInfo struct)
 
   static constexpr int kMaxGameDepth = 512;
-  SafetyInfo safety_stack_[kMaxGameDepth];
-  int safety_stack_ptr_ = 0; 
   
   Piece piece_on_square_[256];
   

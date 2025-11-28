@@ -15,31 +15,35 @@ template<PlayerColor Us>
 uint64_t perft_driver(Board& board, int depth) {
     if (depth == 0) return 1;
 
-    // Call templated safety refresh
-    board.RefreshKingSafetyT<Us>(); 
+    // STEP 1: Calculate safety on the stack.
+    // This avoids writing to Board members and the expensive memcpy in MakeMove.
+    // 'safety' stays in CPU registers/L1 cache for this node.
+    SafetyInfo safety = board.CalculateSafetyT<Us>(); 
     
-    // Cache safety data for the filter
-    const Bitboard& checkers = board.Checkers();
-    const Bitboard& pinned = board.PinnedPieces(Us);
-    const bool in_check = !checkers.is_zero();
+    const bool in_check = !safety.checkers.is_zero();
 
     // --- OPTIMIZATION: Bulk Counting at Depth 1 ---
     if (depth == 1) {
         uint64_t nodes = 0;
         ExtMove move_buffer[300];
-        ExtMove* end_ptr = board.GenerateMovesT<Us>(move_buffer);
+        
+        // Pass safety info to move generation (needed for king moves/castling)
+        ExtMove* end_ptr = board.GenerateMovesT<Us>(move_buffer, safety);
 
         for (ExtMove* m_ptr = move_buffer; m_ptr < end_ptr; ++m_ptr) {
             const auto& move = *m_ptr;
             int from_sq = BitboardImpl::LocationToIndex(move.From());
 
-            // Check legality using bitboards directly
-            // Note: board.GetPiece(from_sq) is reasonably fast, but could be optimized further if Piece was simpler
+            // Check legality using local bitboards directly
             bool is_king_move = board.GetPiece(from_sq).GetPieceType() == KING;
             bool is_ep = move.GetEnpassantLocation().Present();
-            bool is_pinned = (BitboardImpl::IndexToBitboard(from_sq) & pinned).operator bool();
+            
+            // Check pinning using stack variable 'safety.pinned'
+            bool is_pinned = (BitboardImpl::IndexToBitboard(from_sq) & safety.pinned).operator bool();
 
-            if ((in_check || is_king_move || is_ep || is_pinned) && !board.IsLegal(move)) {
+            // 1. If we are in check, pinned, moving king, or en-passant: perform full legality check.
+            // 2. Otherwise, the move is guaranteed legal by GenerateMovesT logic (pseudo-legal).
+            if ((in_check || is_king_move || is_ep || is_pinned) && !board.IsLegal(move, safety)) {
                 continue;
             }
             nodes++;
@@ -49,7 +53,9 @@ uint64_t perft_driver(Board& board, int depth) {
 
     uint64_t nodes = 0;
     ExtMove move_buffer[300];
-    ExtMove* end_ptr = board.GenerateMovesT<Us>(move_buffer);
+    
+    // Pass safety info to move generation
+    ExtMove* end_ptr = board.GenerateMovesT<Us>(move_buffer, safety);
 
     for (ExtMove* m_ptr = move_buffer; m_ptr < end_ptr; ++m_ptr) {
         const auto& move = *m_ptr;
@@ -57,18 +63,21 @@ uint64_t perft_driver(Board& board, int depth) {
 
         bool is_king_move = board.GetPiece(from_sq).GetPieceType() == KING;
         bool is_ep = move.GetEnpassantLocation().Present();
-        bool is_pinned = (BitboardImpl::IndexToBitboard(from_sq) & pinned).operator bool();
+        bool is_pinned = (BitboardImpl::IndexToBitboard(from_sq) & safety.pinned).operator bool();
 
-        if ((in_check || is_king_move || is_ep || is_pinned) && !board.IsLegal(move)) {
+        if ((in_check || is_king_move || is_ep || is_pinned) && !board.IsLegal(move, safety)) {
             continue;
         }
 
+        // MakeMove is now cheaper (no safety backup)
         board.MakeMove(move);
         
         // Next player logic
         constexpr PlayerColor NextUs = static_cast<PlayerColor>((Us + 1) % 4);
         nodes += perft_driver<NextUs>(board, depth - 1);
         
+        // UndoMove is now cheaper (no safety restore)
+        // When we return here, 'safety' variable is still valid from this stack frame.
         board.UndoMove(); 
     }
 
@@ -96,13 +105,12 @@ uint64_t divide(Board& board, int depth) {
   auto run_root = [&](auto color_constant) -> uint64_t {
       constexpr PlayerColor Color = decltype(color_constant)::value;
       
-      board.RefreshKingSafetyT<Color>();
-      const Bitboard& checkers = board.Checkers();
-      const Bitboard& pinned = board.PinnedPieces(Color);
-      const bool in_check = !checkers.is_zero();
+      // Calculate safety locally
+      SafetyInfo safety = board.CalculateSafetyT<Color>();
+      const bool in_check = !safety.checkers.is_zero();
 
       ExtMove move_buffer[300];
-      ExtMove* end_ptr = board.GenerateMovesT<Color>(move_buffer);
+      ExtMove* end_ptr = board.GenerateMovesT<Color>(move_buffer, safety);
       uint64_t sum = 0;
 
       for (ExtMove* m_ptr = move_buffer; m_ptr < end_ptr; ++m_ptr) {
@@ -111,9 +119,9 @@ uint64_t divide(Board& board, int depth) {
 
         bool is_king_move = board.GetPiece(from_sq).GetPieceType() == KING;
         bool is_ep = move.GetEnpassantLocation().Present();
-        bool is_pinned = (BitboardImpl::IndexToBitboard(from_sq) & pinned).operator bool();
+        bool is_pinned = (BitboardImpl::IndexToBitboard(from_sq) & safety.pinned).operator bool();
 
-        if ((in_check || is_king_move || is_ep || is_pinned) && !board.IsLegal(move)) {
+        if ((in_check || is_king_move || is_ep || is_pinned) && !board.IsLegal(move, safety)) {
             continue;
         }
 

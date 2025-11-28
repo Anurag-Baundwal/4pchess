@@ -467,13 +467,7 @@ Board::Board(
   for (auto& bb : color_bitboards_) bb.limbs.fill(0);
   for (auto& bb : team_bitboards_) bb.limbs.fill(0);
 
-  checkers_ = Bitboard(0);
-  for(int c=0; c<4; ++c) {
-      blockers_for_king_[c] = Bitboard(0);
-      pinners_[c] = Bitboard(0);
-  }
   move_history_ptr_ = 0;
-  safety_stack_ptr_ = 0;
 
   for (int color = 0; color < 4; color++) {
     castling_rights_[color] = CastlingRights(false, false);
@@ -715,50 +709,27 @@ bool Board::AttackersToExist(int sq, const Bitboard& occupied, Team team) const 
     return false;
 }
 
-void Board::RefreshKingSafety() {
-    PlayerColor us = turn_.GetColor();
-    Team us_team = turn_.GetTeam();
-    
-    BoardLocation king_loc = GetKingLocation(us);
-    if (!king_loc.Present()) {
-        checkers_ = Bitboard::max(); 
-        blockers_for_king_[us] = Bitboard(0); 
-        return;
-    }
-
-    int king_sq = LocationToIndex(king_loc);
-    checkers_ = GetAttackersBB(king_sq, OtherTeam(us_team));
-
-    UpdateSliderBlockers(us); 
-}
-
+// Replaces old RefreshKingSafety/RefreshKingSafetyT
 template<PlayerColor Us>
-void Board::RefreshKingSafetyT() {
+SafetyInfo Board::CalculateSafetyT() const {
+    SafetyInfo info;
+    info.checkers = Bitboard(0);
+    info.pinned = Bitboard(0);
+    info.pinners = Bitboard(0);
+
     constexpr Team us_team = (Us == RED || Us == YELLOW) ? RED_YELLOW : BLUE_GREEN;
     
-    // Inlined GetKingLocation logic for known color
     const Bitboard& king_bb = piece_bitboards_[Us][KING];
     if (king_bb.is_zero()) {
-        checkers_ = Bitboard::max(); 
-        blockers_for_king_[Us] = Bitboard(0); 
-        return;
+        info.checkers = Bitboard::max(); 
+        return info;
     }
 
-    int king_sq = king_bb.ctz(); // Assuming 1 bit set
-    checkers_ = GetAttackersBB(king_sq, OtherTeam(us_team));
+    int king_sq = king_bb.ctz();
+    info.checkers = GetAttackersBB(king_sq, OtherTeam(us_team));
 
-    UpdateSliderBlockers(Us); 
-}
-
-void Board::UpdateSliderBlockers(PlayerColor c) {
-    blockers_for_king_[c] = Bitboard(0);
-    pinners_[c] = Bitboard(0);
-
-    BoardLocation king_loc = GetKingLocation(c);
-    if (!king_loc.Present()) return;
-    int king_sq = LocationToIndex(king_loc);
-
-    Team team = GetTeam(c);
+    // UpdateSliderBlockers logic integrated here to return data instead of writing to members
+    Team team = GetTeam(Us);
     Team enemy_team = OtherTeam(team);
     
     PlayerColor e1 = (enemy_team == RED_YELLOW) ? RED : BLUE;
@@ -781,8 +752,8 @@ void Board::UpdateSliderBlockers(PlayerColor c) {
         Bitboard between = BitboardImpl::kLineBetween[king_sq][sniper_sq] & all_pieces;
         if (!between.is_zero() && (between & (between - 1)).is_zero()) {
             if (!(between & team_bitboards_[team]).is_zero()) {
-                blockers_for_king_[c] |= between;
-                pinners_[c] |= BitboardImpl::IndexToBitboard(sniper_sq);
+                info.pinned |= between;
+                info.pinners |= BitboardImpl::IndexToBitboard(sniper_sq);
             }
         }
     }
@@ -794,14 +765,30 @@ void Board::UpdateSliderBlockers(PlayerColor c) {
         Bitboard between = BitboardImpl::kLineBetween[king_sq][sniper_sq] & all_pieces;
         if (!between.is_zero() && (between & (between - 1)).is_zero()) {
             if (!(between & team_bitboards_[team]).is_zero()) {
-                blockers_for_king_[c] |= between;
-                pinners_[c] |= BitboardImpl::IndexToBitboard(sniper_sq);
+                info.pinned |= between;
+                info.pinners |= BitboardImpl::IndexToBitboard(sniper_sq);
             }
         }
+    }
+    return info;
+}
+
+SafetyInfo Board::CalculateSafety(PlayerColor us) const {
+    switch(us) {
+        case RED: return CalculateSafetyT<RED>();
+        case BLUE: return CalculateSafetyT<BLUE>();
+        case YELLOW: return CalculateSafetyT<YELLOW>();
+        case GREEN: return CalculateSafetyT<GREEN>();
+        default: return SafetyInfo{};
     }
 }
 
 bool Board::IsLegal(const Move& move) const {
+    SafetyInfo safety = CalculateSafety(turn_.GetColor());
+    return IsLegal(move, safety);
+}
+
+bool Board::IsLegal(const Move& move, const SafetyInfo& safety) const {
     if (!move.Present()) return false;
     PlayerColor us = turn_.GetColor();
     int from_sq = LocationToIndex(move.From());
@@ -832,7 +819,7 @@ bool Board::IsLegal(const Move& move) const {
 
     if (GetPiece(from_sq).GetPieceType() == KING) {
         if (move.GetRookMove().Present()) {
-            if (!checkers_.is_zero()) return false;
+            if (!safety.checkers.is_zero()) return false;
             return true;
         }
         Bitboard occupied = (team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN]) ^ IndexToBitboard(from_sq);
@@ -840,16 +827,16 @@ bool Board::IsLegal(const Move& move) const {
         return true;
     }
 
-    if (!checkers_.is_zero() && (checkers_ & (checkers_ - 1)).operator bool()) return false;
+    if (!safety.checkers.is_zero() && (safety.checkers & (safety.checkers - 1)).operator bool()) return false;
 
-    if (IsPinned(from_sq)) {
+    if ((safety.pinned & BitboardImpl::IndexToBitboard(from_sq)).operator bool()) {
         if ((BitboardImpl::kLineMask[king_sq][from_sq] & BitboardImpl::IndexToBitboard(to_sq)).is_zero()) {
             return false;
         }
     }
 
-    if (!checkers_.is_zero()) {
-        int checker_sq = checkers_.ctz();
+    if (!safety.checkers.is_zero()) {
+        int checker_sq = safety.checkers.ctz();
         if (to_sq == checker_sq) return true; 
         Bitboard blocking_squares = BitboardImpl::kLineBetween[king_sq][checker_sq];
         if ((blocking_squares & BitboardImpl::IndexToBitboard(to_sq)).is_zero()) return false;
@@ -876,7 +863,7 @@ ExtMove* AddMovesFromBB(ExtMove* buffer, int from_idx, Bitboard to_bb, const Boa
 // ============================================================================
 
 template<PlayerColor Us>
-ExtMove* Board::GetPawnMovesT(ExtMove* buffer) const {
+ExtMove* Board::GetPawnMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
     constexpr Team team = (Us == RED || Us == YELLOW) ? RED_YELLOW : BLUE_GREEN;
     constexpr int PUSH = (Us == RED) ? PUSH_N : (Us == BLUE) ? PUSH_E : (Us == YELLOW) ? PUSH_S : PUSH_W;
     constexpr int CAP_1 = (Us == RED) ? PUSH_NW : (Us == BLUE) ? PUSH_NE : (Us == YELLOW) ? PUSH_SE : PUSH_SW;
@@ -1012,7 +999,7 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer) const {
 }
 
 template<PlayerColor Us>
-ExtMove* Board::GetKnightMovesT(ExtMove* buffer) const {
+ExtMove* Board::GetKnightMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
     Bitboard knights = piece_bitboards_[Us][KNIGHT];
     constexpr Team team = (Us == RED || Us == YELLOW) ? RED_YELLOW : BLUE_GREEN;
     const Bitboard friendly_pieces = team_bitboards_[team];
@@ -1027,7 +1014,7 @@ ExtMove* Board::GetKnightMovesT(ExtMove* buffer) const {
 }
 
 template<PlayerColor Us>
-ExtMove* Board::GetBishopMovesT(ExtMove* buffer) const {
+ExtMove* Board::GetBishopMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
     Bitboard bishops = piece_bitboards_[Us][BISHOP];
     constexpr Team team = (Us == RED || Us == YELLOW) ? RED_YELLOW : BLUE_GREEN;
     const Bitboard friendly_pieces = team_bitboards_[team];
@@ -1042,7 +1029,7 @@ ExtMove* Board::GetBishopMovesT(ExtMove* buffer) const {
 }
 
 template<PlayerColor Us>
-ExtMove* Board::GetRookMovesT(ExtMove* buffer) const {
+ExtMove* Board::GetRookMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
     Bitboard rooks = piece_bitboards_[Us][ROOK];
     constexpr Team team = (Us == RED || Us == YELLOW) ? RED_YELLOW : BLUE_GREEN;
     const Bitboard friendly_pieces = team_bitboards_[team];
@@ -1067,7 +1054,7 @@ ExtMove* Board::GetRookMovesT(ExtMove* buffer) const {
 }
 
 template<PlayerColor Us>
-ExtMove* Board::GetQueenMovesT(ExtMove* buffer) const {
+ExtMove* Board::GetQueenMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
     Bitboard queens = piece_bitboards_[Us][QUEEN];
     constexpr Team team = (Us == RED || Us == YELLOW) ? RED_YELLOW : BLUE_GREEN;
     const Bitboard friendly_pieces = team_bitboards_[team];
@@ -1082,7 +1069,7 @@ ExtMove* Board::GetQueenMovesT(ExtMove* buffer) const {
 }
 
 template<PlayerColor Us>
-ExtMove* Board::GetKingMovesT(ExtMove* buffer) const {
+ExtMove* Board::GetKingMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
     Bitboard king = piece_bitboards_[Us][KING];
     if (king.is_zero()) return buffer;
 
@@ -1095,7 +1082,7 @@ ExtMove* Board::GetKingMovesT(ExtMove* buffer) const {
     Bitboard attacks = kKingAttacks[from_idx] & ~friendly_pieces;
     buffer = AddMovesFromBB(buffer, from_idx, attacks, *this, initial_cr, final_cr);
 
-    if (initial_cr.Present() && !IsAttackedByTeam(OtherTeam(team), from_idx)) {
+    if (initial_cr.Present() && safety.checkers.is_zero()) {
         Bitboard all_pieces = team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN];
         Team enemy_team = OtherTeam(team);
         BoardLocation king_from_loc = IndexToLocation(from_idx);
@@ -1151,32 +1138,29 @@ ExtMove* Board::GetKingMovesT(ExtMove* buffer) const {
 }
 
 template<PlayerColor Us>
-ExtMove* Board::GenerateMovesT(ExtMove* buffer) const {
-    buffer = GetPawnMovesT<Us>(buffer);
-    buffer = GetKnightMovesT<Us>(buffer);
-    buffer = GetBishopMovesT<Us>(buffer);
-    buffer = GetRookMovesT<Us>(buffer);
-    buffer = GetQueenMovesT<Us>(buffer);
-    buffer = GetKingMovesT<Us>(buffer);
+ExtMove* Board::GenerateMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
+    buffer = GetPawnMovesT<Us>(buffer, safety);
+    buffer = GetKnightMovesT<Us>(buffer, safety);
+    buffer = GetBishopMovesT<Us>(buffer, safety);
+    buffer = GetRookMovesT<Us>(buffer, safety);
+    buffer = GetQueenMovesT<Us>(buffer, safety);
+    buffer = GetKingMovesT<Us>(buffer, safety);
     return buffer;
 }
 
 ExtMove* Board::GetPseudoLegalMoves2(ExtMove* buffer) const {
+    SafetyInfo safety = CalculateSafety(turn_.GetColor());
     switch (turn_.GetColor()) {
-        case RED:    return GenerateMovesT<RED>(buffer);
-        case BLUE:   return GenerateMovesT<BLUE>(buffer);
-        case YELLOW: return GenerateMovesT<YELLOW>(buffer);
-        case GREEN:  return GenerateMovesT<GREEN>(buffer);
+        case RED:    return GenerateMovesT<RED>(buffer, safety);
+        case BLUE:   return GenerateMovesT<BLUE>(buffer, safety);
+        case YELLOW: return GenerateMovesT<YELLOW>(buffer, safety);
+        case GREEN:  return GenerateMovesT<GREEN>(buffer, safety);
         default:     return buffer;
     }
 }
 
 void Board::MakeMove(const Move& move) {
-    SafetyInfo& backup = safety_stack_[safety_stack_ptr_++];
-    backup.checkers = checkers_;
-    std::memcpy(backup.blockers_for_king, blockers_for_king_, sizeof(blockers_for_king_));
-    std::memcpy(backup.pinners, pinners_, sizeof(pinners_));
-
+    // Removed Safety Stack Logic
     const Player player = turn_;
     const BoardLocation from = move.From();
     const BoardLocation to = move.To();
@@ -1240,11 +1224,7 @@ void Board::UndoMove() {
     if (move.IsStandardCapture()) SetPiece(to, move.GetStandardCapture());
     if (move.GetEnpassantLocation().Present()) SetPiece(move.GetEnpassantLocation(), move.GetEnpassantCapture());
     
-    --safety_stack_ptr_;
-    const SafetyInfo& backup = safety_stack_[safety_stack_ptr_];
-    checkers_ = backup.checkers;
-    std::memcpy(blockers_for_king_, backup.blockers_for_king, sizeof(blockers_for_king_));
-    std::memcpy(pinners_, backup.pinners, sizeof(pinners_));
+    // Removed Safety Stack Restore Logic
 }
 
 GameResult Board::GetGameResult() {
@@ -1256,14 +1236,22 @@ GameResult Board::GetGameResult() {
   ExtMove move_buffer_internal[300];
   ExtMove* end_ptr = GetPseudoLegalMoves2(move_buffer_internal);
   
+  SafetyInfo safety = CalculateSafety(player.GetColor());
+
   for (ExtMove* m_ptr = move_buffer_internal; m_ptr < end_ptr; ++m_ptr) {
     const auto& move = *m_ptr;
+    // Basic legality checks before making the move
+    if (!IsLegal(move, safety)) continue;
+
     MakeMove(move);
     GameResult king_capture_result = CheckWasLastMoveKingCapture();
     if (king_capture_result != IN_PROGRESS) {
       UndoMove();
       return king_capture_result;
     }
+    // We must check if we are in check after the move to verify legality
+    // Note: IsLegal(move, safety) checks if we left OURSELVES in check (mostly).
+    // The loop here is standard perft-like validation.
     bool legal = !IsKingInCheck(player); 
     UndoMove();
     if (legal) return IN_PROGRESS; 
@@ -1273,9 +1261,6 @@ GameResult Board::GetGameResult() {
 }
 
 bool Board::IsKingInCheck(const Player& player) const {
-  if (player.GetColor() == turn_.GetColor()) {
-      return !checkers_.is_zero();
-  }
   const auto king_location = GetKingLocation(player.GetColor());
   if (king_location.Missing()) return true; 
   return IsAttackedByTeam(OtherTeam(player.GetTeam()), LocationToIndex(king_location));
@@ -1581,14 +1566,14 @@ std::ostream& operator<<(std::ostream& os, const Move& move) {
 
 // EXPLICIT TEMPLATE INSTANTIATIONS
 // Required because definitions are in .cc but accessed by other files via templates
-template ExtMove* Board::GenerateMovesT<RED>(ExtMove* buffer) const;
-template ExtMove* Board::GenerateMovesT<BLUE>(ExtMove* buffer) const;
-template ExtMove* Board::GenerateMovesT<YELLOW>(ExtMove* buffer) const;
-template ExtMove* Board::GenerateMovesT<GREEN>(ExtMove* buffer) const;
+template ExtMove* Board::GenerateMovesT<RED>(ExtMove* buffer, const SafetyInfo& safety) const;
+template ExtMove* Board::GenerateMovesT<BLUE>(ExtMove* buffer, const SafetyInfo& safety) const;
+template ExtMove* Board::GenerateMovesT<YELLOW>(ExtMove* buffer, const SafetyInfo& safety) const;
+template ExtMove* Board::GenerateMovesT<GREEN>(ExtMove* buffer, const SafetyInfo& safety) const;
 
-template void Board::RefreshKingSafetyT<RED>();
-template void Board::RefreshKingSafetyT<BLUE>();
-template void Board::RefreshKingSafetyT<YELLOW>();
-template void Board::RefreshKingSafetyT<GREEN>();
+template SafetyInfo Board::CalculateSafetyT<RED>() const;
+template SafetyInfo Board::CalculateSafetyT<BLUE>() const;
+template SafetyInfo Board::CalculateSafetyT<YELLOW>() const;
+template SafetyInfo Board::CalculateSafetyT<GREEN>() const;
 
 }  // namespace chess
