@@ -24,9 +24,18 @@ namespace BitboardImpl {
     constexpr int kBoardHeight = 15;
     constexpr int kNumSquares = kBoardWidth * kBoardHeight;
 
-    extern int LocationToIndex(const BoardLocation& loc);
-    extern BoardLocation IndexToLocation(int index);
-    extern Bitboard IndexToBitboard(int index);
+    // OPTIMIZATION: Lookup tables
+    extern BoardLocation kIndexToLocation[256];
+    extern int kLocationToIndex[256];
+    
+    extern Bitboard kSquareBitboards[256];
+    extern Bitboard kZero; 
+
+    // Definitions moved to bottom
+    int LocationToIndex(const BoardLocation& loc);
+    BoardLocation IndexToLocation(int index);
+    const Bitboard& IndexToBitboard(int index); 
+    
     void InitBitboards(); 
 
     extern Bitboard kLegalSquares;
@@ -35,7 +44,6 @@ namespace BitboardImpl {
     extern Bitboard kRayAttacks[kNumSquares][8]; 
     extern Bitboard kLineBetween[kNumSquares][kNumSquares];
     
-    // OPTIMIZATION: Full line mask for O(1) alignment checks
     extern Bitboard kLineMask[kNumSquares][kNumSquares];
 
     extern Bitboard kBackRankMasks[4];
@@ -66,7 +74,6 @@ enum Team : int8_t {
 class Board;
 class Move;
 
-// Forward declarations for SEE functions
 int StaticExchangeEvaluationCapture(const int piece_evaluations[6], const Board& board, const Move& move);
 int SeeRecursive(const Board& board, const int piece_evaluations[6], int target_sq, Bitboard occupied, Team side_to_attack, int victim_value);
 int GetLeastValuableAttacker(const Board& board, int sq, Team team, const Bitboard& occupied, PieceType& out_type);
@@ -130,10 +137,14 @@ class BoardLocation {
   BoardLocation(int8_t row, int8_t col) {
     loc_ = (row < 0 || row >= 14 || col < 0 || col >= 14) ? 196 : 14 * row + col;
   }
+  explicit BoardLocation(uint8_t raw) : loc_(raw) {}
+
   bool Present() const { return loc_ < 196; }
   bool Missing() const { return !Present(); }
   int8_t GetRow() const { return loc_ / 14; }
   int8_t GetCol() const { return loc_ % 14; }
+  uint8_t GetRawValue() const { return loc_; }
+
   BoardLocation Relative(int8_t delta_row, int8_t delta_col) const {
     if (!Present()) return BoardLocation();
     return BoardLocation(GetRow() + delta_row, GetCol() + delta_col);
@@ -164,7 +175,7 @@ namespace chess {
 class SimpleMove {
  public:
   SimpleMove() = default;
-  SimpleMove(BoardLocation from, BoardLocation to) : from_(std::move(from)), to_(std::move(to)) { }
+  SimpleMove(BoardLocation from, BoardLocation to) : from_(from), to_(to) { }
   bool Present() const { return from_.Present() && to_.Present(); }
   const BoardLocation& From() const { return from_; }
   const BoardLocation& To() const { return to_; }
@@ -194,22 +205,26 @@ class CastlingRights {
 class Move {
  public:
   Move() = default;
+  
   Move(BoardLocation from, BoardLocation to, Piece standard_capture = Piece::kNoPiece,
        CastlingRights initial_castling_rights = CastlingRights::kMissingRights,
        CastlingRights castling_rights = CastlingRights::kMissingRights)
-    : from_(std::move(from)), to_(std::move(to)), standard_capture_(standard_capture),
-      initial_castling_rights_(std::move(initial_castling_rights)), castling_rights_(std::move(castling_rights)) { }
+    : from_(from), to_(to), standard_capture_(standard_capture),
+      initial_castling_rights_(initial_castling_rights), castling_rights_(castling_rights)
+  { }
 
   Move(BoardLocation from, BoardLocation to, Piece standard_capture,
        BoardLocation en_passant_location, Piece en_passant_capture, PieceType promotion_piece_type = NO_PIECE)
-    : from_(std::move(from)), to_(std::move(to)), standard_capture_(standard_capture),
+    : from_(from), to_(to), standard_capture_(standard_capture),
       promotion_piece_type_(promotion_piece_type), en_passant_location_(en_passant_location),
-      en_passant_capture_(en_passant_capture) { }
+      en_passant_capture_(en_passant_capture)
+  { }
 
   Move(BoardLocation from, BoardLocation to, SimpleMove rook_move,
        CastlingRights initial_castling_rights, CastlingRights castling_rights)
-    : from_(std::move(from)), to_(std::move(to)), rook_move_(rook_move),
-      initial_castling_rights_(std::move(initial_castling_rights)), castling_rights_(std::move(castling_rights)) { }
+    : from_(from), to_(to), rook_move_(rook_move),
+      initial_castling_rights_(initial_castling_rights), castling_rights_(castling_rights)
+  { }
 
   const BoardLocation& From() const { return from_; }
   const BoardLocation& To() const { return to_; }
@@ -291,7 +306,12 @@ class Board {
   void RefreshKingSafety();
   bool IsLegal(const Move& move) const;
 
+  // Dispatcher for external use (Switch based)
   ExtMove* GetPseudoLegalMoves2(ExtMove* buffer) const;
+
+  // Templated API exposed for critical paths
+  template<PlayerColor Us> ExtMove* GenerateMovesT(ExtMove* buffer) const;
+  template<PlayerColor Us> void RefreshKingSafetyT();
 
   bool IsKingInCheck(const Player& player) const;
   bool IsKingInCheck(Team team) const;
@@ -347,11 +367,11 @@ class Board {
   const Bitboard& PinnedPieces(PlayerColor c) const { return blockers_for_king_[c]; }
   
   bool IsPinned(int sq) const {
-      return (blockers_for_king_[turn_.GetColor()] & BitboardImpl::IndexToBitboard(sq)).operator bool();
+      return (blockers_for_king_[turn_.GetColor()] & BitboardImpl::kSquareBitboards[sq]).operator bool();
   }
  
  private:
-  // Templated Move Generation Helpers
+  // Templated Workers
   template<PlayerColor Us> ExtMove* GetPawnMovesT(ExtMove* buffer) const;
   template<PlayerColor Us> ExtMove* GetKnightMovesT(ExtMove* buffer) const;
   template<PlayerColor Us> ExtMove* GetBishopMovesT(ExtMove* buffer) const;
@@ -359,8 +379,6 @@ class Board {
   template<PlayerColor Us> ExtMove* GetQueenMovesT(ExtMove* buffer) const;
   template<PlayerColor Us> ExtMove* GetKingMovesT(ExtMove* buffer) const;
   
-  template<PlayerColor Us> ExtMove* GenerateMovesT(ExtMove* buffer) const;
-
   void SetPiece(const BoardLocation& location, const Piece& piece);
   void RemovePiece(const BoardLocation& location);
   void MovePiece(const BoardLocation& from, const BoardLocation& to);
@@ -390,7 +408,6 @@ class Board {
   Bitboard blockers_for_king_[4];     
   Bitboard pinners_[4];              
 
-  // FIXED: Restored safety stack for state consistency in recursive search
   struct SafetyInfo {
       Bitboard checkers;
       Bitboard blockers_for_king[4];
@@ -425,19 +442,14 @@ Player GetPartner(const Player& player);
 
 namespace BitboardImpl {
 inline int LocationToIndex(const BoardLocation& loc) {
-    if (!loc.Present()) return -1;
-    return (loc.GetRow() + 1) * kBoardWidth + (loc.GetCol() + 1);
+    return kLocationToIndex[loc.GetRawValue()];
 }
 inline BoardLocation IndexToLocation(int index) {
-    if (index < 0 || index >= kNumSquares) return BoardLocation::kNoLocation;
-    int r = (index / kBoardWidth) - 1;
-    int c = (index % kBoardWidth) - 1;
-    if (r < 0 || r >= 14 || c < 0 || c >= 14) return BoardLocation::kNoLocation;
-    return BoardLocation(r, c);
+    return kIndexToLocation[index & 0xFF];
 }
-inline Bitboard IndexToBitboard(int index) {
-    if (index < 0 || index >= kNumSquares) return Bitboard(0);
-    return Bitboard(1) << index;
+inline const Bitboard& IndexToBitboard(int index) {
+    if (index < 0 || index >= kNumSquares) return kZero;
+    return kSquareBitboards[index];
 }
 } 
 

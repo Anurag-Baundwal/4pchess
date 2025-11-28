@@ -12,9 +12,8 @@
 #include <random>
 #include <fstream>
 #include <chrono>
-#include <cstring> // For memcpy
+#include <cstring> 
 
-// For PEXT/PDEP intrinsics
 #if defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER)
 #include <immintrin.h>
 #endif
@@ -23,12 +22,8 @@
 
 namespace chess {
 
-// ============================================================================
-// Bitboard Implementation Details
-// ============================================================================
 namespace BitboardImpl {
 
-// Precomputed data
 Bitboard kLegalSquares;
 Bitboard kPawnStartMask[4];
 Bitboard kPawnPromotionMask[4];
@@ -37,20 +32,23 @@ Bitboard kKingAttacks[kNumSquares];
 Bitboard kPawnSinglePush[4][kNumSquares];
 Bitboard kPawnDoublePush[4][kNumSquares];
 Bitboard kPawnAttacks[4][kNumSquares];
-Bitboard kRayAttacks[kNumSquares][8]; // 0-3: Bishop, 4-7: Rook
+Bitboard kRayAttacks[kNumSquares][8]; 
 Bitboard kLineBetween[kNumSquares][kNumSquares];
-
-// OPTIMIZATION: Full line mask for O(1) alignment
 Bitboard kLineMask[kNumSquares][kNumSquares];
 
-Bitboard kCastlingEmptyMask[4][2]; // [color][side]
-Bitboard kCastlingAttackMask[4][2]; // [color][side]
+// OPTIMIZATION: Arrays for O(1) lookups
+BoardLocation kIndexToLocation[256];
+int kLocationToIndex[256];
+Bitboard kSquareBitboards[256];
+Bitboard kZero;
+
+Bitboard kCastlingEmptyMask[4][2]; 
+Bitboard kCastlingAttackMask[4][2]; 
 Bitboard kBackRankMasks[4];
 Bitboard kSecondRankMasks[4];
 Bitboard kCentralMask;
 int kInitialRookSq[4][2];
 
-// --- PEXT Bitboard Data ---
 struct PextEntry {
     Bitboard mask;
     uint32_t offset;
@@ -66,13 +64,11 @@ std::vector<Bitboard> kRookVertAttacksTable;
 std::vector<Bitboard> kBishopDiagAttacksTable;
 std::vector<Bitboard> kBishopAntiDiagAttacksTable;
 
-// OPTIMIZATION: Raw pointers to attack tables
 const Bitboard* g_RookHorizAttacksRaw = nullptr;
 const Bitboard* g_RookVertAttacksRaw = nullptr;
 const Bitboard* g_BishopDiagAttacksRaw = nullptr;
 const Bitboard* g_BishopAntiDiagAttacksRaw = nullptr;
 
-// --- Magic Bitboard Data ---
 namespace magics {
     struct MagicEntry {
         Bitboard magic;
@@ -86,9 +82,6 @@ namespace magics {
     MagicEntry kBishopAntiDiagMagics[kNumSquares];
 }
 
-// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-//                      RUNTIME TABLE GENERATION
-// ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 namespace TableGenerator {
 
 Bitboard get_ray_attack(int sq, RayDirection dir, const Bitboard& blockers) {
@@ -177,7 +170,6 @@ void GeneratePextTables() {
     gen_pext_set("Anti-Diagonal Bishops", kBishopAntiDiagPext, kBishopAntiDiagAttacksTable, D_NW, D_SE);
 }
 #else
-// Fallback logic for non-BMI2 (Magic Bitboards)
 Bitboard pdep_fallback(uint64_t index, Bitboard mask) {
     Bitboard result(0);
     Bitboard temp_mask = mask;
@@ -250,6 +242,25 @@ void GenerateMagicTables() {
 void InitBitboards() {
     static bool is_initialized = false;
     if (is_initialized) return;
+
+    kZero = Bitboard(0);
+    for (int i = 0; i < 256; ++i) {
+        kLocationToIndex[i] = -1;
+        kIndexToLocation[i] = BoardLocation::kNoLocation;
+        kSquareBitboards[i] = kZero; // Init to zero
+    }
+
+    for (int index = 0; index < kNumSquares; ++index) {
+        int r = (index / kBoardWidth) - 1;
+        int c = (index % kBoardWidth) - 1;
+        if (r >= 0 && r < 14 && c >= 0 && c < 14) {
+            BoardLocation loc(r, c);
+            kIndexToLocation[index] = loc;
+            kLocationToIndex[loc.GetRawValue()] = index;
+            kSquareBitboards[index] = Bitboard(1) << index;
+        }
+    }
+    kLocationToIndex[196] = -1;
 
     for (int r_14 = 0; r_14 < 14; ++r_14) {
         for (int c_14 = 0; c_14 < 14; ++c_14) {
@@ -344,7 +355,6 @@ void InitBitboards() {
                         case D_W:  opposite_dir = D_E;  break;
                     }
                     kLineBetween[i][j] = kRayAttacks[i][d] & kRayAttacks[j][opposite_dir];
-                    // OPTIMIZATION: kLineMask
                     kLineMask[i][j] = kRayAttacks[i][d] | kRayAttacks[i][opposite_dir] | IndexToBitboard(i);
                     break;
                 }
@@ -408,7 +418,6 @@ void InitBitboards() {
         TableGenerator::GenerateMagicTables();
     #endif
 
-    // OPTIMIZATION: Capture pointers to generated tables
     g_RookHorizAttacksRaw = kRookHorizAttacksTable.data();
     g_RookVertAttacksRaw = kRookVertAttacksTable.data();
     g_BishopDiagAttacksRaw = kBishopDiagAttacksTable.data();
@@ -518,7 +527,7 @@ Piece Board::GetPiece(const BoardLocation& location) const {
 void Board::SetPiece(const BoardLocation& location, const Piece& piece) {
     int index = LocationToIndex(location);
     if (index < 0 || !piece.Present()) return;
-    Bitboard mask = IndexToBitboard(index);
+    const Bitboard& mask = IndexToBitboard(index);
     PlayerColor color = piece.GetColor();
     PieceType type = piece.GetPieceType();
     Team team = piece.GetTeam();
@@ -540,14 +549,17 @@ void Board::RemovePiece(const BoardLocation& location) {
     Piece piece = GetPiece(location);
     int index = LocationToIndex(location);
     if (index < 0 || !piece.Present()) return;
-    Bitboard mask = ~(IndexToBitboard(index));
+    
+    // Optimization: bitwise NOT of reference
+    const Bitboard& mask = IndexToBitboard(index); 
+    
     PlayerColor color = piece.GetColor();
     PieceType type = piece.GetPieceType();
     Team team = piece.GetTeam();
 
-    piece_bitboards_[color][type] &= mask;
-    color_bitboards_[color] &= mask;
-    team_bitboards_[team] &= mask;
+    piece_bitboards_[color][type] &= ~mask;
+    color_bitboards_[color] &= ~mask;
+    team_bitboards_[team] &= ~mask;
     
     int piece_eval = kPieceEvaluations[type];
     if (team == RED_YELLOW) piece_evaluation_ -= piece_eval;
@@ -564,6 +576,7 @@ void Board::MovePiece(const BoardLocation& from_loc, const BoardLocation& to_loc
     int to_idx = LocationToIndex(to_loc);
     if (from_idx < 0 || to_idx < 0 || !piece.Present()) return;
 
+    // XOR is still somewhat expensive as it constructs a temp, but unavoidable here without deeper refactor
     Bitboard move_mask = IndexToBitboard(from_idx) | IndexToBitboard(to_idx);
     PlayerColor color = piece.GetColor();
     PieceType type = piece.GetPieceType();
@@ -719,6 +732,24 @@ void Board::RefreshKingSafety() {
     UpdateSliderBlockers(us); 
 }
 
+template<PlayerColor Us>
+void Board::RefreshKingSafetyT() {
+    constexpr Team us_team = (Us == RED || Us == YELLOW) ? RED_YELLOW : BLUE_GREEN;
+    
+    // Inlined GetKingLocation logic for known color
+    const Bitboard& king_bb = piece_bitboards_[Us][KING];
+    if (king_bb.is_zero()) {
+        checkers_ = Bitboard::max(); 
+        blockers_for_king_[Us] = Bitboard(0); 
+        return;
+    }
+
+    int king_sq = king_bb.ctz(); // Assuming 1 bit set
+    checkers_ = GetAttackersBB(king_sq, OtherTeam(us_team));
+
+    UpdateSliderBlockers(Us); 
+}
+
 void Board::UpdateSliderBlockers(PlayerColor c) {
     blockers_for_king_[c] = Bitboard(0);
     pinners_[c] = Bitboard(0);
@@ -781,9 +812,10 @@ bool Board::IsLegal(const Move& move) const {
         BoardLocation cap_loc = move.GetEnpassantLocation();
         int cap_sq = LocationToIndex(cap_loc);
         Bitboard occupied = (team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN]);
-        occupied &= ~BitboardImpl::IndexToBitboard(from_sq);
-        occupied &= ~BitboardImpl::IndexToBitboard(cap_sq);
-        occupied |= BitboardImpl::IndexToBitboard(to_sq);
+        
+        occupied &= ~IndexToBitboard(from_sq);
+        occupied &= ~IndexToBitboard(cap_sq);
+        occupied |= IndexToBitboard(to_sq);
 
         Team enemy_team = OtherTeam(turn_.GetTeam());
         PlayerColor e1 = (enemy_team == RED_YELLOW) ? RED : BLUE;
@@ -803,14 +835,13 @@ bool Board::IsLegal(const Move& move) const {
             if (!checkers_.is_zero()) return false;
             return true;
         }
-        Bitboard occupied = (team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN]) ^ BitboardImpl::IndexToBitboard(from_sq);
+        Bitboard occupied = (team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN]) ^ IndexToBitboard(from_sq);
         if (AttackersToExist(to_sq, occupied, OtherTeam(turn_.GetTeam()))) return false;
         return true;
     }
 
     if (!checkers_.is_zero() && (checkers_ & (checkers_ - 1)).operator bool()) return false;
 
-    // OPTIMIZATION: O(1) Pin Check using kLineMask
     if (IsPinned(from_sq)) {
         if ((BitboardImpl::kLineMask[king_sq][from_sq] & BitboardImpl::IndexToBitboard(to_sq)).is_zero()) {
             return false;
@@ -827,7 +858,6 @@ bool Board::IsLegal(const Move& move) const {
 }
 
 namespace {
-// Helper for pointer arithmetic
 ExtMove* AddMovesFromBB(ExtMove* buffer, int from_idx, Bitboard to_bb, const Board& board,
                     CastlingRights initial_cr = CastlingRights::kMissingRights,
                     CastlingRights final_cr = CastlingRights::kMissingRights) {
@@ -847,11 +877,8 @@ ExtMove* AddMovesFromBB(ExtMove* buffer, int from_idx, Bitboard to_bb, const Boa
 
 template<PlayerColor Us>
 ExtMove* Board::GetPawnMovesT(ExtMove* buffer) const {
-    // Compile-time constants
     constexpr Team team = (Us == RED || Us == YELLOW) ? RED_YELLOW : BLUE_GREEN;
     constexpr int PUSH = (Us == RED) ? PUSH_N : (Us == BLUE) ? PUSH_E : (Us == YELLOW) ? PUSH_S : PUSH_W;
-    
-    // Derived constants for captures
     constexpr int CAP_1 = (Us == RED) ? PUSH_NW : (Us == BLUE) ? PUSH_NE : (Us == YELLOW) ? PUSH_SE : PUSH_SW;
     constexpr int CAP_2 = (Us == RED) ? PUSH_NE : (Us == BLUE) ? PUSH_SE : (Us == YELLOW) ? PUSH_SW : PUSH_NW;
 
@@ -863,22 +890,16 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer) const {
     const Bitboard enemy_pieces = team_bitboards_[OtherTeam(team)];
     const Bitboard promotion_rank = kPawnPromotionMask[Us];
 
-    // Single pushes
     Bitboard single_pushes = shift<PUSH>(my_pawns) & empty_squares;
-    
-    // Double pushes
     Bitboard pawns_on_start = my_pawns & kPawnStartMask[Us];
     Bitboard first_step = shift<PUSH>(pawns_on_start) & empty_squares;
     Bitboard double_pushes = shift<PUSH>(first_step) & empty_squares;
 
-    // Normal moves (non-promotion)
     Bitboard single_targets = single_pushes & ~promotion_rank;
     while (!single_targets.is_zero()) {
         int to_idx = single_targets.ctz();
         single_targets &= single_targets - 1;
         int from_idx = to_idx - PUSH;
-        // Verify source has pawn (should be guaranteed by bitboard logic but good for debugging if needed)
-        // if((my_pawns & IndexToBitboard(from_idx)).is_zero()) continue;
         *buffer++ = ExtMove(Move(IndexToLocation(from_idx), IndexToLocation(to_idx), Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, NO_PIECE));
     }
     
@@ -889,18 +910,15 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer) const {
         *buffer++ = ExtMove(Move(IndexToLocation(from_idx), IndexToLocation(to_idx), Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, NO_PIECE));
     }
     
-    // Captures
     Bitboard captures1 = shift<CAP_1>(my_pawns) & enemy_pieces;
     Bitboard captures2 = shift<CAP_2>(my_pawns) & enemy_pieces;
 
     Bitboard all_captures = (captures1 | captures2) & ~promotion_rank;
     while (!all_captures.is_zero()) {
         int to_idx = all_captures.ctz();
-        Bitboard to_bb = IndexToBitboard(to_idx);
+        const Bitboard& to_bb = IndexToBitboard(to_idx);
         all_captures &= all_captures - 1;
 
-        // Determine which pawns could have captured to to_idx
-        // Reverse shift to find potential origins
         Bitboard from_bb = (shift<-CAP_1>(to_bb) | shift<-CAP_2>(to_bb)) & my_pawns;
 
         while (!from_bb.is_zero()) {
@@ -910,7 +928,6 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer) const {
         }
     }
     
-    // Promotions
     Bitboard promo_pushes = single_pushes & promotion_rank;
     while (!promo_pushes.is_zero()) {
         int to_idx = promo_pushes.ctz();
@@ -927,7 +944,7 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer) const {
     Bitboard promo_captures = (captures1 | captures2) & promotion_rank;
     while (!promo_captures.is_zero()) {
         int to_idx = promo_captures.ctz();
-        Bitboard to_bb = IndexToBitboard(to_idx);
+        const Bitboard& to_bb = IndexToBitboard(to_idx);
         promo_captures &= promo_captures - 1;
         
         Bitboard from_bb = (shift<-CAP_1>(to_bb) | shift<-CAP_2>(to_bb)) & my_pawns;
@@ -945,7 +962,6 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer) const {
         }
     }
     
-    // EN PASSANT
     constexpr PlayerColor Next = static_cast<PlayerColor>((Us + 1) % 4);
     constexpr PlayerColor Prev = static_cast<PlayerColor>((Us + 3) % 4);
     const PlayerColor opponents[2] = { Next, Prev };
@@ -965,8 +981,6 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer) const {
 
         const auto& move_from = opponent_last_move->From();
         const auto& move_to = opponent_last_move->To();
-        // Since this is a check outside bitboards, we access Piece via board array or helper
-        // Ideally we would have cached this info, but accessing one piece is okay.
         Piece moved_piece = GetPiece(move_to);
 
         if (moved_piece.GetPieceType() != PAWN ||
@@ -1097,9 +1111,6 @@ ExtMove* Board::GetKingMovesT(ExtMove* buffer) const {
             if(is_safe){
                 BoardLocation king_to_loc, rook_from_loc, rook_to_loc;
                 rook_from_loc = IndexToLocation(kInitialRookSq[Us][KINGSIDE]);
-                
-                // Templated compile-time selection for relative coords is harder without more infrastructure
-                // stick to switch or if-constexpr for clarity, compiler will optimize constants
                 if constexpr (Us == RED) { 
                     king_to_loc = king_from_loc.Relative(0, 2); rook_to_loc = king_from_loc.Relative(0, 1); 
                 } else if constexpr (Us == BLUE) {
@@ -1123,7 +1134,6 @@ ExtMove* Board::GetKingMovesT(ExtMove* buffer) const {
             if(is_safe){
                 BoardLocation king_to_loc, rook_from_loc, rook_to_loc;
                 rook_from_loc = IndexToLocation(kInitialRookSq[Us][QUEENSIDE]);
-                
                 if constexpr (Us == RED) {
                     king_to_loc = king_from_loc.Relative(0, -2); rook_to_loc = king_from_loc.Relative(0, -1);
                 } else if constexpr (Us == BLUE) {
@@ -1162,7 +1172,6 @@ ExtMove* Board::GetPseudoLegalMoves2(ExtMove* buffer) const {
 }
 
 void Board::MakeMove(const Move& move) {
-    // FIXED: Save safety state to stack
     SafetyInfo& backup = safety_stack_[safety_stack_ptr_++];
     backup.checkers = checkers_;
     std::memcpy(backup.blockers_for_king, blockers_for_king_, sizeof(blockers_for_king_));
@@ -1231,7 +1240,6 @@ void Board::UndoMove() {
     if (move.IsStandardCapture()) SetPiece(to, move.GetStandardCapture());
     if (move.GetEnpassantLocation().Present()) SetPiece(move.GetEnpassantLocation(), move.GetEnpassantCapture());
     
-    // FIXED: Restore safety state
     --safety_stack_ptr_;
     const SafetyInfo& backup = safety_stack_[safety_stack_ptr_];
     checkers_ = backup.checkers;
@@ -1265,7 +1273,6 @@ GameResult Board::GetGameResult() {
 }
 
 bool Board::IsKingInCheck(const Player& player) const {
-  // OPTIMIZATION: Use cached check status if asking about current turn
   if (player.GetColor() == turn_.GetColor()) {
       return !checkers_.is_zero();
   }
@@ -1529,7 +1536,7 @@ int StaticExchangeEvaluationCapture(const int piece_evaluations[6], const Board&
         occupied_after_move &= ~BitboardImpl::IndexToBitboard(ep_captured_sq);
     }
     
-    const Team opponent_team = OtherTeam(board.GetTurn().GetTeam());
+    const Team opponent_team = board.GetTurn().GetTeam() == RED_YELLOW ? BLUE_GREEN : RED_YELLOW; // OtherTeam logic
     int opponent_gain = SeeRecursive(board, piece_evaluations, to_sq, occupied_after_move, opponent_team, new_victim_value);
     return initial_gain - opponent_gain;
 }
@@ -1571,5 +1578,17 @@ std::ostream& operator<<(std::ostream& os, const Move& move) {
   os << "Move(" << move.From() << " -> " << move.To() << ")";
   return os;
 }
+
+// EXPLICIT TEMPLATE INSTANTIATIONS
+// Required because definitions are in .cc but accessed by other files via templates
+template ExtMove* Board::GenerateMovesT<RED>(ExtMove* buffer) const;
+template ExtMove* Board::GenerateMovesT<BLUE>(ExtMove* buffer) const;
+template ExtMove* Board::GenerateMovesT<YELLOW>(ExtMove* buffer) const;
+template ExtMove* Board::GenerateMovesT<GREEN>(ExtMove* buffer) const;
+
+template void Board::RefreshKingSafetyT<RED>();
+template void Board::RefreshKingSafetyT<BLUE>();
+template void Board::RefreshKingSafetyT<YELLOW>();
+template void Board::RefreshKingSafetyT<GREEN>();
 
 }  // namespace chess
