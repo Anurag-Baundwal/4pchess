@@ -841,103 +841,57 @@ ExtMove* AddMovesFromBB(ExtMove* buffer, int from_idx, Bitboard to_bb, const Boa
 }
 }
 
-ExtMove* Board::GetPawnMoves2(ExtMove* buffer, const Player& player) const {
-    PlayerColor color = player.GetColor();
-    Team team = player.GetTeam();
+// ============================================================================
+// TEMPLATED MOVE GENERATION
+// ============================================================================
 
-    const Bitboard& my_pawns = piece_bitboards_[color][PAWN];
+template<PlayerColor Us>
+ExtMove* Board::GetPawnMovesT(ExtMove* buffer) const {
+    // Compile-time constants
+    constexpr Team team = (Us == RED || Us == YELLOW) ? RED_YELLOW : BLUE_GREEN;
+    constexpr int PUSH = (Us == RED) ? PUSH_N : (Us == BLUE) ? PUSH_E : (Us == YELLOW) ? PUSH_S : PUSH_W;
+    
+    // Derived constants for captures
+    constexpr int CAP_1 = (Us == RED) ? PUSH_NW : (Us == BLUE) ? PUSH_NE : (Us == YELLOW) ? PUSH_SE : PUSH_SW;
+    constexpr int CAP_2 = (Us == RED) ? PUSH_NE : (Us == BLUE) ? PUSH_SE : (Us == YELLOW) ? PUSH_SW : PUSH_NW;
+
+    const Bitboard& my_pawns = piece_bitboards_[Us][PAWN];
     if (my_pawns.is_zero()) return buffer;
     
     const Bitboard all_pieces = team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN];
     const Bitboard empty_squares = ~all_pieces;
     const Bitboard enemy_pieces = team_bitboards_[OtherTeam(team)];
-    const Bitboard promotion_rank = kPawnPromotionMask[color];
+    const Bitboard promotion_rank = kPawnPromotionMask[Us];
 
-    Bitboard single_pushes, double_pushes;
+    // Single pushes
+    Bitboard single_pushes = shift<PUSH>(my_pawns) & empty_squares;
     
-    switch (color) {
-        case RED: {
-            single_pushes = shift<PUSH_N>(my_pawns) & empty_squares;
-            Bitboard pawns_on_start_rank = my_pawns & kPawnStartMask[RED];
-            Bitboard first_step_of_double = shift<PUSH_N>(pawns_on_start_rank) & empty_squares;
-            double_pushes = shift<PUSH_N>(first_step_of_double) & empty_squares;
-            break;
-        }
-        case BLUE: {
-            single_pushes = shift<PUSH_E>(my_pawns) & empty_squares;
-            Bitboard pawns_on_start_rank = my_pawns & kPawnStartMask[BLUE];
-            Bitboard first_step_of_double = shift<PUSH_E>(pawns_on_start_rank) & empty_squares;
-            double_pushes = shift<PUSH_E>(first_step_of_double) & empty_squares;
-            break;
-        }
-        case YELLOW: {
-            single_pushes = shift<PUSH_S>(my_pawns) & empty_squares;
-            Bitboard pawns_on_start_rank = my_pawns & kPawnStartMask[YELLOW];
-            Bitboard first_step_of_double = shift<PUSH_S>(pawns_on_start_rank) & empty_squares;
-            double_pushes = shift<PUSH_S>(first_step_of_double) & empty_squares;
-            break;
-        }
-        case GREEN: {
-            single_pushes = shift<PUSH_W>(my_pawns) & empty_squares;
-            Bitboard pawns_on_start_rank = my_pawns & kPawnStartMask[GREEN];
-            Bitboard first_step_of_double = shift<PUSH_W>(pawns_on_start_rank) & empty_squares;
-            double_pushes = shift<PUSH_W>(first_step_of_double) & empty_squares;
-            break;
-        }
-    }
+    // Double pushes
+    Bitboard pawns_on_start = my_pawns & kPawnStartMask[Us];
+    Bitboard first_step = shift<PUSH>(pawns_on_start) & empty_squares;
+    Bitboard double_pushes = shift<PUSH>(first_step) & empty_squares;
 
+    // Normal moves (non-promotion)
     Bitboard single_targets = single_pushes & ~promotion_rank;
     while (!single_targets.is_zero()) {
         int to_idx = single_targets.ctz();
         single_targets &= single_targets - 1;
-        int from_idx;
-        switch(color) {
-            case RED:    from_idx = to_idx - PUSH_N; break;
-            case BLUE:   from_idx = to_idx - PUSH_E; break;
-            case YELLOW: from_idx = to_idx - PUSH_S; break;
-            case GREEN:  from_idx = to_idx - PUSH_W; break;
-        }
-        if((my_pawns & IndexToBitboard(from_idx)).is_zero()) continue;
+        int from_idx = to_idx - PUSH;
+        // Verify source has pawn (should be guaranteed by bitboard logic but good for debugging if needed)
+        // if((my_pawns & IndexToBitboard(from_idx)).is_zero()) continue;
         *buffer++ = ExtMove(Move(IndexToLocation(from_idx), IndexToLocation(to_idx), Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, NO_PIECE));
     }
     
     while (!double_pushes.is_zero()) {
         int to_idx = double_pushes.ctz();
         double_pushes &= double_pushes - 1;
-        int from_idx;
-        switch(color) {
-            case RED:    from_idx = to_idx - PUSH_N - PUSH_N; break;
-            case BLUE:   from_idx = to_idx - PUSH_E - PUSH_E; break;
-            case YELLOW: from_idx = to_idx - PUSH_S - PUSH_S; break;
-            case GREEN:  from_idx = to_idx - PUSH_W - PUSH_W; break;
-        }
+        int from_idx = to_idx - PUSH - PUSH;
         *buffer++ = ExtMove(Move(IndexToLocation(from_idx), IndexToLocation(to_idx), Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, NO_PIECE));
     }
     
-    constexpr int capture_offsets[4][2] = {
-        { PUSH_NW, PUSH_NE }, { PUSH_NE, PUSH_SE },
-        { PUSH_SW, PUSH_SE }, { PUSH_NW, PUSH_SW }
-    };
-    
-    Bitboard captures1, captures2;
-    switch (color) {
-        case RED:
-            captures1 = shift<capture_offsets[RED][0]>(my_pawns) & enemy_pieces;
-            captures2 = shift<capture_offsets[RED][1]>(my_pawns) & enemy_pieces;
-            break;
-        case BLUE:
-            captures1 = shift<capture_offsets[BLUE][0]>(my_pawns) & enemy_pieces;
-            captures2 = shift<capture_offsets[BLUE][1]>(my_pawns) & enemy_pieces;
-            break;
-        case YELLOW:
-            captures1 = shift<capture_offsets[YELLOW][0]>(my_pawns) & enemy_pieces;
-            captures2 = shift<capture_offsets[YELLOW][1]>(my_pawns) & enemy_pieces;
-            break;
-        case GREEN:
-            captures1 = shift<capture_offsets[GREEN][0]>(my_pawns) & enemy_pieces;
-            captures2 = shift<capture_offsets[GREEN][1]>(my_pawns) & enemy_pieces;
-            break;
-    }
+    // Captures
+    Bitboard captures1 = shift<CAP_1>(my_pawns) & enemy_pieces;
+    Bitboard captures2 = shift<CAP_2>(my_pawns) & enemy_pieces;
 
     Bitboard all_captures = (captures1 | captures2) & ~promotion_rank;
     while (!all_captures.is_zero()) {
@@ -945,13 +899,9 @@ ExtMove* Board::GetPawnMoves2(ExtMove* buffer, const Player& player) const {
         Bitboard to_bb = IndexToBitboard(to_idx);
         all_captures &= all_captures - 1;
 
-        Bitboard from_bb;
-        switch (color) {
-            case RED:    from_bb = (shift<-capture_offsets[RED][0]>(to_bb) | shift<-capture_offsets[RED][1]>(to_bb)) & my_pawns; break;
-            case BLUE:   from_bb = (shift<-capture_offsets[BLUE][0]>(to_bb) | shift<-capture_offsets[BLUE][1]>(to_bb)) & my_pawns; break;
-            case YELLOW: from_bb = (shift<-capture_offsets[YELLOW][0]>(to_bb) | shift<-capture_offsets[YELLOW][1]>(to_bb)) & my_pawns; break;
-            case GREEN:  from_bb = (shift<-capture_offsets[GREEN][0]>(to_bb) | shift<-capture_offsets[GREEN][1]>(to_bb)) & my_pawns; break;
-        }
+        // Determine which pawns could have captured to to_idx
+        // Reverse shift to find potential origins
+        Bitboard from_bb = (shift<-CAP_1>(to_bb) | shift<-CAP_2>(to_bb)) & my_pawns;
 
         while (!from_bb.is_zero()) {
             int from_idx = from_bb.ctz();
@@ -960,19 +910,12 @@ ExtMove* Board::GetPawnMoves2(ExtMove* buffer, const Player& player) const {
         }
     }
     
+    // Promotions
     Bitboard promo_pushes = single_pushes & promotion_rank;
-    Bitboard promo_captures = (captures1 | captures2) & promotion_rank;
-
     while (!promo_pushes.is_zero()) {
         int to_idx = promo_pushes.ctz();
         promo_pushes &= promo_pushes - 1;
-        int from_idx;
-        switch(color) {
-            case RED:    from_idx = to_idx - PUSH_N; break;
-            case BLUE:   from_idx = to_idx - PUSH_E; break;
-            case YELLOW: from_idx = to_idx - PUSH_S; break;
-            case GREEN:  from_idx = to_idx - PUSH_W; break;
-        }
+        int from_idx = to_idx - PUSH;
         BoardLocation from = IndexToLocation(from_idx);
         BoardLocation to = IndexToLocation(to_idx);
         *buffer++ = ExtMove(Move(from, to, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, QUEEN));
@@ -981,19 +924,13 @@ ExtMove* Board::GetPawnMoves2(ExtMove* buffer, const Player& player) const {
         *buffer++ = ExtMove(Move(from, to, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, KNIGHT));
     }
     
+    Bitboard promo_captures = (captures1 | captures2) & promotion_rank;
     while (!promo_captures.is_zero()) {
         int to_idx = promo_captures.ctz();
         Bitboard to_bb = IndexToBitboard(to_idx);
         promo_captures &= promo_captures - 1;
         
-        Bitboard from_bb;
-         switch (color) {
-            case RED:    from_bb = (shift<-capture_offsets[RED][0]>(to_bb) | shift<-capture_offsets[RED][1]>(to_bb)) & my_pawns; break;
-            case BLUE:   from_bb = (shift<-capture_offsets[BLUE][0]>(to_bb) | shift<-capture_offsets[BLUE][1]>(to_bb)) & my_pawns; break;
-            case YELLOW: from_bb = (shift<-capture_offsets[YELLOW][0]>(to_bb) | shift<-capture_offsets[YELLOW][1]>(to_bb)) & my_pawns; break;
-            case GREEN:  from_bb = (shift<-capture_offsets[GREEN][0]>(to_bb) | shift<-capture_offsets[GREEN][1]>(to_bb)) & my_pawns; break;
-        }
-
+        Bitboard from_bb = (shift<-CAP_1>(to_bb) | shift<-CAP_2>(to_bb)) & my_pawns;
         Piece captured_piece = GetPiece(to_idx);
         BoardLocation to = IndexToLocation(to_idx);
 
@@ -1009,24 +946,27 @@ ExtMove* Board::GetPawnMoves2(ExtMove* buffer, const Player& player) const {
     }
     
     // EN PASSANT
-    auto find_relevant_move = [&](PlayerColor opponent_color) -> const Move* {
-        int turns_ago = (color - opponent_color + 4) % 4;
-        if (turns_ago > 0 && move_history_ptr_ >= turns_ago) {
-            return &move_history_[move_history_ptr_ - turns_ago];
-        }
-        const auto& enp_move = enp_.enp_moves[opponent_color];
-        return enp_move.has_value() ? &*enp_move : nullptr;
-    };
+    constexpr PlayerColor Next = static_cast<PlayerColor>((Us + 1) % 4);
+    constexpr PlayerColor Prev = static_cast<PlayerColor>((Us + 3) % 4);
+    const PlayerColor opponents[2] = { Next, Prev };
 
-    const PlayerColor opponents[2] = { GetNextPlayer(player).GetColor(), GetPreviousPlayer(player).GetColor() };
-    
     for (const PlayerColor opponent_color : opponents) {
-        const Move* opponent_last_move = find_relevant_move(opponent_color);
+        const Move* opponent_last_move = nullptr;
+        int turns_ago = (Us - opponent_color + 4) % 4;
+        
+        if (turns_ago > 0 && move_history_ptr_ >= turns_ago) {
+            opponent_last_move = &move_history_[move_history_ptr_ - turns_ago];
+        } else {
+            const auto& enp_move = enp_.enp_moves[opponent_color];
+            if (enp_move.has_value()) opponent_last_move = &*enp_move;
+        }
 
         if (opponent_last_move == nullptr || !opponent_last_move->Present()) continue;
 
         const auto& move_from = opponent_last_move->From();
         const auto& move_to = opponent_last_move->To();
+        // Since this is a check outside bitboards, we access Piece via board array or helper
+        // Ideally we would have cached this info, but accessing one piece is okay.
         Piece moved_piece = GetPiece(move_to);
 
         if (moved_piece.GetPieceType() != PAWN ||
@@ -1037,15 +977,7 @@ ExtMove* Board::GetPawnMoves2(ExtMove* buffer, const Player& player) const {
         }
         
         int moved_to_idx = LocationToIndex(move_to);
-        Bitboard capturer_square_bb;
-
-        switch (color) {
-            case RED:    capturer_square_bb = shift<-PUSH_N>(IndexToBitboard(moved_to_idx)); break;
-            case BLUE:   capturer_square_bb = shift<-PUSH_E>(IndexToBitboard(moved_to_idx)); break;
-            case YELLOW: capturer_square_bb = shift<-PUSH_S>(IndexToBitboard(moved_to_idx)); break;
-            case GREEN:  capturer_square_bb = shift<-PUSH_W>(IndexToBitboard(moved_to_idx)); break;
-        }
-
+        Bitboard capturer_square_bb = shift<-PUSH>(IndexToBitboard(moved_to_idx));
         Bitboard capturer_pawn = capturer_square_bb & my_pawns;
 
         if (!capturer_pawn.is_zero()) {
@@ -1065,10 +997,12 @@ ExtMove* Board::GetPawnMoves2(ExtMove* buffer, const Player& player) const {
     return buffer;
 }
 
-ExtMove* Board::GetKnightMoves2(ExtMove* buffer, const Player& player) const {
-    PlayerColor color = player.GetColor();
-    Bitboard knights = piece_bitboards_[color][KNIGHT];
-    Bitboard friendly_pieces = team_bitboards_[player.GetTeam()];
+template<PlayerColor Us>
+ExtMove* Board::GetKnightMovesT(ExtMove* buffer) const {
+    Bitboard knights = piece_bitboards_[Us][KNIGHT];
+    constexpr Team team = (Us == RED || Us == YELLOW) ? RED_YELLOW : BLUE_GREEN;
+    const Bitboard friendly_pieces = team_bitboards_[team];
+    
     while(!knights.is_zero()) {
         int from_idx = knights.ctz();
         knights &= knights - 1;
@@ -1078,34 +1012,12 @@ ExtMove* Board::GetKnightMoves2(ExtMove* buffer, const Player& player) const {
     return buffer;
 }
 
-ExtMove* Board::GetRookMoves2(ExtMove* buffer, const Player& player) const {
-    PlayerColor color = player.GetColor();
-    Bitboard rooks = piece_bitboards_[color][ROOK];
-    Bitboard friendly_pieces = team_bitboards_[player.GetTeam()];
-    Bitboard all_pieces = team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN];
-    const auto& initial_cr = castling_rights_[color];
-    while(!rooks.is_zero()) {
-        int from_idx = rooks.ctz();
-        rooks &= rooks - 1;
-        CastlingRights final_cr = initial_cr;
-        if(initial_cr.Present()){
-            if(from_idx == kInitialRookSq[color][KINGSIDE] && initial_cr.Kingside()){
-                final_cr = CastlingRights(false, initial_cr.Queenside());
-            } else if (from_idx == kInitialRookSq[color][QUEENSIDE] && initial_cr.Queenside()){
-                final_cr = CastlingRights(initial_cr.Kingside(), false);
-            }
-        }
-        Bitboard attacks = GetRookAttacks(from_idx, all_pieces) & ~friendly_pieces;
-        buffer = AddMovesFromBB(buffer, from_idx, attacks, *this, initial_cr, final_cr.Present() ? final_cr : CastlingRights::kMissingRights);
-    }
-    return buffer;
-}
-
-ExtMove* Board::GetBishopMoves2(ExtMove* buffer, const Player& player) const {
-    PlayerColor color = player.GetColor();
-    Bitboard bishops = piece_bitboards_[color][BISHOP];
-    Bitboard friendly_pieces = team_bitboards_[player.GetTeam()];
-    Bitboard all_pieces = team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN];
+template<PlayerColor Us>
+ExtMove* Board::GetBishopMovesT(ExtMove* buffer) const {
+    Bitboard bishops = piece_bitboards_[Us][BISHOP];
+    constexpr Team team = (Us == RED || Us == YELLOW) ? RED_YELLOW : BLUE_GREEN;
+    const Bitboard friendly_pieces = team_bitboards_[team];
+    const Bitboard all_pieces = team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN];
     while(!bishops.is_zero()) {
         int from_idx = bishops.ctz();
         bishops &= bishops - 1;
@@ -1115,11 +1027,37 @@ ExtMove* Board::GetBishopMoves2(ExtMove* buffer, const Player& player) const {
     return buffer;
 }
 
-ExtMove* Board::GetQueenMoves2(ExtMove* buffer, const Player& player) const {
-    PlayerColor color = player.GetColor();
-    Bitboard queens = piece_bitboards_[color][QUEEN];
-    Bitboard friendly_pieces = team_bitboards_[player.GetTeam()];
-    Bitboard all_pieces = team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN];
+template<PlayerColor Us>
+ExtMove* Board::GetRookMovesT(ExtMove* buffer) const {
+    Bitboard rooks = piece_bitboards_[Us][ROOK];
+    constexpr Team team = (Us == RED || Us == YELLOW) ? RED_YELLOW : BLUE_GREEN;
+    const Bitboard friendly_pieces = team_bitboards_[team];
+    const Bitboard all_pieces = team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN];
+    const auto& initial_cr = castling_rights_[Us];
+    
+    while(!rooks.is_zero()) {
+        int from_idx = rooks.ctz();
+        rooks &= rooks - 1;
+        CastlingRights final_cr = initial_cr;
+        if(initial_cr.Present()){
+            if(from_idx == kInitialRookSq[Us][KINGSIDE] && initial_cr.Kingside()){
+                final_cr = CastlingRights(false, initial_cr.Queenside());
+            } else if (from_idx == kInitialRookSq[Us][QUEENSIDE] && initial_cr.Queenside()){
+                final_cr = CastlingRights(initial_cr.Kingside(), false);
+            }
+        }
+        Bitboard attacks = GetRookAttacks(from_idx, all_pieces) & ~friendly_pieces;
+        buffer = AddMovesFromBB(buffer, from_idx, attacks, *this, initial_cr, final_cr.Present() ? final_cr : CastlingRights::kMissingRights);
+    }
+    return buffer;
+}
+
+template<PlayerColor Us>
+ExtMove* Board::GetQueenMovesT(ExtMove* buffer) const {
+    Bitboard queens = piece_bitboards_[Us][QUEEN];
+    constexpr Team team = (Us == RED || Us == YELLOW) ? RED_YELLOW : BLUE_GREEN;
+    const Bitboard friendly_pieces = team_bitboards_[team];
+    const Bitboard all_pieces = team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN];
     while(!queens.is_zero()) {
         int from_idx = queens.ctz();
         queens &= queens - 1;
@@ -1129,26 +1067,27 @@ ExtMove* Board::GetQueenMoves2(ExtMove* buffer, const Player& player) const {
     return buffer;
 }
 
-ExtMove* Board::GetKingMoves2(ExtMove* buffer, const Player& player) const {
-    PlayerColor color = player.GetColor();
-    Bitboard king = piece_bitboards_[color][KING];
+template<PlayerColor Us>
+ExtMove* Board::GetKingMovesT(ExtMove* buffer) const {
+    Bitboard king = piece_bitboards_[Us][KING];
     if (king.is_zero()) return buffer;
 
     int from_idx = king.ctz();
-    Bitboard friendly_pieces = team_bitboards_[player.GetTeam()];
-    const auto& initial_cr = castling_rights_[color];
+    constexpr Team team = (Us == RED || Us == YELLOW) ? RED_YELLOW : BLUE_GREEN;
+    const Bitboard friendly_pieces = team_bitboards_[team];
+    const auto& initial_cr = castling_rights_[Us];
     CastlingRights final_cr(false, false);
     
     Bitboard attacks = kKingAttacks[from_idx] & ~friendly_pieces;
     buffer = AddMovesFromBB(buffer, from_idx, attacks, *this, initial_cr, final_cr);
 
-    if (initial_cr.Present() && !IsAttackedByTeam(OtherTeam(player.GetTeam()), from_idx)) {
+    if (initial_cr.Present() && !IsAttackedByTeam(OtherTeam(team), from_idx)) {
         Bitboard all_pieces = team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN];
-        Team enemy_team = OtherTeam(player.GetTeam());
+        Team enemy_team = OtherTeam(team);
         BoardLocation king_from_loc = IndexToLocation(from_idx);
 
-        if (initial_cr.Kingside() && (all_pieces & kCastlingEmptyMask[color][KINGSIDE]).is_zero()) {
-            Bitboard attack_mask = kCastlingAttackMask[color][KINGSIDE];
+        if (initial_cr.Kingside() && (all_pieces & kCastlingEmptyMask[Us][KINGSIDE]).is_zero()) {
+            Bitboard attack_mask = kCastlingAttackMask[Us][KINGSIDE];
             bool is_safe = true;
             while(!attack_mask.is_zero()){
                 int sq = attack_mask.ctz();
@@ -1157,18 +1096,24 @@ ExtMove* Board::GetKingMoves2(ExtMove* buffer, const Player& player) const {
             }
             if(is_safe){
                 BoardLocation king_to_loc, rook_from_loc, rook_to_loc;
-                rook_from_loc = IndexToLocation(kInitialRookSq[color][KINGSIDE]);
-                switch(color) {
-                    case RED:    king_to_loc = king_from_loc.Relative(0, 2); rook_to_loc = king_from_loc.Relative(0, 1); break;
-                    case BLUE:   king_to_loc = king_from_loc.Relative(2, 0); rook_to_loc = king_from_loc.Relative(1, 0); break;
-                    case YELLOW: king_to_loc = king_from_loc.Relative(0, -2); rook_to_loc = king_from_loc.Relative(0, -1); break;
-                    case GREEN:  king_to_loc = king_from_loc.Relative(-2, 0); rook_to_loc = king_from_loc.Relative(-1, 0); break;
+                rook_from_loc = IndexToLocation(kInitialRookSq[Us][KINGSIDE]);
+                
+                // Templated compile-time selection for relative coords is harder without more infrastructure
+                // stick to switch or if-constexpr for clarity, compiler will optimize constants
+                if constexpr (Us == RED) { 
+                    king_to_loc = king_from_loc.Relative(0, 2); rook_to_loc = king_from_loc.Relative(0, 1); 
+                } else if constexpr (Us == BLUE) {
+                    king_to_loc = king_from_loc.Relative(2, 0); rook_to_loc = king_from_loc.Relative(1, 0);
+                } else if constexpr (Us == YELLOW) {
+                    king_to_loc = king_from_loc.Relative(0, -2); rook_to_loc = king_from_loc.Relative(0, -1);
+                } else { // GREEN
+                    king_to_loc = king_from_loc.Relative(-2, 0); rook_to_loc = king_from_loc.Relative(-1, 0);
                 }
                 *buffer++ = ExtMove(Move(king_from_loc, king_to_loc, SimpleMove(rook_from_loc, rook_to_loc), initial_cr, final_cr));
             }
         }
-        if (initial_cr.Queenside() && (all_pieces & kCastlingEmptyMask[color][QUEENSIDE]).is_zero()) {
-            Bitboard attack_mask = kCastlingAttackMask[color][QUEENSIDE];
+        if (initial_cr.Queenside() && (all_pieces & kCastlingEmptyMask[Us][QUEENSIDE]).is_zero()) {
+            Bitboard attack_mask = kCastlingAttackMask[Us][QUEENSIDE];
             bool is_safe = true;
             while(!attack_mask.is_zero()){
                 int sq = attack_mask.ctz();
@@ -1177,12 +1122,16 @@ ExtMove* Board::GetKingMoves2(ExtMove* buffer, const Player& player) const {
             }
             if(is_safe){
                 BoardLocation king_to_loc, rook_from_loc, rook_to_loc;
-                rook_from_loc = IndexToLocation(kInitialRookSq[color][QUEENSIDE]);
-                switch(color) {
-                    case RED:    king_to_loc = king_from_loc.Relative(0, -2); rook_to_loc = king_from_loc.Relative(0, -1); break;
-                    case BLUE:   king_to_loc = king_from_loc.Relative(-2, 0); rook_to_loc = king_from_loc.Relative(-1, 0); break;
-                    case YELLOW: king_to_loc = king_from_loc.Relative(0, 2); rook_to_loc = king_from_loc.Relative(0, 1); break;
-                    case GREEN:  king_to_loc = king_from_loc.Relative(2, 0); rook_to_loc = king_from_loc.Relative(1, 0); break;
+                rook_from_loc = IndexToLocation(kInitialRookSq[Us][QUEENSIDE]);
+                
+                if constexpr (Us == RED) {
+                    king_to_loc = king_from_loc.Relative(0, -2); rook_to_loc = king_from_loc.Relative(0, -1);
+                } else if constexpr (Us == BLUE) {
+                    king_to_loc = king_from_loc.Relative(-2, 0); rook_to_loc = king_from_loc.Relative(-1, 0);
+                } else if constexpr (Us == YELLOW) {
+                    king_to_loc = king_from_loc.Relative(0, 2); rook_to_loc = king_from_loc.Relative(0, 1);
+                } else { // GREEN
+                    king_to_loc = king_from_loc.Relative(2, 0); rook_to_loc = king_from_loc.Relative(1, 0);
                 }
                 *buffer++ = ExtMove(Move(king_from_loc, king_to_loc, SimpleMove(rook_from_loc, rook_to_loc), initial_cr, final_cr));
             }
@@ -1191,16 +1140,25 @@ ExtMove* Board::GetKingMoves2(ExtMove* buffer, const Player& player) const {
     return buffer;
 }
 
+template<PlayerColor Us>
+ExtMove* Board::GenerateMovesT(ExtMove* buffer) const {
+    buffer = GetPawnMovesT<Us>(buffer);
+    buffer = GetKnightMovesT<Us>(buffer);
+    buffer = GetBishopMovesT<Us>(buffer);
+    buffer = GetRookMovesT<Us>(buffer);
+    buffer = GetQueenMovesT<Us>(buffer);
+    buffer = GetKingMovesT<Us>(buffer);
+    return buffer;
+}
+
 ExtMove* Board::GetPseudoLegalMoves2(ExtMove* buffer) const {
-    ExtMove* curr = buffer;
-    Player player = GetTurn();
-    curr = GetPawnMoves2(curr, player);
-    curr = GetKnightMoves2(curr, player);
-    curr = GetBishopMoves2(curr, player);
-    curr = GetRookMoves2(curr, player);
-    curr = GetQueenMoves2(curr, player);
-    curr = GetKingMoves2(curr, player);
-    return curr;
+    switch (turn_.GetColor()) {
+        case RED:    return GenerateMovesT<RED>(buffer);
+        case BLUE:   return GenerateMovesT<BLUE>(buffer);
+        case YELLOW: return GenerateMovesT<YELLOW>(buffer);
+        case GREEN:  return GenerateMovesT<GREEN>(buffer);
+        default:     return buffer;
+    }
 }
 
 void Board::MakeMove(const Move& move) {

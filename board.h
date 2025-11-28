@@ -351,13 +351,16 @@ class Board {
   }
  
  private:
-  ExtMove* GetPawnMoves2(ExtMove* buffer, const Player& player) const;
-  ExtMove* GetKnightMoves2(ExtMove* buffer, const Player& player) const;
-  ExtMove* GetBishopMoves2(ExtMove* buffer, const Player& player) const;
-  ExtMove* GetRookMoves2(ExtMove* buffer, const Player& player) const;
-  ExtMove* GetQueenMoves2(ExtMove* buffer, const Player& player) const;
-  ExtMove* GetKingMoves2(ExtMove* buffer, const Player& player) const;
+  // Templated Move Generation Helpers
+  template<PlayerColor Us> ExtMove* GetPawnMovesT(ExtMove* buffer) const;
+  template<PlayerColor Us> ExtMove* GetKnightMovesT(ExtMove* buffer) const;
+  template<PlayerColor Us> ExtMove* GetBishopMovesT(ExtMove* buffer) const;
+  template<PlayerColor Us> ExtMove* GetRookMovesT(ExtMove* buffer) const;
+  template<PlayerColor Us> ExtMove* GetQueenMovesT(ExtMove* buffer) const;
+  template<PlayerColor Us> ExtMove* GetKingMovesT(ExtMove* buffer) const;
   
+  template<PlayerColor Us> ExtMove* GenerateMovesT(ExtMove* buffer) const;
+
   void SetPiece(const BoardLocation& location, const Piece& piece);
   void RemovePiece(const BoardLocation& location);
   void MovePiece(const BoardLocation& from, const BoardLocation& to);
