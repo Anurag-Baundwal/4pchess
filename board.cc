@@ -444,6 +444,44 @@ inline Bitboard shift(Bitboard b) {
 } // namespace BitboardImpl
 using namespace BitboardImpl;
 
+// --- Move Implementation ---
+Move::Move(BoardLocation from, BoardLocation to) {
+    int f = BitboardImpl::LocationToIndex(from);
+    int t = BitboardImpl::LocationToIndex(to);
+    data_ = (f & 0xFF) | ((t & 0xFF) << 8); // Type 0 (Normal)
+}
+
+Move::Move(BoardLocation from, BoardLocation to, PieceType promo) {
+    int f = BitboardImpl::LocationToIndex(from);
+    int t = BitboardImpl::LocationToIndex(to);
+    data_ = (f & 0xFF) | ((t & 0xFF) << 8);
+    data_ |= (TYPE_PROMO << 16);
+    data_ |= ((promo & 0x7) << 18);
+}
+
+Move::Move(BoardLocation from, BoardLocation to, MoveType type) {
+    int f = BitboardImpl::LocationToIndex(from);
+    int t = BitboardImpl::LocationToIndex(to);
+    data_ = (f & 0xFF) | ((t & 0xFF) << 8);
+    data_ |= ((type & 0x3) << 16);
+}
+
+// Implement En Passant construction with victim location
+Move Move::MakeEnPassant(BoardLocation from, BoardLocation to, BoardLocation capture_loc) {
+      Move m(from, to, TYPE_EP);
+      // Store capture location in bits 21-28
+      m.data_ |= (static_cast<uint32_t>(BitboardImpl::LocationToIndex(capture_loc)) << 21);
+      return m;
+}
+
+BoardLocation Move::GetEnpassantLocation() const {
+    if (!IsEnPassant()) return BoardLocation::kNoLocation;
+    // Extract victim location from bits 21-28
+    int idx = (data_ >> 21) & 0xFF;
+    return BitboardImpl::IndexToLocation(idx);
+}
+// ----------------------------
+
 constexpr int kMobilityMultiplier = 5;
 Piece Piece::kNoPiece = Piece();
 BoardLocation BoardLocation::kNoLocation = BoardLocation();
@@ -795,9 +833,11 @@ bool Board::IsLegal(const Move& move, const SafetyInfo& safety) const {
     int to_sq = LocationToIndex(move.To());
     int king_sq = LocationToIndex(GetKingLocation(us));
     
-    if (move.GetEnpassantLocation().Present()) {
-        BoardLocation cap_loc = move.GetEnpassantLocation();
-        int cap_sq = LocationToIndex(cap_loc);
+    if (move.IsEnPassant()) {
+        // En Passant logic
+        // Use the explicit victim location from the move object
+        int cap_sq = BitboardImpl::LocationToIndex(move.GetEnpassantLocation());
+        
         Bitboard occupied = (team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN]);
         
         occupied &= ~IndexToBitboard(from_sq);
@@ -818,7 +858,7 @@ bool Board::IsLegal(const Move& move, const SafetyInfo& safety) const {
     }
 
     if (GetPiece(from_sq).GetPieceType() == KING) {
-        if (move.GetRookMove().Present()) {
+        if (move.IsCastling()) {
             if (!safety.checkers.is_zero()) return false;
             return true;
         }
@@ -845,14 +885,12 @@ bool Board::IsLegal(const Move& move, const SafetyInfo& safety) const {
 }
 
 namespace {
-ExtMove* AddMovesFromBB(ExtMove* buffer, int from_idx, Bitboard to_bb, const Board& board,
-                    CastlingRights initial_cr = CastlingRights::kMissingRights,
-                    CastlingRights final_cr = CastlingRights::kMissingRights) {
+ExtMove* AddMovesFromBB(ExtMove* buffer, int from_idx, Bitboard to_bb, const Board& board) {
     BoardLocation from = IndexToLocation(from_idx);
     while (!to_bb.is_zero()) {
         int to_idx = to_bb.ctz();
         to_bb &= to_bb - 1;
-        *buffer++ = ExtMove(Move(from, IndexToLocation(to_idx), board.GetPiece(to_idx), initial_cr, final_cr));
+        *buffer++ = ExtMove(Move(from, IndexToLocation(to_idx)));
     }
     return buffer;
 }
@@ -887,14 +925,14 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
         int to_idx = single_targets.ctz();
         single_targets &= single_targets - 1;
         int from_idx = to_idx - PUSH;
-        *buffer++ = ExtMove(Move(IndexToLocation(from_idx), IndexToLocation(to_idx), Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, NO_PIECE));
+        *buffer++ = ExtMove(Move(IndexToLocation(from_idx), IndexToLocation(to_idx)));
     }
     
     while (!double_pushes.is_zero()) {
         int to_idx = double_pushes.ctz();
         double_pushes &= double_pushes - 1;
         int from_idx = to_idx - PUSH - PUSH;
-        *buffer++ = ExtMove(Move(IndexToLocation(from_idx), IndexToLocation(to_idx), Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, NO_PIECE));
+        *buffer++ = ExtMove(Move(IndexToLocation(from_idx), IndexToLocation(to_idx)));
     }
     
     Bitboard captures1 = shift<CAP_1>(my_pawns) & enemy_pieces;
@@ -911,7 +949,7 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
         while (!from_bb.is_zero()) {
             int from_idx = from_bb.ctz();
             from_bb &= from_bb - 1;
-            *buffer++ = ExtMove(Move(IndexToLocation(from_idx), IndexToLocation(to_idx), GetPiece(to_idx), BoardLocation::kNoLocation, Piece::kNoPiece, NO_PIECE));
+            *buffer++ = ExtMove(Move(IndexToLocation(from_idx), IndexToLocation(to_idx)));
         }
     }
     
@@ -922,10 +960,10 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
         int from_idx = to_idx - PUSH;
         BoardLocation from = IndexToLocation(from_idx);
         BoardLocation to = IndexToLocation(to_idx);
-        *buffer++ = ExtMove(Move(from, to, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, QUEEN));
-        *buffer++ = ExtMove(Move(from, to, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, ROOK));
-        *buffer++ = ExtMove(Move(from, to, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, BISHOP));
-        *buffer++ = ExtMove(Move(from, to, Piece::kNoPiece, BoardLocation::kNoLocation, Piece::kNoPiece, KNIGHT));
+        *buffer++ = ExtMove(Move(from, to, QUEEN));
+        *buffer++ = ExtMove(Move(from, to, ROOK));
+        *buffer++ = ExtMove(Move(from, to, BISHOP));
+        *buffer++ = ExtMove(Move(from, to, KNIGHT));
     }
     
     Bitboard promo_captures = (captures1 | captures2) & promotion_rank;
@@ -935,17 +973,16 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
         promo_captures &= promo_captures - 1;
         
         Bitboard from_bb = (shift<-CAP_1>(to_bb) | shift<-CAP_2>(to_bb)) & my_pawns;
-        Piece captured_piece = GetPiece(to_idx);
         BoardLocation to = IndexToLocation(to_idx);
 
         while (!from_bb.is_zero()) {
             int from_idx = from_bb.ctz();
             from_bb &= from_bb - 1;
             BoardLocation from = IndexToLocation(from_idx);
-            *buffer++ = ExtMove(Move(from, to, captured_piece, BoardLocation::kNoLocation, Piece::kNoPiece, QUEEN));
-            *buffer++ = ExtMove(Move(from, to, captured_piece, BoardLocation::kNoLocation, Piece::kNoPiece, ROOK));
-            *buffer++ = ExtMove(Move(from, to, captured_piece, BoardLocation::kNoLocation, Piece::kNoPiece, BISHOP));
-            *buffer++ = ExtMove(Move(from, to, captured_piece, BoardLocation::kNoLocation, Piece::kNoPiece, KNIGHT));
+            *buffer++ = ExtMove(Move(from, to, QUEEN));
+            *buffer++ = ExtMove(Move(from, to, ROOK));
+            *buffer++ = ExtMove(Move(from, to, BISHOP));
+            *buffer++ = ExtMove(Move(from, to, KNIGHT));
         }
     }
     
@@ -986,12 +1023,11 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
             int moved_from_idx = LocationToIndex(move_from);
             int ep_capture_dest_idx = (moved_from_idx + moved_to_idx) / 2;
             
-            *buffer++ = ExtMove(Move(
+            // Pass the victim location (move_to) explicitly to MakeEnPassant
+            *buffer++ = ExtMove(Move::MakeEnPassant(
                 IndexToLocation(our_pawn_idx),
                 IndexToLocation(ep_capture_dest_idx),
-                GetPiece(ep_capture_dest_idx), 
-                move_to,                        
-                moved_piece                     
+                move_to 
             ));
         }
     }
@@ -1034,21 +1070,12 @@ ExtMove* Board::GetRookMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
     constexpr Team team = (Us == RED || Us == YELLOW) ? RED_YELLOW : BLUE_GREEN;
     const Bitboard friendly_pieces = team_bitboards_[team];
     const Bitboard all_pieces = team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN];
-    const auto& initial_cr = castling_rights_[Us];
     
     while(!rooks.is_zero()) {
         int from_idx = rooks.ctz();
         rooks &= rooks - 1;
-        CastlingRights final_cr = initial_cr;
-        if(initial_cr.Present()){
-            if(from_idx == kInitialRookSq[Us][KINGSIDE] && initial_cr.Kingside()){
-                final_cr = CastlingRights(false, initial_cr.Queenside());
-            } else if (from_idx == kInitialRookSq[Us][QUEENSIDE] && initial_cr.Queenside()){
-                final_cr = CastlingRights(initial_cr.Kingside(), false);
-            }
-        }
         Bitboard attacks = GetRookAttacks(from_idx, all_pieces) & ~friendly_pieces;
-        buffer = AddMovesFromBB(buffer, from_idx, attacks, *this, initial_cr, final_cr.Present() ? final_cr : CastlingRights::kMissingRights);
+        buffer = AddMovesFromBB(buffer, from_idx, attacks, *this);
     }
     return buffer;
 }
@@ -1077,10 +1104,9 @@ ExtMove* Board::GetKingMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
     constexpr Team team = (Us == RED || Us == YELLOW) ? RED_YELLOW : BLUE_GREEN;
     const Bitboard friendly_pieces = team_bitboards_[team];
     const auto& initial_cr = castling_rights_[Us];
-    CastlingRights final_cr(false, false);
     
     Bitboard attacks = kKingAttacks[from_idx] & ~friendly_pieces;
-    buffer = AddMovesFromBB(buffer, from_idx, attacks, *this, initial_cr, final_cr);
+    buffer = AddMovesFromBB(buffer, from_idx, attacks, *this);
 
     if (initial_cr.Present() && safety.checkers.is_zero()) {
         Bitboard all_pieces = team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN];
@@ -1096,18 +1122,13 @@ ExtMove* Board::GetKingMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
                 if(IsAttackedByTeam(enemy_team, sq)){ is_safe = false; break; }
             }
             if(is_safe){
-                BoardLocation king_to_loc, rook_from_loc, rook_to_loc;
-                rook_from_loc = IndexToLocation(kInitialRookSq[Us][KINGSIDE]);
-                if constexpr (Us == RED) { 
-                    king_to_loc = king_from_loc.Relative(0, 2); rook_to_loc = king_from_loc.Relative(0, 1); 
-                } else if constexpr (Us == BLUE) {
-                    king_to_loc = king_from_loc.Relative(2, 0); rook_to_loc = king_from_loc.Relative(1, 0);
-                } else if constexpr (Us == YELLOW) {
-                    king_to_loc = king_from_loc.Relative(0, -2); rook_to_loc = king_from_loc.Relative(0, -1);
-                } else { // GREEN
-                    king_to_loc = king_from_loc.Relative(-2, 0); rook_to_loc = king_from_loc.Relative(-1, 0);
-                }
-                *buffer++ = ExtMove(Move(king_from_loc, king_to_loc, SimpleMove(rook_from_loc, rook_to_loc), initial_cr, final_cr));
+                BoardLocation king_to_loc;
+                if constexpr (Us == RED) king_to_loc = king_from_loc.Relative(0, 2); 
+                else if constexpr (Us == BLUE) king_to_loc = king_from_loc.Relative(2, 0); 
+                else if constexpr (Us == YELLOW) king_to_loc = king_from_loc.Relative(0, -2);
+                else king_to_loc = king_from_loc.Relative(-2, 0);
+                
+                *buffer++ = ExtMove(Move::MakeCastling(king_from_loc, king_to_loc));
             }
         }
         if (initial_cr.Queenside() && (all_pieces & kCastlingEmptyMask[Us][QUEENSIDE]).is_zero()) {
@@ -1119,18 +1140,13 @@ ExtMove* Board::GetKingMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
                 if(IsAttackedByTeam(enemy_team, sq)){ is_safe = false; break; }
             }
             if(is_safe){
-                BoardLocation king_to_loc, rook_from_loc, rook_to_loc;
-                rook_from_loc = IndexToLocation(kInitialRookSq[Us][QUEENSIDE]);
-                if constexpr (Us == RED) {
-                    king_to_loc = king_from_loc.Relative(0, -2); rook_to_loc = king_from_loc.Relative(0, -1);
-                } else if constexpr (Us == BLUE) {
-                    king_to_loc = king_from_loc.Relative(-2, 0); rook_to_loc = king_from_loc.Relative(-1, 0);
-                } else if constexpr (Us == YELLOW) {
-                    king_to_loc = king_from_loc.Relative(0, 2); rook_to_loc = king_from_loc.Relative(0, 1);
-                } else { // GREEN
-                    king_to_loc = king_from_loc.Relative(2, 0); rook_to_loc = king_from_loc.Relative(1, 0);
-                }
-                *buffer++ = ExtMove(Move(king_from_loc, king_to_loc, SimpleMove(rook_from_loc, rook_to_loc), initial_cr, final_cr));
+                BoardLocation king_to_loc;
+                if constexpr (Us == RED) king_to_loc = king_from_loc.Relative(0, -2);
+                else if constexpr (Us == BLUE) king_to_loc = king_from_loc.Relative(-2, 0);
+                else if constexpr (Us == YELLOW) king_to_loc = king_from_loc.Relative(0, 2);
+                else king_to_loc = king_from_loc.Relative(2, 0);
+                
+                *buffer++ = ExtMove(Move::MakeCastling(king_from_loc, king_to_loc));
             }
         }
     }
@@ -1160,27 +1176,117 @@ ExtMove* Board::GetPseudoLegalMoves2(ExtMove* buffer) const {
 }
 
 void Board::MakeMove(const Move& move) {
-    // Removed Safety Stack Logic
     const Player player = turn_;
     const BoardLocation from = move.From();
     const BoardLocation to = move.To();
+    int from_sq = LocationToIndex(from);
+    int to_sq = LocationToIndex(to);
 
-    if (move.IsStandardCapture()) RemovePiece(to);
-    
-    if (move.GetPromotionPieceType() != NO_PIECE) {
-        RemovePiece(from);
-        SetPiece(to, Piece(player.GetColor(), move.GetPromotionPieceType()));
-    } else {
+    // Save Undo Information
+    auto& undo = undo_stack_[move_history_ptr_];
+    undo.captured_piece = Piece::kNoPiece;
+    std::memcpy(undo.castling_rights, castling_rights_, sizeof(castling_rights_));
+    undo.enp = enp_;
+
+    if (move.IsCastling()) {
+        // Handle Castling
+        // Infer rook moves
+        BoardLocation rook_from, rook_to;
+        int king_span = to_sq - from_sq; 
+        
+        int r_from_idx = -1;
+        int r_to_idx = -1;
+        
+        // Simplified lookup based on geometry:
+        if (player.GetColor() == RED) {
+            if (to.GetCol() > from.GetCol()) { // KS
+                 r_from_idx = kInitialRookSq[RED][KINGSIDE];
+                 r_to_idx = from_sq + 1;
+            } else { // QS
+                 r_from_idx = kInitialRookSq[RED][QUEENSIDE];
+                 r_to_idx = from_sq - 1;
+            }
+        } else if (player.GetColor() == BLUE) {
+             if (to.GetRow() > from.GetRow()) { // KS
+                 r_from_idx = kInitialRookSq[BLUE][KINGSIDE];
+                 r_to_idx = from_sq + kBoardWidth;
+             } else { // QS
+                 r_from_idx = kInitialRookSq[BLUE][QUEENSIDE];
+                 r_to_idx = from_sq - kBoardWidth;
+             }
+        } else if (player.GetColor() == YELLOW) {
+             if (to.GetCol() < from.GetCol()) { // KS
+                 r_from_idx = kInitialRookSq[YELLOW][KINGSIDE];
+                 r_to_idx = from_sq - 1;
+             } else { // QS
+                 r_from_idx = kInitialRookSq[YELLOW][QUEENSIDE];
+                 r_to_idx = from_sq + 1;
+             }
+        } else { // GREEN
+             if (to.GetRow() < from.GetRow()) { // KS
+                 r_from_idx = kInitialRookSq[GREEN][KINGSIDE];
+                 r_to_idx = from_sq - kBoardWidth;
+             } else { // QS
+                 r_from_idx = kInitialRookSq[GREEN][QUEENSIDE];
+                 r_to_idx = from_sq + kBoardWidth;
+             }
+        }
+        
+        MovePiece(from, to); // Move King
+        MovePiece(IndexToLocation(r_from_idx), IndexToLocation(r_to_idx)); // Move Rook
+        
+        // Clear castling rights
+        castling_rights_[player.GetColor()] = CastlingRights(false, false);
+
+    } else if (move.IsEnPassant()) {
+        // Extract the explicit capture location from the move object
+        int cap_idx = BitboardImpl::LocationToIndex(move.GetEnpassantLocation());
+        
+        undo.captured_piece = GetPiece(cap_idx); 
+        RemovePiece(IndexToLocation(cap_idx));
         MovePiece(from, to);
+        
+    } else {
+        // Normal or Promo
+        if (!GetPiece(to).Missing()) {
+            undo.captured_piece = GetPiece(to);
+            RemovePiece(to);
+        }
+        
+        if (move.IsPromotion()) {
+            RemovePiece(from);
+            SetPiece(to, Piece(player.GetColor(), move.GetPromotionPieceType()));
+        } else {
+            MovePiece(from, to);
+        }
+        
+        // Update Castling Rights
+        if (GetPiece(to).GetPieceType() == KING) {
+             castling_rights_[player.GetColor()] = CastlingRights(false, false);
+        }
+        if (castling_rights_[player.GetColor()].Present()) {
+             if (from_sq == kInitialRookSq[player.GetColor()][KINGSIDE]) 
+                 castling_rights_[player.GetColor()] = CastlingRights(false, castling_rights_[player.GetColor()].Queenside());
+             else if (from_sq == kInitialRookSq[player.GetColor()][QUEENSIDE])
+                 castling_rights_[player.GetColor()] = CastlingRights(castling_rights_[player.GetColor()].Kingside(), false);
+        }
+        if (undo.captured_piece.GetPieceType() == ROOK) {
+             PlayerColor enemy = undo.captured_piece.GetColor();
+             if (castling_rights_[enemy].Present()) {
+                 if (to_sq == kInitialRookSq[enemy][KINGSIDE])
+                     castling_rights_[enemy] = CastlingRights(false, castling_rights_[enemy].Queenside());
+                 else if (to_sq == kInitialRookSq[enemy][QUEENSIDE])
+                     castling_rights_[enemy] = CastlingRights(castling_rights_[enemy].Kingside(), false);
+             }
+        }
     }
 
-    if (move.GetEnpassantLocation().Present()) RemovePiece(move.GetEnpassantLocation());
-    if (move.GetRookMove().Present()) {
-        SimpleMove rook_move = move.GetRookMove();
-        MovePiece(rook_move.From(), rook_move.To());
-    }
+    // Handle En Passant State Update
+    for(int i=0; i<4; ++i) enp_.enp_moves[i] = std::nullopt;
     
-    if (move.GetCastlingRights().Present()) castling_rights_[player.GetColor()] = move.GetCastlingRights();
+    if (GetPiece(to).GetPieceType() == PAWN && std::abs(from.GetRow() - to.GetRow()) + std::abs(from.GetCol() - to.GetCol()) == 2) {
+         enp_.enp_moves[player.GetColor()] = move; 
+    }
     
     int t = static_cast<int>(turn_.GetColor());
     UpdateTurnHash(t);
@@ -1198,6 +1304,7 @@ void Board::MakeMove(const Move& move) {
 void Board::UndoMove() {
     assert(move_history_ptr_ > 0);
     const Move& move = move_history_[--move_history_ptr_];
+    const auto& undo = undo_stack_[move_history_ptr_];
     
     Player turn_before = GetPreviousPlayer(turn_);
     UpdateTurnHash(static_cast<int>(turn_.GetColor()));
@@ -1206,25 +1313,50 @@ void Board::UndoMove() {
 
     const BoardLocation& to = move.To();
     const BoardLocation& from = move.From();
+    int from_sq = LocationToIndex(from);
     
-    if (move.GetInitialCastlingRights().Present()) castling_rights_[turn_before.GetColor()] = move.GetInitialCastlingRights();
+    // Restore Castling/EP
+    std::memcpy(castling_rights_, undo.castling_rights, sizeof(castling_rights_));
+    enp_ = undo.enp;
 
-    if (move.GetRookMove().Present()) {
-        SimpleMove rook_move = move.GetRookMove();
-        MovePiece(rook_move.To(), rook_move.From());
-    }
-
-    if (move.GetPromotionPieceType() != NO_PIECE) {
-        RemovePiece(to);
-        SetPiece(from, Piece(turn_before.GetColor(), PAWN));
+    if (move.IsCastling()) {
+        int r_from_idx = -1;
+        int r_to_idx = -1;
+        if (turn_before.GetColor() == RED) {
+            if (to.GetCol() > from.GetCol()) { r_from_idx = kInitialRookSq[RED][KINGSIDE]; r_to_idx = from_sq + 1; } 
+            else { r_from_idx = kInitialRookSq[RED][QUEENSIDE]; r_to_idx = from_sq - 1; }
+        } else if (turn_before.GetColor() == BLUE) {
+             if (to.GetRow() > from.GetRow()) { r_from_idx = kInitialRookSq[BLUE][KINGSIDE]; r_to_idx = from_sq + kBoardWidth; } 
+             else { r_from_idx = kInitialRookSq[BLUE][QUEENSIDE]; r_to_idx = from_sq - kBoardWidth; }
+        } else if (turn_before.GetColor() == YELLOW) {
+             if (to.GetCol() < from.GetCol()) { r_from_idx = kInitialRookSq[YELLOW][KINGSIDE]; r_to_idx = from_sq - 1; } 
+             else { r_from_idx = kInitialRookSq[YELLOW][QUEENSIDE]; r_to_idx = from_sq + 1; }
+        } else { 
+             if (to.GetRow() < from.GetRow()) { r_from_idx = kInitialRookSq[GREEN][KINGSIDE]; r_to_idx = from_sq - kBoardWidth; } 
+             else { r_from_idx = kInitialRookSq[GREEN][QUEENSIDE]; r_to_idx = from_sq + kBoardWidth; }
+        }
+        MovePiece(to, from); // King back
+        MovePiece(IndexToLocation(r_to_idx), IndexToLocation(r_from_idx)); // Rook back
+        
+    } else if (move.IsEnPassant()) {
+        MovePiece(to, from); // Pawn back
+        // Restore captured pawn using explicit location
+        int cap_idx = BitboardImpl::LocationToIndex(move.GetEnpassantLocation());
+        SetPiece(IndexToLocation(cap_idx), undo.captured_piece);
+        
     } else {
-        MovePiece(to, from);
+        // Normal/Promo
+        if (move.IsPromotion()) {
+            RemovePiece(to);
+            SetPiece(from, Piece(turn_before.GetColor(), PAWN));
+        } else {
+            MovePiece(to, from);
+        }
+        
+        if (undo.captured_piece.Present()) {
+            SetPiece(to, undo.captured_piece);
+        }
     }
-
-    if (move.IsStandardCapture()) SetPiece(to, move.GetStandardCapture());
-    if (move.GetEnpassantLocation().Present()) SetPiece(move.GetEnpassantLocation(), move.GetEnpassantCapture());
-    
-    // Removed Safety Stack Restore Logic
 }
 
 GameResult Board::GetGameResult() {
@@ -1240,7 +1372,6 @@ GameResult Board::GetGameResult() {
 
   for (ExtMove* m_ptr = move_buffer_internal; m_ptr < end_ptr; ++m_ptr) {
     const auto& move = *m_ptr;
-    // Basic legality checks before making the move
     if (!IsLegal(move, safety)) continue;
 
     MakeMove(move);
@@ -1249,9 +1380,6 @@ GameResult Board::GetGameResult() {
       UndoMove();
       return king_capture_result;
     }
-    // We must check if we are in check after the move to verify legality
-    // Note: IsLegal(move, safety) checks if we left OURSELVES in check (mostly).
-    // The loop here is standard perft-like validation.
     bool legal = !IsKingInCheck(player); 
     UndoMove();
     if (legal) return IN_PROGRESS; 
@@ -1273,10 +1401,9 @@ bool Board::IsKingInCheck(Team team) const {
 
 GameResult Board::CheckWasLastMoveKingCapture() const {
     if (LastMoveWasCapture()) {
-        const auto& last_move = GetLastMove();
-        const auto capture = last_move.GetCapturePiece();
-        if (capture.Present() && capture.GetPieceType() == KING) {
-            return capture.GetTeam() == RED_YELLOW ? WIN_BG : WIN_RY;
+        const auto& undo = undo_stack_[move_history_ptr_ - 1]; // Use undo stack
+        if (undo.captured_piece.Present() && undo.captured_piece.GetPieceType() == KING) {
+            return undo.captured_piece.GetTeam() == RED_YELLOW ? WIN_BG : WIN_RY;
         }
     }
     return IN_PROGRESS;
@@ -1343,8 +1470,8 @@ std::shared_ptr<Board> Board::CreateStandardSetup() {
 }
 
 int Move::ManhattanDistance() const {
-  if (!from_.Present() || !to_.Present()) return 0;
-  return std::abs(from_.GetRow() - to_.GetRow()) + std::abs(from_.GetCol() - to_.GetCol());
+  if (!Present()) return 0;
+  return std::abs(From().GetRow() - To().GetRow()) + std::abs(From().GetCol() - To().GetCol());
 }
 
 namespace {
@@ -1383,7 +1510,7 @@ std::string BoardLocation::PrettyStr() const {
 }
 std::string Move::PrettyStr() const {
   if(!Present()) return "null";
-  std::string s = from_.PrettyStr() + "-" + to_.PrettyStr();
+  std::string s = From().PrettyStr() + "-" + To().PrettyStr();
   if (GetPromotionPieceType() != NO_PIECE) s += ToStr(GetPromotionPieceType());
   return s;
 }
@@ -1424,7 +1551,17 @@ bool Board::DeliversCheck(const Move& move) {
     int to_sq = LocationToIndex(move.To());
     Bitboard all_pieces = (team_bitboards_[0] | team_bitboards_[1]);
     Bitboard all_after_move = (all_pieces ^ IndexToBitboard(LocationToIndex(move.From()))) | IndexToBitboard(to_sq);
-    if(move.IsCapture()) all_after_move &= ~IndexToBitboard(LocationToIndex(move.GetStandardCapture().Present() ? move.To() : move.GetEnpassantLocation()));
+    
+    // Capture handling in DeliversCheck
+    // If capture, remove victim. If EP, remove EP victim.
+    int cap_sq = -1;
+    if (move.IsEnPassant()) {
+        cap_sq = BitboardImpl::LocationToIndex(move.GetEnpassantLocation());
+    } else if (!GetPiece(to_sq).Missing()) { // Capture
+        cap_sq = to_sq;
+    }
+    
+    if (cap_sq != -1) all_after_move &= ~IndexToBitboard(cap_sq);
     
     Team enemy_team = OtherTeam(moved.GetTeam());
     PlayerColor e1 = enemy_team == RED_YELLOW ? RED : BLUE;
@@ -1453,7 +1590,10 @@ bool Move::DeliversCheck(Board& board) {
 }
 
 int Move::ApproxSEE(const Board& board, const int* piece_evaluations) const {
-  const auto capture = GetCapturePiece();
+  // Need to look up board for capture
+  int to_sq = BitboardImpl::LocationToIndex(To());
+  Piece capture = board.GetPiece(to_sq);
+  
   if(!capture.Present()) return 0;
   const auto piece = board.GetPiece(From());
   if (!piece.Present()) return 0; 
@@ -1504,21 +1644,31 @@ int SeeRecursive(const Board& board, const int piece_evaluations[6], int target_
 }
 
 int StaticExchangeEvaluationCapture(const int piece_evaluations[6], const Board& board, const Move& move) {
-    if (!move.IsCapture()) return 0;
-    const Piece captured_piece = move.GetCapturePiece();
+    // Re-lookup capture
+    int to_sq = BitboardImpl::LocationToIndex(move.To());
+    Piece captured_piece;
+    if (move.IsEnPassant()) {
+        // Correct Fix: Use a Color (RED) as dummy, then PieceType (PAWN)
+        captured_piece = Piece(RED, PAWN); 
+    } else {
+        captured_piece = board.GetPiece(to_sq);
+    }
+    
+    if (captured_piece.Missing()) return 0;
+    
     const Piece attacker_piece = board.GetPiece(move.From());
-    if (!captured_piece.Present() || !attacker_piece.Present()) return 0; 
+    if (!attacker_piece.Present()) return 0; 
     const int from_sq = BitboardImpl::LocationToIndex(move.From());
-    const int to_sq = BitboardImpl::LocationToIndex(move.To());
+    
     const int initial_gain = piece_evaluations[captured_piece.GetPieceType()];
     const int new_victim_value = piece_evaluations[attacker_piece.GetPieceType()];
     
     Bitboard occupied_before_move = board.team_bitboards_[RED_YELLOW] | board.team_bitboards_[BLUE_GREEN];
     Bitboard occupied_after_move = (occupied_before_move & ~BitboardImpl::IndexToBitboard(from_sq)) | BitboardImpl::IndexToBitboard(to_sq);
 
-    if (move.GetEnpassantLocation().Present()) {
-        int ep_captured_sq = BitboardImpl::LocationToIndex(move.GetEnpassantLocation());
-        occupied_after_move &= ~BitboardImpl::IndexToBitboard(ep_captured_sq);
+    if (move.IsEnPassant()) {
+        int ep_victim_sq = BitboardImpl::LocationToIndex(move.GetEnpassantLocation());
+        occupied_after_move &= ~BitboardImpl::IndexToBitboard(ep_victim_sq);
     }
     
     const Team opponent_team = board.GetTurn().GetTeam() == RED_YELLOW ? BLUE_GREEN : RED_YELLOW; // OtherTeam logic

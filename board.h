@@ -74,12 +74,10 @@ enum Team : int8_t {
 class Board;
 class Move;
 
-// Structure to hold safety state (checkers, pinned pieces) on the stack
-// instead of inside the Board object to avoid expensive copies/restores.
 struct SafetyInfo {
     Bitboard checkers;
-    Bitboard pinned;  // Pieces pinned to the king
-    Bitboard pinners; // Enemy pieces causing the pin
+    Bitboard pinned;
+    Bitboard pinners;
 };
 
 int StaticExchangeEvaluationCapture(const int piece_evaluations[6], const Board& board, const Move& move);
@@ -210,51 +208,59 @@ class CastlingRights {
   int8_t bits_ = 0;
 };
 
+// COMPRESSED MOVE CLASS
+// Data Layout (32 bits):
+// 0-7:   From Index (8 bits)
+// 8-15:  To Index (8 bits)
+// 16-17: Move Type (0=Normal, 1=Promo, 2=EnPassant, 3=Castling)
+// 18-20: Promotion Type (3 bits: 0=None, 1=N, 2=B, 3=R, 4=Q, etc.)
+// 21-28: Extra / Capture Index (Used for En Passant victim location)
 class Move {
  public:
-  Move() = default;
+  enum MoveType { TYPE_NORMAL = 0, TYPE_PROMO = 1, TYPE_EP = 2, TYPE_CASTLING = 3 };
+
+  Move() : data_(0) {}
   
-  Move(BoardLocation from, BoardLocation to, Piece standard_capture = Piece::kNoPiece,
-       CastlingRights initial_castling_rights = CastlingRights::kMissingRights,
-       CastlingRights castling_rights = CastlingRights::kMissingRights)
-    : from_(from), to_(to), standard_capture_(standard_capture),
-      initial_castling_rights_(initial_castling_rights), castling_rights_(castling_rights)
-  { }
+  // Standard constructor (Normal / Capture)
+  Move(BoardLocation from, BoardLocation to);
 
-  Move(BoardLocation from, BoardLocation to, Piece standard_capture,
-       BoardLocation en_passant_location, Piece en_passant_capture, PieceType promotion_piece_type = NO_PIECE)
-    : from_(from), to_(to), standard_capture_(standard_capture),
-      promotion_piece_type_(promotion_piece_type), en_passant_location_(en_passant_location),
-      en_passant_capture_(en_passant_capture)
-  { }
+  // Promotion constructor
+  Move(BoardLocation from, BoardLocation to, PieceType promo);
 
-  Move(BoardLocation from, BoardLocation to, SimpleMove rook_move,
-       CastlingRights initial_castling_rights, CastlingRights castling_rights)
-    : from_(from), to_(to), rook_move_(rook_move),
-      initial_castling_rights_(initial_castling_rights), castling_rights_(castling_rights)
-  { }
+  // Special constructor (Type specified explicitely)
+  Move(BoardLocation from, BoardLocation to, MoveType type);
 
-  const BoardLocation& From() const { return from_; }
-  const BoardLocation& To() const { return to_; }
-  bool Present() const { return from_.Present() && to_.Present(); }
-  Piece GetStandardCapture() const { return standard_capture_; }
-  bool IsStandardCapture() const { return standard_capture_.Present(); }
-  PieceType GetPromotionPieceType() const { return promotion_piece_type_; }
-  const BoardLocation GetEnpassantLocation() const { return en_passant_location_; }
-  Piece GetEnpassantCapture() const { return en_passant_capture_; }
-  SimpleMove GetRookMove() const { return rook_move_; }
-  CastlingRights GetInitialCastlingRights() const { return initial_castling_rights_; }
-  CastlingRights GetCastlingRights() const { return castling_rights_; }
-  bool IsCapture() const { return standard_capture_.Present() || en_passant_capture_.Present(); }
-  Piece GetCapturePiece() const { return standard_capture_.Present() ? standard_capture_ : en_passant_capture_; }
-
-  bool operator==(const Move& other) const {
-    return from_ == other.from_ && to_ == other.to_ && standard_capture_ == other.standard_capture_ &&
-           promotion_piece_type_ == other.promotion_piece_type_ && en_passant_location_ == other.en_passant_location_ &&
-           en_passant_capture_ == other.en_passant_capture_ && rook_move_ == other.rook_move_ &&
-           initial_castling_rights_ == other.initial_castling_rights_ && castling_rights_ == other.castling_rights_;
+  // Compatibility constructor for Castling logic in generator
+  static Move MakeCastling(BoardLocation from, BoardLocation to) {
+      return Move(from, to, TYPE_CASTLING);
   }
-  bool operator!=(const Move& other) const { return !(*this == other); }
+  
+  // En Passant now requires the capture location (victim) to handle perpendicular moves correctly
+  static Move MakeEnPassant(BoardLocation from, BoardLocation to, BoardLocation capture_loc);
+
+  bool Present() const { return data_ != 0; }
+
+  BoardLocation From() const { return BitboardImpl::IndexToLocation(data_ & 0xFF); }
+  BoardLocation To() const { return BitboardImpl::IndexToLocation((data_ >> 8) & 0xFF); }
+  
+  MoveType Type() const { return static_cast<MoveType>((data_ >> 16) & 3); }
+  
+  bool IsCastling() const { return Type() == TYPE_CASTLING; }
+  bool IsEnPassant() const { return Type() == TYPE_EP; }
+  bool IsPromotion() const { return Type() == TYPE_PROMO; }
+
+  bool IsStandardCapture() const { return false; } // Deprecated API
+
+  PieceType GetPromotionPieceType() const { 
+      if (!IsPromotion()) return NO_PIECE;
+      return static_cast<PieceType>((data_ >> 18) & 0x7);
+  }
+  
+  // Returns the location of the victim pawn for EP moves
+  BoardLocation GetEnpassantLocation() const;
+
+  bool operator==(const Move& other) const { return data_ == other.data_; }
+  bool operator!=(const Move& other) const { return data_ != other.data_; }
   
   int ManhattanDistance() const;
   friend std::ostream& operator<<(std::ostream& os, const Move& move);
@@ -264,15 +270,7 @@ class Move {
   int ApproxSEE(const Board& board, const int* piece_evaluations) const;
 
  private:
-  BoardLocation from_;
-  BoardLocation to_;
-  Piece standard_capture_;
-  PieceType promotion_piece_type_ = NO_PIECE;
-  BoardLocation en_passant_location_;
-  Piece en_passant_capture_;
-  SimpleMove rook_move_;
-  CastlingRights initial_castling_rights_;
-  CastlingRights castling_rights_;
+  uint32_t data_;
   int8_t delivers_check_ = -1;
   static constexpr int kSeeNotSet = -9999999;
   int see_ = kSeeNotSet;
@@ -304,6 +302,12 @@ struct EnpassantInitialization {
   std::optional<Move> enp_moves[4] = {std::nullopt, std::nullopt, std::nullopt, std::nullopt};
 };
 
+struct UndoInfo {
+    Piece captured_piece;
+    CastlingRights castling_rights[4]; 
+    EnpassantInitialization enp;
+};
+
 class Board {
  public:
   Board(Player turn, std::unordered_map<BoardLocation, Piece> location_to_piece,
@@ -311,22 +315,13 @@ class Board {
         std::optional<EnpassantInitialization> enp = std::nullopt);
   Board(const Board&) = default;
 
-  // New API: Calculate safety on demand (returns struct) instead of updating internal state
   SafetyInfo CalculateSafety(PlayerColor us) const;
-  
-  // High-performance templated version
   template<PlayerColor Us> SafetyInfo CalculateSafetyT() const;
 
-  // Legality Check now requires SafetyInfo to avoid re-calculation
   bool IsLegal(const Move& move, const SafetyInfo& safety) const;
-  
-  // Legacy/Convenience overload (Calculates safety internally, slower)
   bool IsLegal(const Move& move) const;
 
-  // Dispatcher for external use (Switch based)
   ExtMove* GetPseudoLegalMoves2(ExtMove* buffer) const;
-
-  // Templated API exposed for critical paths - Now takes SafetyInfo
   template<PlayerColor Us> ExtMove* GenerateMovesT(ExtMove* buffer, const SafetyInfo& safety) const;
 
   bool IsKingInCheck(const Player& player) const;
@@ -358,7 +353,8 @@ class Board {
   void UndoMove();
 
   bool LastMoveWasCapture() const {
-    return move_history_ptr_ > 0 && move_history_[move_history_ptr_ - 1].IsCapture();
+      if (move_history_ptr_ == 0) return false;
+      return undo_stack_[move_history_ptr_ - 1].captured_piece.Present();
   }
   const Move& GetLastMove() const {
     return move_history_[move_history_ptr_ - 1];
@@ -379,13 +375,11 @@ class Board {
   friend int SeeRecursive(const Board&, const int[6], int, Bitboard, Team, int);
   friend int GetLeastValuableAttacker(const Board&, int, Team, const Bitboard&, PieceType&);
 
-  // Helper for checking if a square is pinned using calculated safety
   bool IsPinned(int sq, const SafetyInfo& safety) const {
       return (safety.pinned & BitboardImpl::IndexToBitboard(sq)).operator bool();
   }
  
  private:
-  // Templated Workers - Updated to accept SafetyInfo
   template<PlayerColor Us> ExtMove* GetPawnMovesT(ExtMove* buffer, const SafetyInfo& safety) const;
   template<PlayerColor Us> ExtMove* GetKnightMovesT(ExtMove* buffer, const SafetyInfo& safety) const;
   template<PlayerColor Us> ExtMove* GetBishopMovesT(ExtMove* buffer, const SafetyInfo& safety) const;
@@ -417,9 +411,6 @@ class Board {
   Bitboard color_bitboards_[4];   
   Bitboard team_bitboards_[2];     
 
-  // Removed expensive member variables: checkers_, blockers_for_king_, pinners_, safety_stack_
-  // Safety state is now passed via stack (SafetyInfo struct)
-
   static constexpr int kMaxGameDepth = 512;
   
   Piece piece_on_square_[256];
@@ -428,6 +419,7 @@ class Board {
   EnpassantInitialization enp_;
   
   Move move_history_[kMaxGameDepth];
+  UndoInfo undo_stack_[kMaxGameDepth]; 
   int move_history_ptr_ = 0;
   
   int piece_evaluation_ = 0;
@@ -478,10 +470,8 @@ inline Player GetPartner(const Player& player) {
 template <>
 struct std::hash<chess::Move> {
   std::size_t operator()(const chess::Move& m) const {
-    std::size_t h1 = std::hash<chess::BoardLocation>()(m.From());
-    std::size_t h2 = std::hash<chess::BoardLocation>()(m.To());
-    std::size_t h3 = std::hash<int>()(static_cast<int>(m.GetPromotionPieceType()));
-    return h1 ^ (h2 << 1) ^ (h3 << 2);
+      // Very simple hash for uint32
+      return std::hash<uint32_t>()(m.From().GetRawValue() | (m.To().GetRawValue() << 8));
   }
 };
 
