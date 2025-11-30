@@ -516,7 +516,16 @@ Board::Board(
       if (it != cr.end()) castling_rights_[color] = it->second;
     }
   }
-  if (enp.has_value()) enp_ = std::move(*enp);
+  
+  // NEW: Initialize EP targets
+  std::memset(en_passant_target_, 0xFF, sizeof(en_passant_target_));
+  if (enp.has_value()) {
+      for (int i = 0; i < 4; ++i) {
+          if (enp->target_indices[i] >= 0 && enp->target_indices[i] < 256) {
+              en_passant_target_[i] = static_cast<uint8_t>(enp->target_indices[i]);
+          }
+      }
+  }
 
   for (const auto& it : location_to_piece) SetPiece(it.first, it.second);
   
@@ -529,6 +538,9 @@ Board::Board(
       }
     }
   }
+  // Init EP hashes
+  for (int i = 0; i < 256; ++i) en_passant_hashes_[i] = rng();
+
   InitializeHash();
 }
 
@@ -542,6 +554,10 @@ void Board::InitializeHash() {
                 UpdatePieceHash(Piece(static_cast<PlayerColor>(c), static_cast<PieceType>(pt)), idx);
                 bb &= (bb - 1);
             }
+        }
+        // Hash EP targets
+        if (en_passant_target_[c] != 255) {
+            hash_key_ ^= en_passant_hashes_[en_passant_target_[c]];
         }
     }
     UpdateTurnHash(static_cast<int>(turn_.GetColor()));
@@ -906,6 +922,16 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
     constexpr int PUSH = (Us == RED) ? PUSH_N : (Us == BLUE) ? PUSH_E : (Us == YELLOW) ? PUSH_S : PUSH_W;
     constexpr int CAP_1 = (Us == RED) ? PUSH_NW : (Us == BLUE) ? PUSH_NE : (Us == YELLOW) ? PUSH_SE : PUSH_SW;
     constexpr int CAP_2 = (Us == RED) ? PUSH_NE : (Us == BLUE) ? PUSH_SE : (Us == YELLOW) ? PUSH_SW : PUSH_NW;
+    
+    // For EP Victim location calculation: Victim = Target + (OpponentPushDir)
+    // Actually, simple geometry: Opponent pushed 2 squares to get to [Target - PushDir].
+    // Wait, Opponent moved from X to X + 2*Dir. Target is X + Dir.
+    // Victim is at Target + Dir. 
+    // Example: Red pushes North (-16). From 200 to 168. Target 184.
+    // Victim is at 168. 184 + (-16) = 168.
+    // So Victim = Target + PUSH_OF_US. No, victim is opponent.
+    // Let's use a lookup.
+    constexpr int PUSH_OFFSETS[4] = {-kBoardWidth, 1, kBoardWidth, -1};
 
     const Bitboard& my_pawns = piece_bitboards_[Us][PAWN];
     if (my_pawns.is_zero()) return buffer;
@@ -986,48 +1012,43 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
         }
     }
     
-    constexpr PlayerColor Next = static_cast<PlayerColor>((Us + 1) % 4);
-    constexpr PlayerColor Prev = static_cast<PlayerColor>((Us + 3) % 4);
-    const PlayerColor opponents[2] = { Next, Prev };
-
-    for (const PlayerColor opponent_color : opponents) {
-        const Move* opponent_last_move = nullptr;
-        int turns_ago = (Us - opponent_color + 4) % 4;
+    // --- FIXED EN PASSANT LOGIC ---
+    // Iterate over all 4 colors to check their persistent EP targets
+    for (int opp_idx = 0; opp_idx < 4; ++opp_idx) {
+        if (en_passant_target_[opp_idx] == 255) continue; // No target for this player
         
-        if (turns_ago > 0 && move_history_ptr_ >= turns_ago) {
-            opponent_last_move = &move_history_[move_history_ptr_ - turns_ago];
-        } else {
-            const auto& enp_move = enp_.enp_moves[opponent_color];
-            if (enp_move.has_value()) opponent_last_move = &*enp_move;
-        }
+        PlayerColor opp_color = static_cast<PlayerColor>(opp_idx);
+        if (GetTeam(opp_color) == team) continue; // Cannot capture own team EP
 
-        if (opponent_last_move == nullptr || !opponent_last_move->Present()) continue;
-
-        const auto& move_from = opponent_last_move->From();
-        const auto& move_to = opponent_last_move->To();
-        Piece moved_piece = GetPiece(move_to);
-
-        if (moved_piece.GetPieceType() != PAWN ||
-            moved_piece.GetColor() != opponent_color ||
-            opponent_last_move->ManhattanDistance() != 2 ||
-            (move_from.GetRow() != move_to.GetRow() && move_from.GetCol() != move_to.GetCol())) {
-            continue;
-        }
+        int ep_target_idx = en_passant_target_[opp_idx];
         
-        int moved_to_idx = LocationToIndex(move_to);
-        Bitboard capturer_square_bb = shift<-PUSH>(IndexToBitboard(moved_to_idx));
-        Bitboard capturer_pawn = capturer_square_bb & my_pawns;
+        // Ensure our pawn attacks this target
+        Bitboard target_bb = IndexToBitboard(ep_target_idx);
+        Bitboard attack_from = (shift<-CAP_1>(target_bb) | shift<-CAP_2>(target_bb)) & my_pawns;
+        
+        if (attack_from.is_zero()) continue;
 
-        if (!capturer_pawn.is_zero()) {
-            int our_pawn_idx = capturer_pawn.ctz();
-            int moved_from_idx = LocationToIndex(move_from);
-            int ep_capture_dest_idx = (moved_from_idx + moved_to_idx) / 2;
-            
-            // Pass the victim location (move_to) explicitly to MakeEnPassant
+        // Calculate victim location: Target + Opponent's Push Direction
+        int victim_idx = ep_target_idx + PUSH_OFFSETS[opp_idx];
+        
+        // Verify victim exists, is a pawn, and belongs to opponent (sanity check for 4PC logic)
+        // If the pawn was captured by someone else since the EP target was set, we can't capture it.
+        const Bitboard& victim_bb = IndexToBitboard(victim_idx);
+        if ((victim_bb & piece_bitboards_[opp_color][PAWN]).is_zero()) continue;
+
+        // Check if the target square itself is occupied by team-mate (rare 4PC edge case)
+        if (!(target_bb & team_bitboards_[team]).is_zero()) continue;
+
+        BoardLocation target_loc = IndexToLocation(ep_target_idx);
+        BoardLocation victim_loc = IndexToLocation(victim_idx);
+
+        while (!attack_from.is_zero()) {
+            int from_idx = attack_from.ctz();
+            attack_from &= attack_from - 1;
             *buffer++ = ExtMove(Move::MakeEnPassant(
-                IndexToLocation(our_pawn_idx),
-                IndexToLocation(ep_capture_dest_idx),
-                move_to 
+                IndexToLocation(from_idx),
+                target_loc,
+                victim_loc
             ));
         }
     }
@@ -1181,12 +1202,19 @@ void Board::MakeMove(const Move& move) {
     const BoardLocation to = move.To();
     int from_sq = LocationToIndex(from);
     int to_sq = LocationToIndex(to);
+    PlayerColor us = player.GetColor();
 
     // Save Undo Information
     auto& undo = undo_stack_[move_history_ptr_];
     undo.captured_piece = Piece::kNoPiece;
     std::memcpy(undo.castling_rights, castling_rights_, sizeof(castling_rights_));
-    undo.enp = enp_;
+    
+    // --- 1. Handle En Passant State (Clear/Store old) ---
+    uint8_t old_ep = en_passant_target_[us];
+    undo.prev_ep_target = old_ep;
+    if (old_ep != 255) hash_key_ ^= en_passant_hashes_[old_ep];
+    en_passant_target_[us] = 255; // Clear for now
+    // ----------------------------------------------------
 
     if (move.IsCastling()) {
         // Handle Castling
@@ -1281,12 +1309,19 @@ void Board::MakeMove(const Move& move) {
         }
     }
 
-    // Handle En Passant State Update
-    for(int i=0; i<4; ++i) enp_.enp_moves[i] = std::nullopt;
-    
-    if (GetPiece(to).GetPieceType() == PAWN && std::abs(from.GetRow() - to.GetRow()) + std::abs(from.GetCol() - to.GetCol()) == 2) {
-         enp_.enp_moves[player.GetColor()] = move; 
+    // --- 2. Set New En Passant State ---
+    // If pawn moves 2 squares, set new target
+    // Double push distance is exactly 32 for Width 16 board (2 rows or 2 cols)
+    // Actually, simple math: distance is 2 steps.
+    // Check type of piece at TO (might be promo, but promos don't generate EP)
+    // Only normal pawn moves.
+    if (!move.IsPromotion() && GetPiece(to).GetPieceType() == PAWN && move.ManhattanDistance() == 2) {
+         // Midpoint is the target
+         int mid_sq = (from_sq + to_sq) / 2;
+         en_passant_target_[us] = (uint8_t)mid_sq;
+         hash_key_ ^= en_passant_hashes_[mid_sq];
     }
+    // -----------------------------------
     
     int t = static_cast<int>(turn_.GetColor());
     UpdateTurnHash(t);
@@ -1307,17 +1342,31 @@ void Board::UndoMove() {
     const auto& undo = undo_stack_[move_history_ptr_];
     
     Player turn_before = GetPreviousPlayer(turn_);
+    PlayerColor us = turn_before.GetColor();
+
     UpdateTurnHash(static_cast<int>(turn_.GetColor()));
     turn_ = turn_before;
     UpdateTurnHash(static_cast<int>(turn_.GetColor()));
+
+    // --- 1. Restore En Passant State ---
+    // Remove current EP target (created by the move being undone)
+    uint8_t current_ep = en_passant_target_[us];
+    if (current_ep != 255) {
+        hash_key_ ^= en_passant_hashes_[current_ep];
+        en_passant_target_[us] = 255;
+    }
+    // Restore previous EP target
+    uint8_t old_ep = undo.prev_ep_target;
+    en_passant_target_[us] = old_ep;
+    if (old_ep != 255) hash_key_ ^= en_passant_hashes_[old_ep];
+    // -----------------------------------
 
     const BoardLocation& to = move.To();
     const BoardLocation& from = move.From();
     int from_sq = LocationToIndex(from);
     
-    // Restore Castling/EP
+    // Restore Castling Rights
     std::memcpy(castling_rights_, undo.castling_rights, sizeof(castling_rights_));
-    enp_ = undo.enp;
 
     if (move.IsCastling()) {
         int r_from_idx = -1;

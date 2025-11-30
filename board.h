@@ -298,14 +298,15 @@ class PlacedPiece {
   Piece piece_;
 };
 
+// Simplified initialization struct to hold just indices
 struct EnpassantInitialization {
-  std::optional<Move> enp_moves[4] = {std::nullopt, std::nullopt, std::nullopt, std::nullopt};
+    int target_indices[4] = {-1, -1, -1, -1};
 };
 
 struct UndoInfo {
     Piece captured_piece;
     CastlingRights castling_rights[4]; 
-    EnpassantInitialization enp;
+    uint8_t prev_ep_target; // Stores the EP target index for the player who moved, to restore it on undo
 };
 
 class Board {
@@ -368,7 +369,9 @@ class Board {
   void SetPlayer(const Player& player);
   void MakeNullMove();
   void UndoNullMove();
-  const EnpassantInitialization& GetEnpassantInitialization() { return enp_; }
+  
+  // Returns raw indices
+  const uint8_t* GetEnPassantTargets() const { return en_passant_target_; }
 
   friend class AlphaBetaPlayer;
   friend int StaticExchangeEvaluationCapture(const int[6], const Board&, const Move&);
@@ -416,7 +419,9 @@ class Board {
   Piece piece_on_square_[256];
   
   CastlingRights castling_rights_[4];
-  EnpassantInitialization enp_;
+  
+  // NEW: Store EP targets as 256-sized indices. 255 (0xFF) = No Target.
+  uint8_t en_passant_target_[4];
   
   Move move_history_[kMaxGameDepth];
   UndoInfo undo_stack_[kMaxGameDepth]; 
@@ -428,6 +433,8 @@ class Board {
   int64_t hash_key_ = 0;
   int64_t piece_hashes_[4][6][256];
   int64_t turn_hashes_[4];
+  // NEW: Hashes for EP squares
+  int64_t en_passant_hashes_[256];
 };
 
 Team OtherTeam(Team team);

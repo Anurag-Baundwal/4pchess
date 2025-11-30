@@ -103,6 +103,9 @@ std::optional<BoardLocation> ParseEnpLocation(const std::string& enp) {
 }
 
 std::shared_ptr<Board> ParseBoardFromFEN(const std::string& fen) {
+  // Ensure bitboard tables (kLocationToIndex) are initialized before we use them
+  BitboardImpl::InitBitboards();
+
   std::vector<std::string> parts = SplitStr(fen, "-");
   if (parts.size() < 7 || parts.size() > 8) {
     return nullptr;  // invalid format
@@ -156,19 +159,23 @@ std::shared_ptr<Board> ParseBoardFromFEN(const std::string& fen) {
     if (parts.size() != 4) return nullptr;
     
     for (int i = 0; i < 4; i++) {
-      auto enp_location = ParseEnpLocation(parts[i]);
-      if (enp_location.has_value()) {
-        BoardLocation& to = *enp_location;
-        int from_row = to.GetRow();
-        int from_col = to.GetCol();
+      auto enp_location_opt = ParseEnpLocation(parts[i]);
+      if (enp_location_opt.has_value()) {
+        BoardLocation dest = *enp_location_opt;
+        // The FEN typically contains the DESTINATION of the double push in 4-player chess variants.
+        // We need to convert this to the TARGET square (the empty square skipped over).
+        BoardLocation target;
         switch (static_cast<PlayerColor>(i)) {
-        case RED: from_row += 2; break;
-        case BLUE: from_col -= 2; break;
-        case YELLOW: from_row -= 2; break;
-        case GREEN: from_col += 2; break;
-        default: break;
+          case RED:    target = dest.Relative(1, 0); break;  // Red pushed North (row decremented), target is 'below' dest
+          case BLUE:   target = dest.Relative(0, -1); break; // Blue pushed East (col incremented), target is 'left' of dest
+          case YELLOW: target = dest.Relative(-1, 0); break; // Yellow pushed South (row incremented), target is 'above' dest
+          case GREEN:  target = dest.Relative(0, 1); break;  // Green pushed West (col decremented), target is 'right' of dest
+          default: break;
         }
-        enp.enp_moves[i] = Move(BoardLocation(from_row, from_col), to);
+
+        if (target.Present()) {
+            enp.target_indices[i] = BitboardImpl::LocationToIndex(target);
+        }
       }
     }
   }
@@ -300,7 +307,6 @@ std::optional<Move> ParseMove(Board& board, const std::string& move_str_ref) {
   BoardLocation to_loc = std::get<1>(*to);
   PieceType promotion_piece_type = std::get<1>(*promotion);
 
-  // FIXED: Updated to use ExtMove and pointer arithmetic
   ExtMove moves[300];
   ExtMove* end_ptr = board.GetPseudoLegalMoves2(moves);
 
