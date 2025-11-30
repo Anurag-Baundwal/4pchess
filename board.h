@@ -80,6 +80,7 @@ struct SafetyInfo {
     Bitboard pinners;
 };
 
+// Helper for SEE
 int StaticExchangeEvaluationCapture(const int piece_evaluations[6], const Board& board, const Move& move);
 int SeeRecursive(const Board& board, const int piece_evaluations[6], int target_sq, Bitboard occupied, Team side_to_attack, int victim_value);
 int GetLeastValuableAttacker(const Board& board, int sq, Team team, const Bitboard& occupied, PieceType& out_type);
@@ -209,12 +210,6 @@ class CastlingRights {
 };
 
 // COMPRESSED MOVE CLASS
-// Data Layout (32 bits):
-// 0-7:   From Index (8 bits)
-// 8-15:  To Index (8 bits)
-// 16-17: Move Type (0=Normal, 1=Promo, 2=EnPassant, 3=Castling)
-// 18-20: Promotion Type (3 bits: 0=None, 1=N, 2=B, 3=R, 4=Q, etc.)
-// 21-28: Extra / Capture Index (Used for En Passant victim location)
 class Move {
  public:
   enum MoveType { TYPE_NORMAL = 0, TYPE_PROMO = 1, TYPE_EP = 2, TYPE_CASTLING = 3 };
@@ -248,8 +243,6 @@ class Move {
   bool IsCastling() const { return Type() == TYPE_CASTLING; }
   bool IsEnPassant() const { return Type() == TYPE_EP; }
   bool IsPromotion() const { return Type() == TYPE_PROMO; }
-
-  bool IsStandardCapture() const { return false; } // Deprecated API
 
   PieceType GetPromotionPieceType() const { 
       if (!IsPromotion()) return NO_PIECE;
@@ -306,7 +299,7 @@ struct EnpassantInitialization {
 struct UndoInfo {
     Piece captured_piece;
     CastlingRights castling_rights[4]; 
-    uint8_t prev_ep_target; // Stores the EP target index for the player who moved, to restore it on undo
+    uint8_t prev_ep_target; // Stores the EP target index for the player who moved
 };
 
 class Board {
@@ -433,8 +426,9 @@ class Board {
   int64_t hash_key_ = 0;
   int64_t piece_hashes_[4][6][256];
   int64_t turn_hashes_[4];
-  // NEW: Hashes for EP squares
+  // NEW: Zobrist hashes
   int64_t en_passant_hashes_[256];
+  int64_t castling_hashes_[4][2]; // [Color][Side] (0=KS, 1=QS)
 };
 
 Team OtherTeam(Team team);

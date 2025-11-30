@@ -517,7 +517,7 @@ Board::Board(
     }
   }
   
-  // NEW: Initialize EP targets
+  // Initialize EP targets
   std::memset(en_passant_target_, 0xFF, sizeof(en_passant_target_));
   if (enp.has_value()) {
       for (int i = 0; i < 4; ++i) {
@@ -540,6 +540,12 @@ Board::Board(
   }
   // Init EP hashes
   for (int i = 0; i < 256; ++i) en_passant_hashes_[i] = rng();
+  
+  // Init Castling hashes
+  for (int c = 0; c < 4; ++c) {
+      castling_hashes_[c][KINGSIDE] = rng();
+      castling_hashes_[c][QUEENSIDE] = rng();
+  }
 
   InitializeHash();
 }
@@ -559,6 +565,9 @@ void Board::InitializeHash() {
         if (en_passant_target_[c] != 255) {
             hash_key_ ^= en_passant_hashes_[en_passant_target_[c]];
         }
+        // Hash Castling Rights
+        if (castling_rights_[c].Kingside()) hash_key_ ^= castling_hashes_[c][KINGSIDE];
+        if (castling_rights_[c].Queenside()) hash_key_ ^= castling_hashes_[c][QUEENSIDE];
     }
     UpdateTurnHash(static_cast<int>(turn_.GetColor()));
 }
@@ -922,15 +931,6 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
     constexpr int PUSH = (Us == RED) ? PUSH_N : (Us == BLUE) ? PUSH_E : (Us == YELLOW) ? PUSH_S : PUSH_W;
     constexpr int CAP_1 = (Us == RED) ? PUSH_NW : (Us == BLUE) ? PUSH_NE : (Us == YELLOW) ? PUSH_SE : PUSH_SW;
     constexpr int CAP_2 = (Us == RED) ? PUSH_NE : (Us == BLUE) ? PUSH_SE : (Us == YELLOW) ? PUSH_SW : PUSH_NW;
-    
-    // For EP Victim location calculation: Victim = Target + (OpponentPushDir)
-    // Actually, simple geometry: Opponent pushed 2 squares to get to [Target - PushDir].
-    // Wait, Opponent moved from X to X + 2*Dir. Target is X + Dir.
-    // Victim is at Target + Dir. 
-    // Example: Red pushes North (-16). From 200 to 168. Target 184.
-    // Victim is at 168. 184 + (-16) = 168.
-    // So Victim = Target + PUSH_OF_US. No, victim is opponent.
-    // Let's use a lookup.
     constexpr int PUSH_OFFSETS[4] = {-kBoardWidth, 1, kBoardWidth, -1};
 
     const Bitboard& my_pawns = piece_bitboards_[Us][PAWN];
@@ -1029,6 +1029,8 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
         if (attack_from.is_zero()) continue;
 
         // Calculate victim location: Target + Opponent's Push Direction
+        // The opponent pushed *from* (Target + Push) *to* (Target - Push).
+        // The victim pawn is at (Target + Push).
         int victim_idx = ep_target_idx + PUSH_OFFSETS[opp_idx];
         
         // Verify victim exists, is a pawn, and belongs to opponent (sanity check for 4PC logic)
@@ -1209,6 +1211,10 @@ void Board::MakeMove(const Move& move) {
     undo.captured_piece = Piece::kNoPiece;
     std::memcpy(undo.castling_rights, castling_rights_, sizeof(castling_rights_));
     
+    // NEW: Snapshot castling rights to calculate hash diff later
+    CastlingRights pre_move_castling[4];
+    std::memcpy(pre_move_castling, castling_rights_, sizeof(castling_rights_));
+    
     // --- 1. Handle En Passant State (Clear/Store old) ---
     uint8_t old_ep = en_passant_target_[us];
     undo.prev_ep_target = old_ep;
@@ -1311,10 +1317,6 @@ void Board::MakeMove(const Move& move) {
 
     // --- 2. Set New En Passant State ---
     // If pawn moves 2 squares, set new target
-    // Double push distance is exactly 32 for Width 16 board (2 rows or 2 cols)
-    // Actually, simple math: distance is 2 steps.
-    // Check type of piece at TO (might be promo, but promos don't generate EP)
-    // Only normal pawn moves.
     if (!move.IsPromotion() && GetPiece(to).GetPieceType() == PAWN && move.ManhattanDistance() == 2) {
          // Midpoint is the target
          int mid_sq = (from_sq + to_sq) / 2;
@@ -1322,6 +1324,17 @@ void Board::MakeMove(const Move& move) {
          hash_key_ ^= en_passant_hashes_[mid_sq];
     }
     // -----------------------------------
+    
+    // NEW: Update Castling Hash by comparing pre/post state
+    // This handles all cases: King move, Rook move, Rook capture, Castling itself.
+    for (int c = 0; c < 4; ++c) {
+        if (pre_move_castling[c] != castling_rights_[c]) {
+            if (pre_move_castling[c].Kingside() ^ castling_rights_[c].Kingside()) 
+                hash_key_ ^= castling_hashes_[c][KINGSIDE];
+            if (pre_move_castling[c].Queenside() ^ castling_rights_[c].Queenside()) 
+                hash_key_ ^= castling_hashes_[c][QUEENSIDE];
+        }
+    }
     
     int t = static_cast<int>(turn_.GetColor());
     UpdateTurnHash(t);
@@ -1348,6 +1361,10 @@ void Board::UndoMove() {
     turn_ = turn_before;
     UpdateTurnHash(static_cast<int>(turn_.GetColor()));
 
+    const BoardLocation& to = move.To();
+    const BoardLocation& from = move.From();
+    int from_sq = LocationToIndex(from);
+    
     // --- 1. Restore En Passant State ---
     // Remove current EP target (created by the move being undone)
     uint8_t current_ep = en_passant_target_[us];
@@ -1361,10 +1378,17 @@ void Board::UndoMove() {
     if (old_ep != 255) hash_key_ ^= en_passant_hashes_[old_ep];
     // -----------------------------------
 
-    const BoardLocation& to = move.To();
-    const BoardLocation& from = move.From();
-    int from_sq = LocationToIndex(from);
-    
+    // NEW: Update Castling Hash before overwriting rights
+    // Compare current (wrong) rights with undo (correct) rights and XOR difference
+    for (int c = 0; c < 4; ++c) {
+        if (castling_rights_[c] != undo.castling_rights[c]) {
+            if (castling_rights_[c].Kingside() ^ undo.castling_rights[c].Kingside()) 
+                hash_key_ ^= castling_hashes_[c][KINGSIDE];
+            if (castling_rights_[c].Queenside() ^ undo.castling_rights[c].Queenside()) 
+                hash_key_ ^= castling_hashes_[c][QUEENSIDE];
+        }
+    }
+
     // Restore Castling Rights
     std::memcpy(castling_rights_, undo.castling_rights, sizeof(castling_rights_));
 
@@ -1456,6 +1480,10 @@ GameResult Board::CheckWasLastMoveKingCapture() const {
         }
     }
     return IN_PROGRESS;
+}
+
+const CastlingRights& Board::GetCastlingRights(const Player& player) const {
+  return castling_rights_[player.GetColor()];
 }
 
 Team Board::TeamToPlay() const { return GetTeam(GetTurn().GetColor()); }
