@@ -343,22 +343,19 @@ class Board {
   static std::shared_ptr<Board> CreateStandardSetup();
   const CastlingRights& GetCastlingRights(const Player& player) const;
 
+  // MakeMove no longer records to internal vector
   void MakeMove(const Move& move);
-  void UndoMove();
+  // UndoMove now requires the move to be passed back
+  void UndoMove(const Move& move);
 
   bool LastMoveWasCapture() const {
       if (move_history_ptr_ == 0) return false;
       return undo_stack_[move_history_ptr_ - 1].captured_piece.Present();
   }
-  const Move& GetLastMove() const {
-    return move_history_[move_history_ptr_ - 1];
-  }
+  
+  // NOTE: GetLastMove() and Moves() removed as history vector is gone.
   int NumMoves() const { return move_history_ptr_; }
   
-  std::vector<Move> Moves() const {
-      return std::vector<Move>(move_history_, move_history_ + move_history_ptr_); 
-  }
-
   void SetPlayer(const Player& player);
   void MakeNullMove();
   void UndoNullMove();
@@ -413,10 +410,10 @@ class Board {
   
   CastlingRights castling_rights_[4];
   
-  // NEW: Store EP targets as 256-sized indices. 255 (0xFF) = No Target.
+  // Stores EP targets as 256-sized indices. 255 (0xFF) = No Target.
   uint8_t en_passant_target_[4];
   
-  Move move_history_[kMaxGameDepth];
+  // Removed: Move move_history_[kMaxGameDepth];
   UndoInfo undo_stack_[kMaxGameDepth]; 
   int move_history_ptr_ = 0;
   
@@ -426,7 +423,6 @@ class Board {
   int64_t hash_key_ = 0;
   int64_t piece_hashes_[4][6][256];
   int64_t turn_hashes_[4];
-  // NEW: Zobrist hashes
   int64_t en_passant_hashes_[256];
   int64_t castling_hashes_[4][2]; // [Color][Side] (0=KS, 1=QS)
 };
@@ -471,7 +467,6 @@ inline Player GetPartner(const Player& player) {
 template <>
 struct std::hash<chess::Move> {
   std::size_t operator()(const chess::Move& m) const {
-      // Very simple hash for uint32
       return std::hash<uint32_t>()(m.From().GetRawValue() | (m.To().GetRawValue() << 8));
   }
 };

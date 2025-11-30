@@ -76,9 +76,9 @@ uint64_t perft_driver(Board& board, int depth) {
         constexpr PlayerColor NextUs = static_cast<PlayerColor>((Us + 1) % 4);
         nodes += perft_driver<NextUs>(board, depth - 1);
         
-        // UndoMove is now cheaper (no safety restore)
+        // UndoMove is now cheaper (no safety restore), but requires the move object
         // When we return here, 'safety' variable is still valid from this stack frame.
-        board.UndoMove(); 
+        board.UndoMove(move); 
     }
 
     return nodes;
@@ -134,7 +134,7 @@ uint64_t divide(Board& board, int depth) {
         sum += nodes;
         std::cout << move.PrettyStr() << ": " << nodes << std::endl;
 
-        board.UndoMove();
+        board.UndoMove(move);
       }
       return sum;
   };

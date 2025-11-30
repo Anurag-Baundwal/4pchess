@@ -1226,7 +1226,6 @@ void Board::MakeMove(const Move& move) {
         // Handle Castling
         // Infer rook moves
         BoardLocation rook_from, rook_to;
-        int king_span = to_sq - from_sq; 
         
         int r_from_idx = -1;
         int r_to_idx = -1;
@@ -1342,16 +1341,16 @@ void Board::MakeMove(const Move& move) {
     UpdateTurnHash(static_cast<int>(turn_.GetColor()));
 
     if (move_history_ptr_ < kMaxGameDepth) {
-        move_history_[move_history_ptr_++] = move;
+        move_history_ptr_++;
     } else {
         std::cerr << "History overflow" << std::endl;
         abort();
     }
 }
 
-void Board::UndoMove() {
+void Board::UndoMove(const Move& move) {
     assert(move_history_ptr_ > 0);
-    const Move& move = move_history_[--move_history_ptr_];
+    --move_history_ptr_;
     const auto& undo = undo_stack_[move_history_ptr_];
     
     Player turn_before = GetPreviousPlayer(turn_);
@@ -1450,11 +1449,11 @@ GameResult Board::GetGameResult() {
     MakeMove(move);
     GameResult king_capture_result = CheckWasLastMoveKingCapture();
     if (king_capture_result != IN_PROGRESS) {
-      UndoMove();
+      UndoMove(move);
       return king_capture_result;
     }
     bool legal = !IsKingInCheck(player); 
-    UndoMove();
+    UndoMove(move);
     if (legal) return IN_PROGRESS; 
   }
   if (!IsKingInCheck(player)) return STALEMATE;
