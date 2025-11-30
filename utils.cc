@@ -12,7 +12,6 @@
 
 #include "board.h"
 
-
 namespace chess {
 
 std::vector<std::string> SplitStrOnWhitespace(const std::string& x) {
@@ -72,38 +71,44 @@ std::optional<std::vector<bool>> ParseCastlingAvailability(
 }
 
 std::optional<BoardLocation> ParseEnpLocation(const std::string& enp) {
-  size_t pos = enp.find(':');
-  if (pos == std::string::npos) {
-    return std::nullopt;
+  std::string clean_enp = enp;
+
+  // Handle empty string cases like ('', '', ...)
+  if (clean_enp.empty() || clean_enp == "''") {
+      return std::nullopt;
   }
-  std::string to = enp.substr(pos + 1);
-  if (!to.empty() && to[to.size() - 1] == '\'') {
-    to = to.substr(0, to.size() - 1);
+
+  // Remove surrounding quotes
+  if (clean_enp.front() == '\'' && clean_enp.back() == '\'') {
+    clean_enp = clean_enp.substr(1, clean_enp.length() - 2);
   }
-  if (to.size() < 2 || to.size() > 3) {
-    return std::nullopt;
+
+  // The format is usually "Target:Victim". We only need the Target (first part).
+  size_t pos = clean_enp.find(':');
+  std::string target_str = (pos == std::string::npos) ? clean_enp : clean_enp.substr(0, pos);
+
+  if (target_str.length() < 2 || target_str.length() > 3) {
+      return std::nullopt;
   }
-  int col = to[0] - 'a';
+  
+  int col = target_str[0] - 'a';
   if (col < 0 || col > 13) {
     return std::nullopt;
   }
-  int row = to[1] - '0';
-  if (row < 0 || row > 9) {
+
+  int row_val;
+  try {
+    row_val = std::stoi(target_str.substr(1));
+  } catch(const std::exception& e) {
     return std::nullopt;
   }
-  if (to.size() > 2) {
-    int digit = to[2] - '0';
-    if (digit < 0 || digit > 9) {
-      return std::nullopt;
-    }
-    row = 10 * row + digit;
-  }
-  row = 14 - row;  // transform to 0-13
+
+  int row = 14 - row_val; // transform to internal 0-13 index
   return BoardLocation(row, col);
 }
 
 std::shared_ptr<Board> ParseBoardFromFEN(const std::string& fen) {
-  // Ensure bitboard tables (kLocationToIndex) are initialized before we use them
+  // Ensure bitboard tables are initialized for LocationToIndex lookups
   BitboardImpl::InitBitboards();
 
   std::vector<std::string> parts = SplitStr(fen, "-");
@@ -123,7 +128,7 @@ std::shared_ptr<Board> ParseBoardFromFEN(const std::string& fen) {
 
   // Parse player
   if (player_str.size() != 1) {
-    return nullptr;  // invalid format
+    return nullptr; 
   }
   char pchar = player_str[0];
   Player player;
@@ -150,33 +155,25 @@ std::shared_ptr<Board> ParseBoardFromFEN(const std::string& fen) {
 
   // Parse enpassant
   EnpassantInitialization enp;
-  if (!enpassant.empty()) {
+  if (!enpassant.empty() && enpassant.find("enPassant") != std::string::npos) {
     size_t lbrace_pos = enpassant.find('(');
     size_t rbrace_pos = enpassant.rfind(')');
-    if (lbrace_pos == std::string::npos || rbrace_pos == std::string::npos) return nullptr;
+    if (lbrace_pos == std::string::npos || rbrace_pos == std::string::npos) {
+      return nullptr;
+    }
+    std::string content = enpassant.substr(lbrace_pos + 1, rbrace_pos - lbrace_pos - 1);
     
-    auto parts = SplitStr(enpassant.substr(lbrace_pos + 1, rbrace_pos - lbrace_pos), ",");
-    if (parts.size() != 4) return nullptr;
-    
-    for (int i = 0; i < 4; i++) {
-      auto enp_location_opt = ParseEnpLocation(parts[i]);
-      if (enp_location_opt.has_value()) {
-        BoardLocation dest = *enp_location_opt;
-        // The FEN typically contains the DESTINATION of the double push in 4-player chess variants.
-        // We need to convert this to the TARGET square (the empty square skipped over).
-        BoardLocation target;
-        switch (static_cast<PlayerColor>(i)) {
-          case RED:    target = dest.Relative(1, 0); break;  // Red pushed North (row decremented), target is 'below' dest
-          case BLUE:   target = dest.Relative(0, -1); break; // Blue pushed East (col incremented), target is 'left' of dest
-          case YELLOW: target = dest.Relative(-1, 0); break; // Yellow pushed South (row incremented), target is 'above' dest
-          case GREEN:  target = dest.Relative(0, 1); break;  // Green pushed West (col decremented), target is 'right' of dest
-          default: break;
+    std::stringstream ss(content);
+    std::string segment;
+    int i = 0;
+    while(std::getline(ss, segment, ',') && i < 4) {
+        // ParseEnpLocation (Mailbox version) parses the Target square directly.
+        // We simply store this target in our array.
+        auto enp_location = ParseEnpLocation(segment);
+        if (enp_location.has_value()) {
+            enp.target_indices[i] = BitboardImpl::LocationToIndex(*enp_location);
         }
-
-        if (target.Present()) {
-            enp.target_indices[i] = BitboardImpl::LocationToIndex(target);
-        }
-      }
+        i++;
     }
   }
 
@@ -318,6 +315,169 @@ std::optional<Move> ParseMove(Board& board, const std::string& move_str_ref) {
     }
   }
   return std::nullopt;
+}
+
+namespace {
+
+std::string PieceToFENChar(const Piece& piece) {
+  std::string s;
+  switch (piece.GetColor()) {
+    case RED:    s += 'r'; break;
+    case BLUE:   s += 'b'; break;
+    case YELLOW: s += 'y'; break;
+    case GREEN:  s += 'g'; break;
+    default:     return "";
+  }
+  switch (piece.GetPieceType()) {
+    case PAWN:   s += 'P'; break;
+    case KNIGHT: s += 'N'; break;
+    case BISHOP: s += 'B'; break;
+    case ROOK:   s += 'R'; break;
+    case QUEEN:  s += 'Q'; break;
+    case KING:   s += 'K'; break;
+    default:     return "";
+  }
+  return s;
+}
+
+// Calculate the victim location relative to the target square
+std::string LocationToEnpStr(const BoardLocation& target_loc, PlayerColor pawn_color) {
+  if (target_loc.Missing()) {
+    return "''";
+  }
+  
+  // The victim pawn is one square "behind" the target square, from its own perspective.
+  // We use Relative() to find the victim based on the push direction of the color.
+  BoardLocation victim_loc;
+  switch (pawn_color) {
+    case RED:    victim_loc = target_loc.Relative(-1, 0); break;
+    case BLUE:   victim_loc = target_loc.Relative(0, 1); break;
+    case YELLOW: victim_loc = target_loc.Relative(1, 0); break;
+    case GREEN:  victim_loc = target_loc.Relative(0, -1); break;
+    default:     return "''"; 
+  }
+
+  std::stringstream victim_ss;
+  victim_ss << (char)('a' + victim_loc.GetCol()) << (14 - victim_loc.GetRow());
+
+  std::stringstream target_ss;
+  target_ss << (char)('a' + target_loc.GetCol()) << (14 - target_loc.GetRow());
+  
+  return "'" + target_ss.str() + ":" + victim_ss.str() + "'";
+}
+
+} // namespace
+
+std::string GenerateFENFromBoard(const Board& board) {
+  std::stringstream fen;
+
+  // 1. Turn
+  switch (board.GetTurn().GetColor()) {
+    case RED:    fen << 'R'; break;
+    case BLUE:   fen << 'B'; break;
+    case YELLOW: fen << 'Y'; break;
+    case GREEN:  fen << 'G'; break;
+    default:     fen << '?'; break; 
+  }
+  fen << '-';
+
+  // 2. Dead players
+  fen << "0,0,0,0-";
+
+  // 3. Kingside Castling
+  for (int i = 0; i < 4; ++i) {
+    fen << board.GetCastlingRights(Player(static_cast<PlayerColor>(i))).Kingside();
+    if (i < 3) fen << ",";
+  }
+  fen << '-';
+
+  // 4. Queenside Castling
+  for (int i = 0; i < 4; ++i) {
+    fen << board.GetCastlingRights(Player(static_cast<PlayerColor>(i))).Queenside();
+    if (i < 3) fen << ",";
+  }
+  fen << '-';
+
+  // 5. Points
+  fen << "0,0,0,0-";
+
+  // 6. Halfmove
+  fen << "0-";
+  
+  // 7. En Passant
+  bool any_enp = false;
+  const uint8_t* ep_targets = board.GetEnPassantTargets();
+  
+  for(int i = 0; i < 4; ++i) {
+    if (ep_targets[i] != 255) { // Check for valid index (0-255, 255 is sentinel)
+      any_enp = true;
+      break;
+    }
+  }
+  
+  if (any_enp) {
+    fen << "{'enPassant':(";
+    for (int i = 0; i < 4; ++i) {
+      if (ep_targets[i] != 255) {
+          // Convert internal uint8_t index back to BoardLocation for printing
+          BoardLocation loc = BitboardImpl::IndexToLocation(ep_targets[i]);
+          fen << LocationToEnpStr(loc, static_cast<PlayerColor>(i));
+      } else {
+          fen << "''";
+      }
+      if (i < 3) fen << ",";
+    }
+    fen << ")}-";
+  }
+
+  // 8. Piece placement
+  for (int r = 0; r < 14; ++r) {
+    int empty_squares = 0;
+    for (int c = 0; c < 14; ++c) {
+      BoardLocation loc(r, c);
+      // Bitboard check for legal location (using public Board method which likely wraps Bitboard or logic)
+      if (BitboardImpl::kLocationToIndex[loc.GetRawValue()] == -1) { // Direct check via bitboard impl public table
+        if (empty_squares > 0) {
+          fen << empty_squares << ",";
+          empty_squares = 0;
+        }
+        fen << "x,";
+        continue;
+      }
+      
+      const Piece& piece = board.GetPiece(loc);
+      if (piece.Missing()) {
+        empty_squares++;
+      } else {
+        if (empty_squares > 0) {
+          fen << empty_squares << ",";
+          empty_squares = 0;
+        }
+        fen << PieceToFENChar(piece) << ",";
+      }
+    }
+    if (empty_squares > 0) {
+      fen << empty_squares;
+    }
+    
+    // Cleanup trailing comma for the row
+    std::string row_str = fen.str();
+    if (row_str.back() == ',') {
+        fen.seekp(-1, std::ios_base::end);
+    }
+    
+    if (r < 13) {
+      fen << "/";
+    }
+  }
+
+  // Cleanup final trailing comma if exists
+  std::string final_fen = fen.str();
+  if (final_fen.back() == ',') {
+      final_fen.pop_back();
+  }
+
+  return final_fen;
 }
 
 }  // namespace chess

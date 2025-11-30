@@ -13,9 +13,10 @@ namespace chess {
 // Parses a board from a Forsyth-Edwards Notation (FEN) string.
 std::shared_ptr<Board> ParseBoardFromFEN(const std::string& fen);
 
+// Generates a FEN string from the current board state.
+std::string GenerateFENFromBoard(const Board& board);
+
 // Parses a move from a string in the format "e2e4" or "e2e4q".
-// The move must be pseudo-legal in the given board state.
-// If the move is not found or invalid, returns std::nullopt.
 std::optional<Move> ParseMove(Board& board, const std::string& move_str);
 
 // Helper string manipulation functions
