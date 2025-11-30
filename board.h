@@ -10,6 +10,8 @@
 #include <vector>
 #include <iostream>
 #include <cstring> // for memcpy
+#include <cassert>
+#include <cmath>   // for abs in ManhattanDistance
 
 #include "FastUint256.h"
 
@@ -49,6 +51,12 @@ namespace BitboardImpl {
     extern Bitboard kBackRankMasks[4];
     extern Bitboard kSecondRankMasks[4];
     extern Bitboard kCentralMask;
+    
+    // Moved extern here so inline MakeMove can see it
+    extern int kInitialRookSq[4][2];
+    extern Bitboard kCastlingEmptyMask[4][2];
+    extern Bitboard kCastlingAttackMask[4][2];
+    extern Bitboard kPawnPromotionMask[4];
 
     enum RayDirection { D_NE, D_NW, D_SE, D_SW, D_N, D_E, D_S, D_W }; 
 }
@@ -179,20 +187,6 @@ struct std::hash<chess::BoardLocation> {
 
 namespace chess {
 
-class SimpleMove {
- public:
-  SimpleMove() = default;
-  SimpleMove(BoardLocation from, BoardLocation to) : from_(from), to_(to) { }
-  bool Present() const { return from_.Present() && to_.Present(); }
-  const BoardLocation& From() const { return from_; }
-  const BoardLocation& To() const { return to_; }
-  bool operator==(const SimpleMove& other) const { return from_ == other.from_ && to_ == other.to_; }
-  bool operator!=(const SimpleMove& other) const { return !(*this == other); }
- private:
-  BoardLocation from_;
-  BoardLocation to_;
-};
-
 enum CastlingType { KINGSIDE = 0, QUEENSIDE = 1 };
 
 class CastlingRights {
@@ -235,8 +229,12 @@ class Move {
 
   bool Present() const { return data_ != 0; }
 
-  BoardLocation From() const { return BitboardImpl::IndexToLocation(data_ & 0xFF); }
-  BoardLocation To() const { return BitboardImpl::IndexToLocation((data_ >> 8) & 0xFF); }
+  // OPTIMIZATION: Direct Index Access
+  inline int FromIndex() const { return data_ & 0xFF; }
+  inline int ToIndex() const { return (data_ >> 8) & 0xFF; }
+
+  BoardLocation From() const { return BitboardImpl::IndexToLocation(FromIndex()); }
+  BoardLocation To() const { return BitboardImpl::IndexToLocation(ToIndex()); }
   
   MoveType Type() const { return static_cast<MoveType>((data_ >> 16) & 3); }
   
@@ -291,7 +289,6 @@ class PlacedPiece {
   Piece piece_;
 };
 
-// Simplified initialization struct to hold just indices
 struct EnpassantInitialization {
     int target_indices[4] = {-1, -1, -1, -1};
 };
@@ -299,7 +296,7 @@ struct EnpassantInitialization {
 struct UndoInfo {
     Piece captured_piece;
     CastlingRights castling_rights[4]; 
-    uint8_t prev_ep_target; // Stores the EP target index for the player who moved
+    uint8_t prev_ep_target; 
 };
 
 class Board {
@@ -343,24 +340,21 @@ class Board {
   static std::shared_ptr<Board> CreateStandardSetup();
   const CastlingRights& GetCastlingRights(const Player& player) const;
 
-  // MakeMove no longer records to internal vector
-  void MakeMove(const Move& move);
-  // UndoMove now requires the move to be passed back
-  void UndoMove(const Move& move);
+  // INLINED FUNCTIONS (Moved from .cc)
+  inline void MakeMove(const Move& move);
+  inline void UndoMove(const Move& move);
 
   bool LastMoveWasCapture() const {
       if (move_history_ptr_ == 0) return false;
       return undo_stack_[move_history_ptr_ - 1].captured_piece.Present();
   }
   
-  // NOTE: GetLastMove() and Moves() removed as history vector is gone.
   int NumMoves() const { return move_history_ptr_; }
   
   void SetPlayer(const Player& player);
   void MakeNullMove();
   void UndoNullMove();
   
-  // Returns raw indices
   const uint8_t* GetEnPassantTargets() const { return en_passant_target_; }
 
   friend class AlphaBetaPlayer;
@@ -380,9 +374,15 @@ class Board {
   template<PlayerColor Us> ExtMove* GetQueenMovesT(ExtMove* buffer, const SafetyInfo& safety) const;
   template<PlayerColor Us> ExtMove* GetKingMovesT(ExtMove* buffer, const SafetyInfo& safety) const;
   
-  void SetPiece(const BoardLocation& location, const Piece& piece);
-  void RemovePiece(const BoardLocation& location);
-  void MovePiece(const BoardLocation& from, const BoardLocation& to);
+  // Helper functions now inline too for MakeMove/UndoMove
+  inline void SetPiece(const BoardLocation& location, const Piece& piece);
+  inline void RemovePiece(const BoardLocation& location);
+  inline void MovePiece(const BoardLocation& from, const BoardLocation& to);
+  
+  // Overloads for index usage
+  inline void SetPiece(int index, const Piece& piece);
+  inline void RemovePiece(int index);
+  inline void MovePiece(int from_idx, int to_idx);
 
   Bitboard GetRookAttacks(int sq, const Bitboard& blockers) const;
   Bitboard GetBishopAttacks(int sq, const Bitboard& blockers) const;
@@ -410,10 +410,8 @@ class Board {
   
   CastlingRights castling_rights_[4];
   
-  // Stores EP targets as 256-sized indices. 255 (0xFF) = No Target.
   uint8_t en_passant_target_[4];
   
-  // Removed: Move move_history_[kMaxGameDepth];
   UndoInfo undo_stack_[kMaxGameDepth]; 
   int move_history_ptr_ = 0;
   
@@ -424,7 +422,7 @@ class Board {
   int64_t piece_hashes_[4][6][256];
   int64_t turn_hashes_[4];
   int64_t en_passant_hashes_[256];
-  int64_t castling_hashes_[4][2]; // [Color][Side] (0=KS, 1=QS)
+  int64_t castling_hashes_[4][2]; 
 };
 
 Team OtherTeam(Team team);
@@ -460,6 +458,315 @@ inline Player GetPreviousPlayer(const Player& player) {
 }
 inline Player GetPartner(const Player& player) { 
     return Player(static_cast<PlayerColor>((player.GetColor() + 2) % 4));
+}
+
+// ----------------------------------------------------------------------------
+// INLINE IMPLEMENTATIONS
+// ----------------------------------------------------------------------------
+
+inline void Board::SetPiece(int index, const Piece& piece) {
+    if (index < 0 || !piece.Present()) return;
+    const Bitboard& mask = BitboardImpl::IndexToBitboard(index);
+    PlayerColor color = piece.GetColor();
+    PieceType type = piece.GetPieceType();
+    Team team = piece.GetTeam();
+
+    piece_bitboards_[color][type] |= mask;
+    color_bitboards_[color] |= mask;
+    team_bitboards_[team] |= mask;
+
+    int piece_eval = kPieceEvaluations[type];
+    if (team == RED_YELLOW) piece_evaluation_ += piece_eval;
+    else piece_evaluation_ -= piece_eval;
+    player_piece_evaluations_[color] += piece_eval;
+
+    piece_on_square_[index] = piece;
+    UpdatePieceHash(piece, index);
+}
+// Overload for legacy support (or refactor calls)
+inline void Board::SetPiece(const BoardLocation& location, const Piece& piece) {
+    SetPiece(BitboardImpl::LocationToIndex(location), piece);
+}
+
+inline void Board::RemovePiece(int index) {
+    Piece piece = GetPiece(index);
+    if (index < 0 || !piece.Present()) return;
+    
+    // Optimization: bitwise NOT of reference
+    const Bitboard& mask = BitboardImpl::IndexToBitboard(index); 
+    
+    PlayerColor color = piece.GetColor();
+    PieceType type = piece.GetPieceType();
+    Team team = piece.GetTeam();
+
+    piece_bitboards_[color][type] &= ~mask;
+    color_bitboards_[color] &= ~mask;
+    team_bitboards_[team] &= ~mask;
+    
+    int piece_eval = kPieceEvaluations[type];
+    if (team == RED_YELLOW) piece_evaluation_ -= piece_eval;
+    else piece_evaluation_ += piece_eval;
+    player_piece_evaluations_[color] -= piece_eval;
+    
+    piece_on_square_[index] = Piece::kNoPiece;
+    UpdatePieceHash(piece, index);
+}
+inline void Board::RemovePiece(const BoardLocation& location) {
+    RemovePiece(BitboardImpl::LocationToIndex(location));
+}
+
+inline void Board::MovePiece(int from_idx, int to_idx) {
+    Piece piece = GetPiece(from_idx);
+    if (from_idx < 0 || to_idx < 0 || !piece.Present()) return;
+
+    Bitboard move_mask = BitboardImpl::IndexToBitboard(from_idx) | BitboardImpl::IndexToBitboard(to_idx);
+    PlayerColor color = piece.GetColor();
+    PieceType type = piece.GetPieceType();
+    Team team = piece.GetTeam();
+    
+    piece_bitboards_[color][type] ^= move_mask;
+    color_bitboards_[color] ^= move_mask;
+    team_bitboards_[team] ^= move_mask;
+
+    piece_on_square_[to_idx] = piece;
+    piece_on_square_[from_idx] = Piece::kNoPiece;
+
+    UpdatePieceHash(piece, from_idx);
+    UpdatePieceHash(piece, to_idx);
+}
+inline void Board::MovePiece(const BoardLocation& from, const BoardLocation& to) {
+    MovePiece(BitboardImpl::LocationToIndex(from), BitboardImpl::LocationToIndex(to));
+}
+
+inline void Board::MakeMove(const Move& move) {
+    const Player player = turn_;
+    // OPTIMIZATION: Use direct indices
+    int from_sq = move.FromIndex();
+    int to_sq = move.ToIndex();
+    PlayerColor us = player.GetColor();
+
+    // Save Undo Information
+    auto& undo = undo_stack_[move_history_ptr_];
+    undo.captured_piece = Piece::kNoPiece;
+    std::memcpy(undo.castling_rights, castling_rights_, sizeof(castling_rights_));
+    
+    // Snapshot castling rights to calculate hash diff later
+    CastlingRights pre_move_castling[4];
+    std::memcpy(pre_move_castling, castling_rights_, sizeof(castling_rights_));
+    
+    // --- 1. Handle En Passant State (Clear/Store old) ---
+    uint8_t old_ep = en_passant_target_[us];
+    undo.prev_ep_target = old_ep;
+    if (old_ep != 255) hash_key_ ^= en_passant_hashes_[old_ep];
+    en_passant_target_[us] = 255; 
+    // ----------------------------------------------------
+
+    if (move.IsCastling()) {
+        // Handle Castling
+        int r_from_idx = -1;
+        int r_to_idx = -1;
+        
+        // Lookup kInitialRookSq which is now extern
+        BoardLocation from = BitboardImpl::IndexToLocation(from_sq);
+        BoardLocation to = BitboardImpl::IndexToLocation(to_sq);
+
+        if (player.GetColor() == RED) {
+            if (to.GetCol() > from.GetCol()) { // KS
+                 r_from_idx = BitboardImpl::kInitialRookSq[RED][KINGSIDE];
+                 r_to_idx = from_sq + 1;
+            } else { // QS
+                 r_from_idx = BitboardImpl::kInitialRookSq[RED][QUEENSIDE];
+                 r_to_idx = from_sq - 1;
+            }
+        } else if (player.GetColor() == BLUE) {
+             if (to.GetRow() > from.GetRow()) { 
+                 r_from_idx = BitboardImpl::kInitialRookSq[BLUE][KINGSIDE];
+                 r_to_idx = from_sq + BitboardImpl::kBoardWidth;
+             } else { 
+                 r_from_idx = BitboardImpl::kInitialRookSq[BLUE][QUEENSIDE];
+                 r_to_idx = from_sq - BitboardImpl::kBoardWidth;
+             }
+        } else if (player.GetColor() == YELLOW) {
+             if (to.GetCol() < from.GetCol()) { 
+                 r_from_idx = BitboardImpl::kInitialRookSq[YELLOW][KINGSIDE];
+                 r_to_idx = from_sq - 1;
+             } else { 
+                 r_from_idx = BitboardImpl::kInitialRookSq[YELLOW][QUEENSIDE];
+                 r_to_idx = from_sq + 1;
+             }
+        } else { // GREEN
+             if (to.GetRow() < from.GetRow()) { 
+                 r_from_idx = BitboardImpl::kInitialRookSq[GREEN][KINGSIDE];
+                 r_to_idx = from_sq - BitboardImpl::kBoardWidth;
+             } else { 
+                 r_from_idx = BitboardImpl::kInitialRookSq[GREEN][QUEENSIDE];
+                 r_to_idx = from_sq + BitboardImpl::kBoardWidth;
+             }
+        }
+        
+        MovePiece(from_sq, to_sq); // Move King
+        MovePiece(r_from_idx, r_to_idx); // Move Rook
+        
+        castling_rights_[player.GetColor()] = CastlingRights(false, false);
+
+    } else if (move.IsEnPassant()) {
+        // Extract the explicit capture location from the move object
+        // NOTE: GetEnpassantLocation uses bit shifting on data_, it's fast.
+        int cap_idx = BitboardImpl::LocationToIndex(move.GetEnpassantLocation());
+        
+        undo.captured_piece = GetPiece(cap_idx); 
+        RemovePiece(cap_idx);
+        MovePiece(from_sq, to_sq);
+        
+    } else {
+        // Normal or Promo
+        if (!GetPiece(to_sq).Missing()) {
+            undo.captured_piece = GetPiece(to_sq);
+            RemovePiece(to_sq);
+        }
+        
+        if (move.IsPromotion()) {
+            RemovePiece(from_sq);
+            SetPiece(to_sq, Piece(player.GetColor(), move.GetPromotionPieceType()));
+        } else {
+            MovePiece(from_sq, to_sq);
+        }
+        
+        // Update Castling Rights
+        if (GetPiece(to_sq).GetPieceType() == KING) {
+             castling_rights_[player.GetColor()] = CastlingRights(false, false);
+        }
+        if (castling_rights_[player.GetColor()].Present()) {
+             if (from_sq == BitboardImpl::kInitialRookSq[player.GetColor()][KINGSIDE]) 
+                 castling_rights_[player.GetColor()] = CastlingRights(false, castling_rights_[player.GetColor()].Queenside());
+             else if (from_sq == BitboardImpl::kInitialRookSq[player.GetColor()][QUEENSIDE])
+                 castling_rights_[player.GetColor()] = CastlingRights(castling_rights_[player.GetColor()].Kingside(), false);
+        }
+        if (undo.captured_piece.GetPieceType() == ROOK) {
+             PlayerColor enemy = undo.captured_piece.GetColor();
+             if (castling_rights_[enemy].Present()) {
+                 if (to_sq == BitboardImpl::kInitialRookSq[enemy][KINGSIDE])
+                     castling_rights_[enemy] = CastlingRights(false, castling_rights_[enemy].Queenside());
+                 else if (to_sq == BitboardImpl::kInitialRookSq[enemy][QUEENSIDE])
+                     castling_rights_[enemy] = CastlingRights(castling_rights_[enemy].Kingside(), false);
+             }
+        }
+    }
+
+    // --- 2. Set New En Passant State ---
+    // If pawn moves 2 squares, set new target
+    // Optimize: ManhattanDistance checks abs diff.
+    if (!move.IsPromotion() && GetPiece(to_sq).GetPieceType() == PAWN && move.ManhattanDistance() == 2) {
+         // Midpoint is the target
+         int mid_sq = (from_sq + to_sq) / 2;
+         en_passant_target_[us] = (uint8_t)mid_sq;
+         hash_key_ ^= en_passant_hashes_[mid_sq];
+    }
+    // -----------------------------------
+    
+    // Update Castling Hash
+    for (int c = 0; c < 4; ++c) {
+        if (pre_move_castling[c] != castling_rights_[c]) {
+            if (pre_move_castling[c].Kingside() ^ castling_rights_[c].Kingside()) 
+                hash_key_ ^= castling_hashes_[c][KINGSIDE];
+            if (pre_move_castling[c].Queenside() ^ castling_rights_[c].Queenside()) 
+                hash_key_ ^= castling_hashes_[c][QUEENSIDE];
+        }
+    }
+    
+    int t = static_cast<int>(turn_.GetColor());
+    UpdateTurnHash(t);
+    turn_ = GetNextPlayer(turn_);
+    UpdateTurnHash(static_cast<int>(turn_.GetColor()));
+
+    if (move_history_ptr_ < kMaxGameDepth) {
+        move_history_ptr_++;
+    } else {
+        std::cerr << "History overflow" << std::endl;
+        abort();
+    }
+}
+
+inline void Board::UndoMove(const Move& move) {
+    assert(move_history_ptr_ > 0);
+    --move_history_ptr_;
+    const auto& undo = undo_stack_[move_history_ptr_];
+    
+    Player turn_before = GetPreviousPlayer(turn_);
+    PlayerColor us = turn_before.GetColor();
+
+    UpdateTurnHash(static_cast<int>(turn_.GetColor()));
+    turn_ = turn_before;
+    UpdateTurnHash(static_cast<int>(turn_.GetColor()));
+
+    // OPTIMIZATION: Use direct indices
+    int from_sq = move.FromIndex();
+    int to_sq = move.ToIndex();
+    
+    // --- 1. Restore En Passant State ---
+    uint8_t current_ep = en_passant_target_[us];
+    if (current_ep != 255) {
+        hash_key_ ^= en_passant_hashes_[current_ep];
+        en_passant_target_[us] = 255;
+    }
+    uint8_t old_ep = undo.prev_ep_target;
+    en_passant_target_[us] = old_ep;
+    if (old_ep != 255) hash_key_ ^= en_passant_hashes_[old_ep];
+    // -----------------------------------
+
+    // Update Castling Hash
+    for (int c = 0; c < 4; ++c) {
+        if (castling_rights_[c] != undo.castling_rights[c]) {
+            if (castling_rights_[c].Kingside() ^ undo.castling_rights[c].Kingside()) 
+                hash_key_ ^= castling_hashes_[c][KINGSIDE];
+            if (castling_rights_[c].Queenside() ^ undo.castling_rights[c].Queenside()) 
+                hash_key_ ^= castling_hashes_[c][QUEENSIDE];
+        }
+    }
+
+    // Restore Castling Rights
+    std::memcpy(castling_rights_, undo.castling_rights, sizeof(castling_rights_));
+
+    if (move.IsCastling()) {
+        int r_from_idx = -1;
+        int r_to_idx = -1;
+        BoardLocation from = BitboardImpl::IndexToLocation(from_sq);
+        BoardLocation to = BitboardImpl::IndexToLocation(to_sq);
+
+        if (turn_before.GetColor() == RED) {
+            if (to.GetCol() > from.GetCol()) { r_from_idx = BitboardImpl::kInitialRookSq[RED][KINGSIDE]; r_to_idx = from_sq + 1; } 
+            else { r_from_idx = BitboardImpl::kInitialRookSq[RED][QUEENSIDE]; r_to_idx = from_sq - 1; }
+        } else if (turn_before.GetColor() == BLUE) {
+             if (to.GetRow() > from.GetRow()) { r_from_idx = BitboardImpl::kInitialRookSq[BLUE][KINGSIDE]; r_to_idx = from_sq + BitboardImpl::kBoardWidth; } 
+             else { r_from_idx = BitboardImpl::kInitialRookSq[BLUE][QUEENSIDE]; r_to_idx = from_sq - BitboardImpl::kBoardWidth; }
+        } else if (turn_before.GetColor() == YELLOW) {
+             if (to.GetCol() < from.GetCol()) { r_from_idx = BitboardImpl::kInitialRookSq[YELLOW][KINGSIDE]; r_to_idx = from_sq - 1; } 
+             else { r_from_idx = BitboardImpl::kInitialRookSq[YELLOW][QUEENSIDE]; r_to_idx = from_sq + 1; }
+        } else { 
+             if (to.GetRow() < from.GetRow()) { r_from_idx = BitboardImpl::kInitialRookSq[GREEN][KINGSIDE]; r_to_idx = from_sq - BitboardImpl::kBoardWidth; } 
+             else { r_from_idx = BitboardImpl::kInitialRookSq[GREEN][QUEENSIDE]; r_to_idx = from_sq + BitboardImpl::kBoardWidth; }
+        }
+        MovePiece(to_sq, from_sq); // King back
+        MovePiece(r_to_idx, r_from_idx); // Rook back
+        
+    } else if (move.IsEnPassant()) {
+        MovePiece(to_sq, from_sq); // Pawn back
+        int cap_idx = BitboardImpl::LocationToIndex(move.GetEnpassantLocation());
+        SetPiece(cap_idx, undo.captured_piece);
+        
+    } else {
+        // Normal/Promo
+        if (move.IsPromotion()) {
+            RemovePiece(to_sq);
+            SetPiece(from_sq, Piece(turn_before.GetColor(), PAWN));
+        } else {
+            MovePiece(to_sq, from_sq);
+        }
+        
+        if (undo.captured_piece.Present()) {
+            SetPiece(to_sq, undo.captured_piece);
+        }
+    }
 }
 
 }  // namespace chess

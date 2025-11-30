@@ -32,7 +32,8 @@ uint64_t perft_driver(Board& board, int depth) {
 
         for (ExtMove* m_ptr = move_buffer; m_ptr < end_ptr; ++m_ptr) {
             const auto& move = *m_ptr;
-            int from_sq = BitboardImpl::LocationToIndex(move.From());
+            // OPTIMIZATION: Use direct index access avoids BoardLocation roundtrip
+            int from_sq = move.FromIndex();
 
             // Check legality using local bitboards directly
             bool is_king_move = board.GetPiece(from_sq).GetPieceType() == KING;
@@ -59,7 +60,8 @@ uint64_t perft_driver(Board& board, int depth) {
 
     for (ExtMove* m_ptr = move_buffer; m_ptr < end_ptr; ++m_ptr) {
         const auto& move = *m_ptr;
-        int from_sq = BitboardImpl::LocationToIndex(move.From());
+        // OPTIMIZATION: Use direct index access
+        int from_sq = move.FromIndex();
 
         bool is_king_move = board.GetPiece(from_sq).GetPieceType() == KING;
         bool is_ep = move.GetEnpassantLocation().Present();
@@ -69,15 +71,14 @@ uint64_t perft_driver(Board& board, int depth) {
             continue;
         }
 
-        // MakeMove is now cheaper (no safety backup)
+        // MakeMove is now cheaper (no safety backup) and inlined
         board.MakeMove(move);
         
         // Next player logic
         constexpr PlayerColor NextUs = static_cast<PlayerColor>((Us + 1) % 4);
         nodes += perft_driver<NextUs>(board, depth - 1);
         
-        // UndoMove is now cheaper (no safety restore), but requires the move object
-        // When we return here, 'safety' variable is still valid from this stack frame.
+        // UndoMove is now cheaper and inlined
         board.UndoMove(move); 
     }
 
@@ -115,7 +116,7 @@ uint64_t divide(Board& board, int depth) {
 
       for (ExtMove* m_ptr = move_buffer; m_ptr < end_ptr; ++m_ptr) {
         const auto& move = *m_ptr;
-        int from_sq = BitboardImpl::LocationToIndex(move.From());
+        int from_sq = move.FromIndex();
 
         bool is_king_move = board.GetPiece(from_sq).GetPieceType() == KING;
         bool is_ep = move.GetEnpassantLocation().Present();
