@@ -40,7 +40,7 @@ uint64_t perft_driver(Board& board, int depth) {
             bool is_ep = move.GetEnpassantLocation().Present();
             
             // Check pinning using stack variable 'safety.pinned'
-            bool is_pinned = (BitboardImpl::IndexToBitboard(from_sq) & safety.pinned).operator bool();
+            bool is_pinned = safety.pinned.test(from_sq);
 
             // 1. If we are in check, pinned, moving king, or en-passant: perform full legality check.
             // 2. Otherwise, the move is guaranteed legal by GenerateMovesT logic (pseudo-legal).
@@ -65,7 +65,7 @@ uint64_t perft_driver(Board& board, int depth) {
 
         bool is_king_move = board.GetPiece(from_sq).GetPieceType() == KING;
         bool is_ep = move.GetEnpassantLocation().Present();
-        bool is_pinned = (BitboardImpl::IndexToBitboard(from_sq) & safety.pinned).operator bool();
+        bool is_pinned = safety.pinned.test(from_sq);
 
         if ((in_check || is_king_move || is_ep || is_pinned) && !board.IsLegal(move, safety)) {
             continue;
@@ -120,7 +120,7 @@ uint64_t divide(Board& board, int depth) {
 
         bool is_king_move = board.GetPiece(from_sq).GetPieceType() == KING;
         bool is_ep = move.GetEnpassantLocation().Present();
-        bool is_pinned = (BitboardImpl::IndexToBitboard(from_sq) & safety.pinned).operator bool();
+        bool is_pinned = safety.pinned.test(from_sq);
 
         if ((in_check || is_king_move || is_ep || is_pinned) && !board.IsLegal(move, safety)) {
             continue;

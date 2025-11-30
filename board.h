@@ -110,6 +110,24 @@ class Player {
   PlayerColor color_;
 };
 
+// --- MOVED HELPER FUNCTIONS UP HERE SO BOARD CAN SEE THEM ---
+inline Team GetTeam(PlayerColor color) { 
+    return (color == RED || color == YELLOW) ? RED_YELLOW : BLUE_GREEN; 
+}
+inline Team OtherTeam(Team team) { 
+    return team == RED_YELLOW ? BLUE_GREEN : RED_YELLOW; 
+}
+inline Player GetNextPlayer(const Player& player) { 
+    return Player(static_cast<PlayerColor>((player.GetColor() + 1) % 4));
+}
+inline Player GetPreviousPlayer(const Player& player) { 
+    return Player(static_cast<PlayerColor>((player.GetColor() + 3) % 4));
+}
+inline Player GetPartner(const Player& player) { 
+    return Player(static_cast<PlayerColor>((player.GetColor() + 2) % 4));
+}
+// ------------------------------------------------------------
+
 } // namespace chess
 
 template <>
@@ -309,7 +327,70 @@ class Board {
   SafetyInfo CalculateSafety(PlayerColor us) const;
   template<PlayerColor Us> SafetyInfo CalculateSafetyT() const;
 
-  bool IsLegal(const Move& move, const SafetyInfo& safety) const;
+  // Optimized IsLegal for move generation filtering
+  bool IsLegal(const Move& move, const SafetyInfo& safety) const {
+    if (!move.Present()) return false;
+    PlayerColor us = turn_.GetColor();
+    int from_sq = move.FromIndex();
+    int to_sq = move.ToIndex();
+    // Use kLocationToIndex table directly
+    int king_sq = BitboardImpl::kLocationToIndex[GetKingLocation(us).GetRawValue()];
+    
+    if (move.IsEnPassant()) {
+        int cap_sq = BitboardImpl::kLocationToIndex[move.GetEnpassantLocation().GetRawValue()];
+        
+        // Copy by value, but modify cheaply
+        Bitboard occupied = (team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN]);
+        
+        occupied.clear_bit(from_sq);
+        occupied.clear_bit(cap_sq);
+        occupied.set_bit(to_sq);
+
+        // Helper call
+        Team enemy_team = OtherTeam(turn_.GetTeam());
+        PlayerColor e1 = (enemy_team == RED_YELLOW) ? RED : BLUE;
+        PlayerColor e2 = (enemy_team == RED_YELLOW) ? YELLOW : GREEN;
+        Bitboard rooks = piece_bitboards_[e1][ROOK] | piece_bitboards_[e2][ROOK] |
+                         piece_bitboards_[e1][QUEEN] | piece_bitboards_[e2][QUEEN];
+        if (!(GetRookAttacks(king_sq, occupied) & rooks).is_zero()) return false;
+        
+        Bitboard bishops = piece_bitboards_[e1][BISHOP] | piece_bitboards_[e2][BISHOP] |
+                           piece_bitboards_[e1][QUEEN] | piece_bitboards_[e2][QUEEN];
+        if (!(GetBishopAttacks(king_sq, occupied) & bishops).is_zero()) return false;
+        return true; 
+    }
+
+    // King move checks
+    if (GetPiece(from_sq).GetPieceType() == KING) {
+        if (move.IsCastling()) {
+            if (!safety.checkers.is_zero()) return false;
+            return true;
+        }
+        Bitboard occupied = (team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN]);
+        occupied.clear_bit(from_sq); // King moves out
+
+        // Helper call
+        if (AttackersToExist(to_sq, occupied, OtherTeam(turn_.GetTeam()))) return false;
+        return true;
+    }
+
+    // Standard legality checks using precalculated safety info
+    if (!safety.checkers.is_zero() && (safety.checkers & (safety.checkers - Bitboard(1))).operator bool()) return false;
+
+    // Pin check using fast test()
+    if (safety.pinned.test(from_sq)) {
+        if (!BitboardImpl::kLineMask[king_sq][from_sq].test(to_sq)) {
+            return false;
+        }
+    }
+
+    if (!safety.checkers.is_zero()) {
+        int checker_sq = safety.checkers.ctz();
+        if (to_sq == checker_sq) return true; 
+        if (!BitboardImpl::kLineBetween[king_sq][checker_sq].test(to_sq)) return false;
+    }
+    return true;
+  }
   bool IsLegal(const Move& move) const;
 
   ExtMove* GetPseudoLegalMoves2(ExtMove* buffer) const;
@@ -363,7 +444,7 @@ class Board {
   friend int GetLeastValuableAttacker(const Board&, int, Team, const Bitboard&, PieceType&);
 
   bool IsPinned(int sq, const SafetyInfo& safety) const {
-      return (safety.pinned & BitboardImpl::IndexToBitboard(sq)).operator bool();
+      return safety.pinned.test(sq);
   }
  
  private:
@@ -425,12 +506,6 @@ class Board {
   int64_t castling_hashes_[4][2]; 
 };
 
-Team OtherTeam(Team team);
-Team GetTeam(PlayerColor color);
-Player GetNextPlayer(const Player& player);
-Player GetPreviousPlayer(const Player& player);
-Player GetPartner(const Player& player);
-
 namespace BitboardImpl {
 inline int LocationToIndex(const BoardLocation& loc) {
     return kLocationToIndex[loc.GetRawValue()];
@@ -443,22 +518,6 @@ inline const Bitboard& IndexToBitboard(int index) {
     return kSquareBitboards[index];
 }
 } 
-
-inline Team GetTeam(PlayerColor color) { 
-    return (color == RED || color == YELLOW) ? RED_YELLOW : BLUE_GREEN; 
-}
-inline Team OtherTeam(Team team) { 
-    return team == RED_YELLOW ? BLUE_GREEN : RED_YELLOW; 
-}
-inline Player GetNextPlayer(const Player& player) { 
-    return Player(static_cast<PlayerColor>((player.GetColor() + 1) % 4));
-}
-inline Player GetPreviousPlayer(const Player& player) { 
-    return Player(static_cast<PlayerColor>((player.GetColor() + 3) % 4));
-}
-inline Player GetPartner(const Player& player) { 
-    return Player(static_cast<PlayerColor>((player.GetColor() + 2) % 4));
-}
 
 // ----------------------------------------------------------------------------
 // INLINE IMPLEMENTATIONS

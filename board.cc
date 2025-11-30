@@ -175,7 +175,7 @@ Bitboard pdep_fallback(uint64_t index, Bitboard mask) {
     Bitboard temp_mask = mask;
     for (uint64_t i = index; i != 0; i >>= 1) {
         int lsb_idx = temp_mask.ctz();
-        temp_mask &= temp_mask - 1; 
+        temp_mask.clear_bit(lsb_idx); // Optimized bit clearing
         if (i & 1) result |= IndexToBitboard(lsb_idx);
     }
     return result;
@@ -558,7 +558,7 @@ void Board::InitializeHash() {
             while(!bb.is_zero()) {
                 int idx = bb.ctz();
                 UpdatePieceHash(Piece(static_cast<PlayerColor>(c), static_cast<PieceType>(pt)), idx);
-                bb &= (bb - 1);
+                bb.clear_bit(idx);
             }
         }
         // Hash EP targets
@@ -744,12 +744,12 @@ SafetyInfo Board::CalculateSafetyT() const {
     Bitboard ortho_candidates = GetRookAttacks(king_sq, kEmpty) & enemy_rooks;
     while (!ortho_candidates.is_zero()) {
         int sniper_sq = ortho_candidates.ctz();
-        ortho_candidates &= (ortho_candidates - 1);
+        ortho_candidates.clear_bit(sniper_sq);
         Bitboard between = BitboardImpl::kLineBetween[king_sq][sniper_sq] & all_pieces;
-        if (!between.is_zero() && (between & (between - 1)).is_zero()) {
+        if (!between.is_zero() && (between & (between - Bitboard(1))).is_zero()) {
             if (!(between & team_bitboards_[team]).is_zero()) {
                 info.pinned |= between;
-                info.pinners |= BitboardImpl::IndexToBitboard(sniper_sq);
+                info.pinners.set_bit(sniper_sq);
             }
         }
     }
@@ -757,12 +757,12 @@ SafetyInfo Board::CalculateSafetyT() const {
     Bitboard diag_candidates = GetBishopAttacks(king_sq, kEmpty) & enemy_bishops;
     while (!diag_candidates.is_zero()) {
         int sniper_sq = diag_candidates.ctz();
-        diag_candidates &= (diag_candidates - 1);
+        diag_candidates.clear_bit(sniper_sq);
         Bitboard between = BitboardImpl::kLineBetween[king_sq][sniper_sq] & all_pieces;
-        if (!between.is_zero() && (between & (between - 1)).is_zero()) {
+        if (!between.is_zero() && (between & (between - Bitboard(1))).is_zero()) {
             if (!(between & team_bitboards_[team]).is_zero()) {
                 info.pinned |= between;
-                info.pinners |= BitboardImpl::IndexToBitboard(sniper_sq);
+                info.pinners.set_bit(sniper_sq);
             }
         }
     }
@@ -779,69 +779,10 @@ SafetyInfo Board::CalculateSafety(PlayerColor us) const {
     }
 }
 
+// Wrapper to perform check based on current turn
 bool Board::IsLegal(const Move& move) const {
     SafetyInfo safety = CalculateSafety(turn_.GetColor());
     return IsLegal(move, safety);
-}
-
-bool Board::IsLegal(const Move& move, const SafetyInfo& safety) const {
-    if (!move.Present()) return false;
-    PlayerColor us = turn_.GetColor();
-    // OPTIMIZATION: Use direct index
-    int from_sq = move.FromIndex();
-    int to_sq = move.ToIndex();
-    int king_sq = LocationToIndex(GetKingLocation(us));
-    
-    if (move.IsEnPassant()) {
-        // En Passant logic
-        // Use the explicit victim location from the move object
-        // GetEnpassantLocation does internal shifting, fast.
-        int cap_sq = BitboardImpl::LocationToIndex(move.GetEnpassantLocation());
-        
-        Bitboard occupied = (team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN]);
-        
-        occupied &= ~IndexToBitboard(from_sq);
-        occupied &= ~IndexToBitboard(cap_sq);
-        occupied |= IndexToBitboard(to_sq);
-
-        Team enemy_team = OtherTeam(turn_.GetTeam());
-        PlayerColor e1 = (enemy_team == RED_YELLOW) ? RED : BLUE;
-        PlayerColor e2 = (enemy_team == RED_YELLOW) ? YELLOW : GREEN;
-        Bitboard rooks = piece_bitboards_[e1][ROOK] | piece_bitboards_[e2][ROOK] |
-                         piece_bitboards_[e1][QUEEN] | piece_bitboards_[e2][QUEEN];
-        if (!(GetRookAttacks(king_sq, occupied) & rooks).is_zero()) return false;
-        
-        Bitboard bishops = piece_bitboards_[e1][BISHOP] | piece_bitboards_[e2][BISHOP] |
-                           piece_bitboards_[e1][QUEEN] | piece_bitboards_[e2][QUEEN];
-        if (!(GetBishopAttacks(king_sq, occupied) & bishops).is_zero()) return false;
-        return true; 
-    }
-
-    if (GetPiece(from_sq).GetPieceType() == KING) {
-        if (move.IsCastling()) {
-            if (!safety.checkers.is_zero()) return false;
-            return true;
-        }
-        Bitboard occupied = (team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN]) ^ IndexToBitboard(from_sq);
-        if (AttackersToExist(to_sq, occupied, OtherTeam(turn_.GetTeam()))) return false;
-        return true;
-    }
-
-    if (!safety.checkers.is_zero() && (safety.checkers & (safety.checkers - 1)).operator bool()) return false;
-
-    if ((safety.pinned & BitboardImpl::IndexToBitboard(from_sq)).operator bool()) {
-        if ((BitboardImpl::kLineMask[king_sq][from_sq] & BitboardImpl::IndexToBitboard(to_sq)).is_zero()) {
-            return false;
-        }
-    }
-
-    if (!safety.checkers.is_zero()) {
-        int checker_sq = safety.checkers.ctz();
-        if (to_sq == checker_sq) return true; 
-        Bitboard blocking_squares = BitboardImpl::kLineBetween[king_sq][checker_sq];
-        if ((blocking_squares & BitboardImpl::IndexToBitboard(to_sq)).is_zero()) return false;
-    }
-    return true;
 }
 
 namespace {
@@ -849,7 +790,7 @@ ExtMove* AddMovesFromBB(ExtMove* buffer, int from_idx, Bitboard to_bb, const Boa
     BoardLocation from = IndexToLocation(from_idx);
     while (!to_bb.is_zero()) {
         int to_idx = to_bb.ctz();
-        to_bb &= to_bb - 1;
+        to_bb.clear_bit(to_idx); // Optimize: clear specific bit instead of subtraction
         *buffer++ = ExtMove(Move(from, IndexToLocation(to_idx)));
     }
     return buffer;
@@ -884,14 +825,14 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
     Bitboard single_targets = single_pushes & ~promotion_rank;
     while (!single_targets.is_zero()) {
         int to_idx = single_targets.ctz();
-        single_targets &= single_targets - 1;
+        single_targets.clear_bit(to_idx); // Optimize
         int from_idx = to_idx - PUSH;
         *buffer++ = ExtMove(Move(IndexToLocation(from_idx), IndexToLocation(to_idx)));
     }
     
     while (!double_pushes.is_zero()) {
         int to_idx = double_pushes.ctz();
-        double_pushes &= double_pushes - 1;
+        double_pushes.clear_bit(to_idx); // Optimize
         int from_idx = to_idx - PUSH - PUSH;
         *buffer++ = ExtMove(Move(IndexToLocation(from_idx), IndexToLocation(to_idx)));
     }
@@ -903,13 +844,13 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
     while (!all_captures.is_zero()) {
         int to_idx = all_captures.ctz();
         const Bitboard& to_bb = IndexToBitboard(to_idx);
-        all_captures &= all_captures - 1;
+        all_captures.clear_bit(to_idx);
 
         Bitboard from_bb = (shift<-CAP_1>(to_bb) | shift<-CAP_2>(to_bb)) & my_pawns;
 
         while (!from_bb.is_zero()) {
             int from_idx = from_bb.ctz();
-            from_bb &= from_bb - 1;
+            from_bb.clear_bit(from_idx);
             *buffer++ = ExtMove(Move(IndexToLocation(from_idx), IndexToLocation(to_idx)));
         }
     }
@@ -917,7 +858,7 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
     Bitboard promo_pushes = single_pushes & promotion_rank;
     while (!promo_pushes.is_zero()) {
         int to_idx = promo_pushes.ctz();
-        promo_pushes &= promo_pushes - 1;
+        promo_pushes.clear_bit(to_idx);
         int from_idx = to_idx - PUSH;
         BoardLocation from = IndexToLocation(from_idx);
         BoardLocation to = IndexToLocation(to_idx);
@@ -931,14 +872,14 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
     while (!promo_captures.is_zero()) {
         int to_idx = promo_captures.ctz();
         const Bitboard& to_bb = IndexToBitboard(to_idx);
-        promo_captures &= promo_captures - 1;
+        promo_captures.clear_bit(to_idx);
         
         Bitboard from_bb = (shift<-CAP_1>(to_bb) | shift<-CAP_2>(to_bb)) & my_pawns;
         BoardLocation to = IndexToLocation(to_idx);
 
         while (!from_bb.is_zero()) {
             int from_idx = from_bb.ctz();
-            from_bb &= from_bb - 1;
+            from_bb.clear_bit(from_idx);
             BoardLocation from = IndexToLocation(from_idx);
             *buffer++ = ExtMove(Move(from, to, QUEEN));
             *buffer++ = ExtMove(Move(from, to, ROOK));
@@ -981,7 +922,7 @@ ExtMove* Board::GetPawnMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
 
         while (!attack_from.is_zero()) {
             int from_idx = attack_from.ctz();
-            attack_from &= attack_from - 1;
+            attack_from.clear_bit(from_idx);
             *buffer++ = ExtMove(Move::MakeEnPassant(
                 IndexToLocation(from_idx),
                 target_loc,
@@ -1000,7 +941,7 @@ ExtMove* Board::GetKnightMovesT(ExtMove* buffer, const SafetyInfo& safety) const
     
     while(!knights.is_zero()) {
         int from_idx = knights.ctz();
-        knights &= knights - 1;
+        knights.clear_bit(from_idx);
         Bitboard attacks = kKnightAttacks[from_idx] & ~friendly_pieces;
         buffer = AddMovesFromBB(buffer, from_idx, attacks, *this);
     }
@@ -1015,7 +956,7 @@ ExtMove* Board::GetBishopMovesT(ExtMove* buffer, const SafetyInfo& safety) const
     const Bitboard all_pieces = team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN];
     while(!bishops.is_zero()) {
         int from_idx = bishops.ctz();
-        bishops &= bishops - 1;
+        bishops.clear_bit(from_idx);
         Bitboard attacks = GetBishopAttacks(from_idx, all_pieces) & ~friendly_pieces;
         buffer = AddMovesFromBB(buffer, from_idx, attacks, *this);
     }
@@ -1031,7 +972,7 @@ ExtMove* Board::GetRookMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
     
     while(!rooks.is_zero()) {
         int from_idx = rooks.ctz();
-        rooks &= rooks - 1;
+        rooks.clear_bit(from_idx);
         Bitboard attacks = GetRookAttacks(from_idx, all_pieces) & ~friendly_pieces;
         buffer = AddMovesFromBB(buffer, from_idx, attacks, *this);
     }
@@ -1046,7 +987,7 @@ ExtMove* Board::GetQueenMovesT(ExtMove* buffer, const SafetyInfo& safety) const 
     const Bitboard all_pieces = team_bitboards_[RED_YELLOW] | team_bitboards_[BLUE_GREEN];
     while(!queens.is_zero()) {
         int from_idx = queens.ctz();
-        queens &= queens - 1;
+        queens.clear_bit(from_idx);
         Bitboard attacks = GetQueenAttacks(from_idx, all_pieces) & ~friendly_pieces;
         buffer = AddMovesFromBB(buffer, from_idx, attacks, *this);
     }
@@ -1076,7 +1017,7 @@ ExtMove* Board::GetKingMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
             bool is_safe = true;
             while(!attack_mask.is_zero()){
                 int sq = attack_mask.ctz();
-                attack_mask &= (attack_mask-1);
+                attack_mask.clear_bit(sq);
                 if(IsAttackedByTeam(enemy_team, sq)){ is_safe = false; break; }
             }
             if(is_safe){
@@ -1094,7 +1035,7 @@ ExtMove* Board::GetKingMovesT(ExtMove* buffer, const SafetyInfo& safety) const {
             bool is_safe = true;
             while(!attack_mask.is_zero()){
                 int sq = attack_mask.ctz();
-                attack_mask &= (attack_mask-1);
+                attack_mask.clear_bit(sq);
                 if(IsAttackedByTeam(enemy_team, sq)){ is_safe = false; break; }
             }
             if(is_safe){
@@ -1311,11 +1252,11 @@ bool Board::DiscoversCheck(const Move& move) const {
 
     while (!enemy_kings.is_zero()) {
         int king_sq = enemy_kings.ctz();
-        enemy_kings &= enemy_kings - 1;
+        enemy_kings.clear_bit(king_sq);
         Bitboard potential_pinners = GetQueenAttacks(king_sq, occupied) & my_sliders;
         while (!potential_pinners.is_zero()) {
             int slider_sq = potential_pinners.ctz();
-            potential_pinners &= potential_pinners - 1;
+            potential_pinners.clear_bit(slider_sq);
             if ((BitboardImpl::kLineBetween[king_sq][slider_sq] & occupied) == BitboardImpl::IndexToBitboard(from_sq)) {
                 if ((BitboardImpl::kLineBetween[king_sq][slider_sq] & BitboardImpl::IndexToBitboard(to_sq)).is_zero()) return true; 
             }
@@ -1341,7 +1282,7 @@ bool Board::DeliversCheck(const Move& move) {
         cap_sq = to_sq;
     }
     
-    if (cap_sq != -1) all_after_move &= ~IndexToBitboard(cap_sq);
+    if (cap_sq != -1) all_after_move.clear_bit(cap_sq);
     
     Team enemy_team = OtherTeam(moved.GetTeam());
     PlayerColor e1 = enemy_team == RED_YELLOW ? RED : BLUE;
@@ -1419,8 +1360,8 @@ int SeeRecursive(const Board& board, const int piece_evaluations[6], int target_
     PieceType lva_type;
     int lva_sq = GetLeastValuableAttacker(board, target_sq, side_to_attack, occupied, lva_type);
     if (lva_sq == -1) return 0;
-    Bitboard next_occupied = occupied ^ BitboardImpl::IndexToBitboard(lva_sq);
-    int gain = victim_value - SeeRecursive(board, piece_evaluations, target_sq, next_occupied, OtherTeam(side_to_attack), piece_evaluations[lva_type]);
+    occupied.clear_bit(lva_sq);
+    int gain = victim_value - SeeRecursive(board, piece_evaluations, target_sq, occupied, OtherTeam(side_to_attack), piece_evaluations[lva_type]);
     return std::max(0, gain);
 }
 
@@ -1445,11 +1386,13 @@ int StaticExchangeEvaluationCapture(const int piece_evaluations[6], const Board&
     const int new_victim_value = piece_evaluations[attacker_piece.GetPieceType()];
     
     Bitboard occupied_before_move = board.team_bitboards_[RED_YELLOW] | board.team_bitboards_[BLUE_GREEN];
-    Bitboard occupied_after_move = (occupied_before_move & ~BitboardImpl::IndexToBitboard(from_sq)) | BitboardImpl::IndexToBitboard(to_sq);
+    Bitboard occupied_after_move = occupied_before_move;
+    occupied_after_move.clear_bit(from_sq);
+    occupied_after_move.set_bit(to_sq);
 
     if (move.IsEnPassant()) {
         int ep_victim_sq = BitboardImpl::LocationToIndex(move.GetEnpassantLocation());
-        occupied_after_move &= ~BitboardImpl::IndexToBitboard(ep_victim_sq);
+        occupied_after_move.clear_bit(ep_victim_sq);
     }
     
     const Team opponent_team = board.GetTurn().GetTeam() == RED_YELLOW ? BLUE_GREEN : RED_YELLOW; // OtherTeam logic
@@ -1496,6 +1439,7 @@ std::ostream& operator<<(std::ostream& os, const Move& move) {
 }
 
 // EXPLICIT TEMPLATE INSTANTIATIONS
+// Required because definitions are in .cc but accessed by other files via templates
 template ExtMove* Board::GenerateMovesT<RED>(ExtMove* buffer, const SafetyInfo& safety) const;
 template ExtMove* Board::GenerateMovesT<BLUE>(ExtMove* buffer, const SafetyInfo& safety) const;
 template ExtMove* Board::GenerateMovesT<YELLOW>(ExtMove* buffer, const SafetyInfo& safety) const;

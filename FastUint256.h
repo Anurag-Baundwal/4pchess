@@ -126,6 +126,22 @@ struct FastUint256 {
     // }
   }
 
+  // --- Single Bit Operations (Optimized) ---
+  // Checks if bit at 'index' is set. Avoids full 256-bit logic.
+  constexpr bool test(int index) const {
+      return (limbs[index >> 6] & (1ULL << (index & 63))) != 0;
+  }
+
+  // Sets bit at 'index'.
+  void set_bit(int index) {
+      limbs[index >> 6] |= (1ULL << (index & 63));
+  }
+
+  // Clears bit at 'index'. Faster than "b &= b-1" for wide integers.
+  void clear_bit(int index) {
+      limbs[index >> 6] &= ~(1ULL << (index & 63));
+  }
+
   // --- Constants ---
   static constexpr FastUint256 max() {
     constexpr uint64_t max64 = std::numeric_limits<uint64_t>::max();
@@ -191,7 +207,7 @@ struct FastUint256 {
       }
       // Any remaining 'carry' after the loop is an overflow beyond 256 bits and is discarded.
       // The block that was previously here (starting with "--- Corrected portable shift logic...")
-      // has been removed as it was redundant and overwrote the uint128_t result.
+      // has been redundant and overwrote the uint128_t result.
   
   #else // Portable version without __uint128_t
       size_t target_idx_portable = limb_shift;
