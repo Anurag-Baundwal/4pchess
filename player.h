@@ -17,7 +17,7 @@
 
 namespace chess {
 
-constexpr int kMateValue = 1000000'00;  // mate value (centipawns)
+constexpr int kMateValue = 1000000'00; 
 
 class PVInfo {
  public:
@@ -41,7 +41,6 @@ constexpr int kMaxPly = 300;
 constexpr int kKillersPerPly = 3;
 
 struct PlayerOptions {
-  // for search
   bool pvs = true;
   bool enable_transposition_table = true;
   bool enable_check_extensions = true;
@@ -50,14 +49,12 @@ struct PlayerOptions {
   bool enable_aspiration_window = true;
   bool enable_probcut = true;
 
-  // for move ordering
   bool enable_move_order = true;
   bool enable_move_order_checks = true;
   bool enable_history_heuristic = true;
   bool enable_killers = true;
   bool enable_counter_move_heuristic = true;
 
-  // for evaluation
   bool enable_piece_activation = true;
   bool enable_king_safety = true;
   bool enable_pawn_shield = true;
@@ -69,17 +66,14 @@ struct PlayerOptions {
   bool enable_knight_bonus = true;
   Team engine_team = NO_TEAM;
 
-  // for pruning / reduction
   bool enable_futility_pruning = true;
   bool enable_late_move_reduction = true;
   bool enable_late_move_pruning =   true;
   bool enable_null_move_pruning =   true;
 
-  // for multithreading
   bool enable_multithreading = true;
   int num_threads = 8;
 
-  // transposition table
   size_t transposition_table_size = kTranspositionTableSize;
   std::optional<int> max_search_depth;
 };
@@ -89,7 +83,6 @@ struct Stack {
   Move excludedMove;
   bool tt_pv = false;
   int move_count = 0;
-  // indexed by [piece_type][to_sq]
   PieceToHistory* continuation_history = nullptr;
   bool in_check = false;
   Move current_move;
@@ -103,8 +96,8 @@ enum NodeType {
   Root,
 };
 
-constexpr size_t kBufferPartitionSize = 300; // number of elements per buffer partition
-constexpr size_t kBufferNumPartitions = 200; // number of recursive calls
+constexpr size_t kBufferPartitionSize = 300; 
+constexpr size_t kBufferNumPartitions = 200; 
 
 struct AspirationState {
   int average_root_eval_ = 0;
@@ -113,13 +106,12 @@ struct AspirationState {
   int asp_sum_ = 0;
 };
 
-// Manages state of worker threads during search
 class ThreadState {
  public:
   ThreadState(
       PlayerOptions options, const Board& board, const PVInfo& pv_info, AspirationState& asp_state);
   ~ThreadState();
-  Move* GetNextMoveBufferPartition();
+  ExtMove* GetNextMoveBufferPartition(); // CHANGED: Move* -> ExtMove*
   void ReleaseMoveBufferPartition();
   int* NActivated() { return n_activated_; }
   int* TotalMoves() { return total_moves_; }
@@ -138,10 +130,7 @@ class ThreadState {
   const Board& root_board_;
   PVInfo pv_info_;
 
-  // Buffer used to store moves per node.
-  // Each node generates up to `partition_size` moves, and there
-  Move* move_buffer_ = nullptr;
-  // Id within move_buffer_
+  ExtMove* move_buffer_ = nullptr; // CHANGED: Move* -> ExtMove*
   size_t buffer_id_ = 0;
   int n_activated_[4] = {0, 0, 0, 0};
   int total_moves_[4] = {0, 0, 0, 0};
@@ -150,8 +139,7 @@ class ThreadState {
 
 class AlphaBetaPlayer {
  public:
-  AlphaBetaPlayer(
-      std::optional<PlayerOptions> options = std::nullopt);
+  AlphaBetaPlayer(std::optional<PlayerOptions> options = std::nullopt);
   ~AlphaBetaPlayer();
 
   std::optional<std::tuple<int, std::optional<Move>, int>> MakeMove(
@@ -159,11 +147,9 @@ class AlphaBetaPlayer {
       std::optional<std::chrono::milliseconds> time_limit = std::nullopt,
       int max_depth = 20);
   int StaticEvaluation(Board& board);
-  // Eval with respect to the maximizing player
   int Evaluate(ThreadState& thread_state, Board& board, bool maximizing_player,
       int alpha = -kMateValue, int beta = kMateValue);
   void CancelEvaluation() { canceled_ = true; }
-  // NOTE: Should wait until evaluation is done before resetting this to true.
   void SetCanceled(bool canceled) { canceled_ = canceled; }
   bool IsCanceled() { return canceled_; }
   const PVInfo& GetPVInfo() const { return pv_info_; }
@@ -198,7 +184,6 @@ class AlphaBetaPlayer {
 
   int GetNumLegalMoves(Board& board);
 
-  // Getter methods for stats
   int64_t GetNumEvaluations() { return num_nodes_; }
   int64_t GetNumCacheHits() { return num_cache_hits_; }
   int64_t GetNumNullMovesTried() { return num_null_moves_tried_; }
@@ -206,12 +191,8 @@ class AlphaBetaPlayer {
   int64_t GetNumFutilityMovesPruned() { return num_futility_moves_pruned_; }
   int64_t GetNumLmrSearches() { return num_lmr_searches_; }
   int64_t GetNumLmrResearches() { return num_lmr_researches_; }
-  int64_t GetNumSingularExtensionSearches() {
-    return num_singular_extension_searches_;
-  }
-  int64_t GetNumSingularExtensions() {
-    return num_singular_extensions_;
-  }
+  int64_t GetNumSingularExtensionSearches() { return num_singular_extension_searches_; }
+  int64_t GetNumSingularExtensions() { return num_singular_extensions_; }
   int64_t GetNumLateMovesPruned() { return num_lm_pruned_; }
   int64_t GetNumFailHighReductions() { return num_fail_high_reductions_; }
   int64_t GetNumCheckExtensions() { return num_check_extensions_; }
@@ -221,7 +202,6 @@ class AlphaBetaPlayer {
 
   void EnableDebug(bool enable) { enable_debug_ = enable; }
 
-  // for debugging
   std::atomic<int64_t> test1_ = 0;
   std::atomic<int64_t> test2_ = 0;
   std::atomic<int64_t> test3_ = 0;
@@ -249,7 +229,7 @@ class AlphaBetaPlayer {
 
   std::vector<AspirationState> thread_aspiration_states_; 
 
-  int64_t num_nodes_ = 0; // debugging
+  int64_t num_nodes_ = 0; 
   std::atomic<int64_t> num_cache_hits_ = 0;
   std::atomic<int64_t> num_null_moves_tried_ = 0;
   std::atomic<int64_t> num_null_moves_pruned_ = 0;
@@ -276,7 +256,6 @@ class AlphaBetaPlayer {
 
   int64_t last_board_key_ = 0;
 
-  // For evaluation
   int king_attack_weight_[30];
   int king_attacker_values_[6];
   int piece_square_table_[4][6][256];
@@ -285,17 +264,12 @@ class AlphaBetaPlayer {
   int pawn_advancement_bonus_[4][256];
   Team root_team_ = NO_TEAM;
 
-  // Heuristics (shared across threads)
-  // (piece_type, from_row, from_col, to_row, to_col)
   int history_heuristic[6][14][14][14][14];
-  // (piece_type, piece_color, capture_piece_type, capture_piece_color, to_row, to_col)
   int capture_heuristic[6][4][6][4][14][14];
-  // (from_row, from_col, to_row, to_col)
   Move* counter_moves = nullptr;
-  // indexed by (in_check, is_capture)
   ContinuationHistory** continuation_history = nullptr;
 
-  static constexpr size_t kHeuristicMutexes = 256 * 256 / 100; // Larger to reduce collisions
+  static constexpr size_t kHeuristicMutexes = 256 * 256 / 100; 
   std::unique_ptr<std::mutex[]> heuristic_mutexes_;
 };
 

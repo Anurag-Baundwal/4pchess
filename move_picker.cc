@@ -13,6 +13,14 @@ enum Stage {
   QUIET = 4,
 };
 
+// Helper to determine capture from board state
+static inline Piece GetCapturePiece(const Board& board, const Move& move) {
+    if (move.IsEnPassant()) {
+        return board.GetPiece(move.GetEnpassantLocation());
+    }
+    return board.GetPiece(move.To());
+}
+
 MovePicker::MovePicker(
     Board& board,
     const std::optional<Move>& pvmove,
@@ -22,7 +30,7 @@ MovePicker::MovePicker(
     int capture_heuristic[6][4][6][4][14][14],
     int piece_move_order_scores[6],
     bool enable_move_order_checks,
-    Move* buffer,
+    ExtMove* buffer,
     size_t buffer_size,
     Move* counter_moves,
     bool include_quiets,
@@ -31,13 +39,19 @@ MovePicker::MovePicker(
   enable_move_order_checks_ = enable_move_order_checks;
   stages_.resize(5);
   moves_ = buffer;
-  num_moves_ = board.GetPseudoLegalMoves2(buffer, buffer_size);
+  
+  // CHANGED: Use new API returning end pointer
+  ExtMove* end_ptr = board.GetPseudoLegalMoves2(buffer);
+  num_moves_ = end_ptr - buffer;
   board_ = &board;
 
   for (size_t i = 0; i < num_moves_; i++) {
     auto& move = moves_[i];
 
-    const auto capture = move.GetCapturePiece();
+    // CHANGED: Retrieve capture info from board
+    const auto capture = GetCapturePiece(board, move);
+    bool is_capture = capture.Present();
+    
     const auto piece = board.GetPiece(move.From());
     const auto piece_type = piece.GetPieceType();
     const auto& from = move.From();
@@ -50,7 +64,7 @@ MovePicker::MovePicker(
                && (killers[0] == move || killers[1] == move)
                && include_quiets) {
       stages_[KILLER].emplace_back(static_cast<short>(i), static_cast<float>(score + (move == killers[0] ? 1 : 0)));
-    } else if (move.IsCapture()) {
+    } else if (is_capture) { // CHANGED: move.IsCapture() -> is_capture
       int captured_val = piece_evaluations[capture.GetPieceType()];
       int attacker_val = piece_evaluations[piece.GetPieceType()];
       int incr_score = captured_val - attacker_val/100;
@@ -66,15 +80,18 @@ MovePicker::MovePicker(
       }
     } else if (include_quiets) {
       score += history_heuristic[piece.GetPieceType()][from.GetRow()][from.GetCol()][to.GetRow()][to.GetCol()] / 2;
-      if (move == counter_moves[from.GetRow()*14*14*14 + from.GetCol()*14*14
-          + to.GetRow()*14 + to.GetCol()]) {
+      // Use direct index math for counter_moves array
+      int cm_idx = from.GetRow()*14*14*14 + from.GetCol()*14*14 + to.GetRow()*14 + to.GetCol();
+      if (move == counter_moves[cm_idx]) {
         score += 50;
       }
-      score += (*piece_to_history[0])[piece_type][to.GetRow()][to.GetCol()] / 2;
-      score += (*piece_to_history[1])[piece_type][to.GetRow()][to.GetCol()] / 4;
-      score += (*piece_to_history[2])[piece_type][to.GetRow()][to.GetCol()] / 4;
-      score += (*piece_to_history[3])[piece_type][to.GetRow()][to.GetCol()] / 4;
-      score += (*piece_to_history[4])[piece_type][to.GetRow()][to.GetCol()] / 4;
+      if (piece_to_history) {
+          score += (*piece_to_history[0])[piece_type][to.GetRow()][to.GetCol()] / 2;
+          score += (*piece_to_history[1])[piece_type][to.GetRow()][to.GetCol()] / 4;
+          score += (*piece_to_history[2])[piece_type][to.GetRow()][to.GetCol()] / 4;
+          score += (*piece_to_history[3])[piece_type][to.GetRow()][to.GetCol()] / 4;
+          score += (*piece_to_history[4])[piece_type][to.GetRow()][to.GetCol()] / 4;
+      }
 
       stages_[QUIET].emplace_back(static_cast<short>(i), static_cast<float>(score));
     }
@@ -82,7 +99,6 @@ MovePicker::MovePicker(
 }
 
 Move* MovePicker::GetNextMove() {
-  // Increment stage_ and stage_idx_ until we find the next item
   while (stage_ < stages_.size() && stage_idx_ >= stages_[stage_].size()) {
     stage_++;
     stage_idx_ = 0;
@@ -91,12 +107,12 @@ Move* MovePicker::GetNextMove() {
     return nullptr;
   }
 
-  // Init the stage if not already, including scoring and sorting
   auto& stage_vec = stages_[stage_];
   if (!init_stages_[stage_]) {
     if (stage_vec.size() > 1) {
       if (enable_move_order_checks_) {
         for (auto& item : stage_vec) {
+          // DeliversCheck uses the board to determine checks
           if (moves_[item.index].DeliversCheck(*board_)) {
             item.score += (stage_ == QUIET ? 100'000.0f : 1000.0f);
           }
@@ -115,9 +131,8 @@ Move* MovePicker::GetNextMove() {
     init_stages_[stage_] = true;
   }
 
+  // Cast ExtMove* back to Move* is safe as ExtMove inherits Move
   Move* move = &moves_[stage_vec[stage_idx_].index];
-
-  // Increment stage_idx_ for the next call.
   stage_idx_++;
 
   return move;

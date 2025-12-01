@@ -20,6 +20,22 @@
 
 namespace chess {
 
+// --- HELPER FUNCTIONS FOR COMPRESSED MOVE CLASS ---
+namespace {
+inline bool IsCapture(const Board& board, const Move& move) {
+    if (move.IsEnPassant()) return true;
+    return !board.GetPiece(move.To()).Missing();
+}
+
+inline Piece GetCapturePiece(const Board& board, const Move& move) {
+    if (move.IsEnPassant()) {
+        return board.GetPiece(move.GetEnpassantLocation());
+    }
+    return board.GetPiece(move.To());
+}
+}
+// --------------------------------------------------
+
 AlphaBetaPlayer::AlphaBetaPlayer(std::optional<PlayerOptions> options) {
   if (options.has_value()) {
     options_ = *options;
@@ -171,14 +187,14 @@ AlphaBetaPlayer::~AlphaBetaPlayer() {
 ThreadState::ThreadState(
     PlayerOptions options, const Board& board, const PVInfo& pv_info, AspirationState& asp_state)
   : options_(options), root_board_(board), pv_info_(pv_info), asp_state_(asp_state) {
-  move_buffer_ = new Move[kBufferPartitionSize * kBufferNumPartitions];
+  move_buffer_ = new ExtMove[kBufferPartitionSize * kBufferNumPartitions];
 }
 
 ThreadState::~ThreadState() {
   delete[] move_buffer_;
 }
 
-Move* ThreadState::GetNextMoveBufferPartition() {
+ExtMove* ThreadState::GetNextMoveBufferPartition() {
   if (buffer_id_ >= kBufferNumPartitions) {
     std::cout << "ThreadState move buffer overflow" << std::endl;
     abort();
@@ -193,9 +209,12 @@ void ThreadState::ReleaseMoveBufferPartition() {
 
 int AlphaBetaPlayer::GetNumLegalMoves(Board& board) {
   constexpr int kLimit = 300;
-  Move moves[kLimit];
+  ExtMove moves[kLimit];
   Player player = board.GetTurn();
-  size_t num_moves = board.GetPseudoLegalMoves2(moves, kLimit);
+  
+  ExtMove* end_ptr = board.GetPseudoLegalMoves2(moves);
+  size_t num_moves = end_ptr - moves;
+  
   int n_legal = 0;
   for (size_t i = 0; i < num_moves; i++) {
     const auto& move = moves[i];
@@ -203,7 +222,7 @@ int AlphaBetaPlayer::GetNumLegalMoves(Board& board) {
     if (!board.IsKingInCheck(player)) {
       n_legal++;
     }
-    board.UndoMove();
+    board.UndoMove(move);
   }
 
   return n_legal;
@@ -372,7 +391,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
   };
 
   std::optional<Move> pv_move = pvinfo.GetBestMove();
-  Move* moves = thread_state.GetNextMoveBufferPartition();
+  ExtMove* moves = thread_state.GetNextMoveBufferPartition();
   MovePicker move_picker(
     board,
     pv_move.has_value() ? pv_move : tt_move,
@@ -412,8 +431,9 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     const auto& to = move.To();
     Piece piece = board.GetPiece(move.From());
     PieceType piece_type = piece.GetPieceType();
-    int from_idx = BitboardImpl::LocationToIndex(move.From());
-    int to_idx = BitboardImpl::LocationToIndex(move.To());
+    
+    // Check capture using board context
+    bool is_capture = IsCapture(board, move);
 
     std::optional<std::tuple<int, std::optional<Move>>> value_and_move_or;
     bool delivers_check = move.DeliversCheck(board);
@@ -421,7 +441,6 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     int e = 0;  // extension
     
     // Singular extension search
-    // Note: This needs some more work before it can be enabled.
     if (options_.enable_singular_extensions
         && !is_root_node
         && tt_move.has_value() && move == *tt_move
@@ -488,11 +507,11 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       && depth > 1
       && move_count > 1 + is_root_node
       && (!is_tt_pv
-          || !move.IsCapture()
+          || !is_capture
           || (is_cut_node && (ss-1)->move_count > 1))
          ;
 
-    bool quiet = !in_check && !move.IsCapture() && !delivers_check;
+    bool quiet = !in_check && !is_capture && !delivers_check;
     int q = 1 + depth*depth/(declining?10:5);
     if (is_pv_node) {
       q = 5 + depth*depth/(declining?2:1);
@@ -515,13 +534,13 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     r -= in_check;
     r -= delivers_check;
     r -= is_pv_node;
-    r -= move.IsCapture() && move.ApproxSEE(board, kPieceEvaluations) > 0;
-    if (!move.IsCapture()) {
+    r -= is_capture && move.ApproxSEE(board, kPieceEvaluations) > 0;
+    if (!is_capture) {
       int history_score = history_heuristic[piece.GetPieceType()][from.GetRow()][from.GetCol()]
           [to.GetRow()][to.GetCol()];
       r -= std::clamp((history_score - 4000) / 10000, -3, 3);
     } else {
-      Piece captured = move.GetCapturePiece();
+      Piece captured = GetCapturePiece(board, move);
       int history_score = capture_heuristic[piece.GetPieceType()][piece.GetColor()]
         [captured.GetPieceType()][captured.GetColor()]
         [to.GetRow()][to.GetCol()];
@@ -540,10 +559,10 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
         && !is_pv_node
         && alpha > -kMateValue
         && lmr
-        && move.IsCapture()
+        && is_capture
         && lmr_depth < 10
         && !in_check) {
-      Piece capture_piece = move.GetCapturePiece();
+      Piece capture_piece = GetCapturePiece(board, move);
       PieceType capture_piece_type = capture_piece.GetPieceType();
       int futility_eval = eval + 400 + 291 * lmr_depth + kPieceEvaluations[capture_piece_type];
       if (futility_eval < alpha) {
@@ -552,12 +571,12 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     }
 
     ss->current_move = move;
-    ss->continuation_history = &continuation_history[ss->in_check][move.IsCapture()][piece_type][move.To().GetRow()][move.To().GetCol()];
+    ss->continuation_history = &continuation_history[ss->in_check][is_capture][piece_type][move.To().GetRow()][move.To().GetCol()];
 
     board.MakeMove(move);
 
     if (board.CheckWasLastMoveKingCapture() != IN_PROGRESS) {
-      board.UndoMove();
+      board.UndoMove(move);
       alpha = beta;
       best_move = move;
       pvinfo.SetBestMove(move);
@@ -565,7 +584,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     }
 
     if (board.IsKingInCheck(player)) {
-      board.UndoMove();
+      board.UndoMove(move);
       continue;
     }
 
@@ -619,7 +638,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
           deadline, *child_pvinfo, 0, false);
     }
 
-    board.UndoMove();
+    board.UndoMove(move);
 
     if (options_.enable_mobility_evaluation || options_.enable_piece_activation) {
       thread_state.NActivated()[player_color] = curr_n_activated;
@@ -674,7 +693,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     transposition_table_->Save(board.HashKey(), depth, best_move, score, ss->static_eval, bound, is_pv_node);
   }
 
-  if (best_move.has_value() && !best_move->IsCapture()) {
+  if (best_move.has_value() && !IsCapture(board, *best_move)) {
     UpdateQuietStats(ss, *best_move);
   }
 
@@ -780,7 +799,7 @@ AlphaBetaPlayer::QSearch(
   };
 
   std::optional<Move> pv_move = pv_info.GetBestMove();
-  Move* moves = thread_state.GetNextMoveBufferPartition();
+  ExtMove* moves = thread_state.GetNextMoveBufferPartition();
   MovePicker move_picker(
     board, pv_move, ss->killers, kPieceEvaluations,
     history_heuristic, capture_heuristic, piece_move_order_scores_,
@@ -798,16 +817,20 @@ AlphaBetaPlayer::QSearch(
     Move* move_ptr = move_picker.GetNextMove();
     if (move_ptr == nullptr) break;
     Move& move = *move_ptr;
-    bool capture = move.IsCapture();
+    
+    bool capture = IsCapture(board, move);
+    
     if (!in_check) {
       if (capture) {
-        if (move.GetStandardCapture().Present()) {
-          if (move.GetCapturePiece().GetPieceType() != QUEEN
-              && board.GetPiece(move.From()).GetPieceType() != PAWN) {
-            if (StaticExchangeEvaluationCapture(kPieceEvaluations, board, move) < 0) {
-              continue;
-            }
-          }
+        if (move.IsEnPassant()) {
+             // En Passant allowed
+        } else {
+             Piece cap_piece = GetCapturePiece(board, move);
+             if (cap_piece.GetPieceType() != QUEEN && board.GetPiece(move.From()).GetPieceType() != PAWN) {
+                 if (StaticExchangeEvaluationCapture(kPieceEvaluations, board, move) < 0) {
+                     continue;
+                 }
+             }
         }
       } else {
         continue;
@@ -816,15 +839,14 @@ AlphaBetaPlayer::QSearch(
 
     std::optional<std::tuple<int, std::optional<Move>>> value_and_move_or;
     PieceType piece_type = board.GetPiece(move.From()).GetPieceType();
-    int to_idx = BitboardImpl::LocationToIndex(move.To());
 
     ss->current_move = move;
-    ss->continuation_history = &continuation_history[ss->in_check][move.IsCapture()][piece_type][move.To().GetRow()][move.To().GetCol()];
+    ss->continuation_history = &continuation_history[ss->in_check][capture][piece_type][move.To().GetRow()][move.To().GetCol()];
     
     bool delivers_check = move.DeliversCheck(board);
     board.MakeMove(move);
     if (board.CheckWasLastMoveKingCapture() != IN_PROGRESS) {
-      board.UndoMove();
+      board.UndoMove(move);
       best_value = beta;
       best_move = move;
       pv_info.SetBestMove(move);
@@ -832,18 +854,18 @@ AlphaBetaPlayer::QSearch(
     }
 
     if (board.IsKingInCheck(player)) {
-      board.UndoMove();
+      board.UndoMove(move);
       continue;
     }
 
     move_count++;
     if (best_value > -kMateValue) {
       if ((!delivers_check && move_count > 2) || quiet_check_evasions > 1) {
-        board.UndoMove();
+        board.UndoMove(move);
         continue;
       }
-      if (move.IsCapture() && !delivers_check && futility_base + kPieceEvaluations[move.GetCapturePiece().GetPieceType()] < alpha) {
-        board.UndoMove();
+      if (capture && !delivers_check && futility_base + kPieceEvaluations[GetCapturePiece(board, move).GetPieceType()] < alpha) {
+        board.UndoMove(move);
         continue;
       }
     }
@@ -860,7 +882,7 @@ AlphaBetaPlayer::QSearch(
         ss+1, node_type, thread_state, board, depth - 1, -beta, -alpha, !maximizing_player,
         deadline, *child_pvinfo);
 
-    board.UndoMove();
+    board.UndoMove(move);
 
     if (options_.enable_mobility_evaluation || options_.enable_piece_activation) {
       thread_state.NActivated()[player_color] = curr_n_activated;
@@ -929,8 +951,8 @@ void AlphaBetaPlayer::UpdateStats(
 
   int bonus = 1 << (fail_high ? depth + 1: depth);
 
-  if (move.IsCapture()) {
-    Piece captured = move.GetCapturePiece();
+  if (IsCapture(board, move)) {
+    Piece captured = GetCapturePiece(board, move);
     size_t lock_key = to.GetRow() * 14 + to.GetCol();
     std::lock_guard<std::mutex> lock(heuristic_mutexes_[lock_key % kHeuristicMutexes]);
     capture_heuristic[piece.GetPieceType()][piece.GetColor()]
@@ -944,8 +966,8 @@ void AlphaBetaPlayer::UpdateStats(
         [to.GetRow()][to.GetCol()] += bonus;
     }
     if (options_.enable_counter_move_heuristic) {
-      counter_moves[from.GetRow()*14*14*14 + from.GetCol()*14*14
-        + to.GetRow()*14 + to.GetCol()] = move;
+      int cm_idx = from.GetRow()*14*14*14 + from.GetCol()*14*14 + to.GetRow()*14 + to.GetCol();
+      counter_moves[cm_idx] = move;
     }
     UpdateQuietStats(ss, move);
     UpdateContinuationHistories(ss, move, piece.GetPieceType(), bonus);
@@ -956,8 +978,8 @@ void AlphaBetaPlayer::UpdateStats(
       const auto& other_to = other_move.To();
       Piece other_piece = board.GetPiece(other_from);
 
-      if (other_move.IsCapture()) {
-        Piece other_captured = other_move.GetCapturePiece();
+      if (IsCapture(board, other_move)) {
+        Piece other_captured = GetCapturePiece(board, other_move);
         size_t lock_key = other_to.GetRow() * 14 + other_to.GetCol();
         std::lock_guard<std::mutex> lock(heuristic_mutexes_[lock_key % kHeuristicMutexes]);
         capture_heuristic[other_piece.GetPieceType()][other_piece.GetColor()]
@@ -1037,7 +1059,7 @@ int AlphaBetaPlayer::Evaluate(
             Bitboard processing_bb = bb;
             while(!processing_bb.is_zero()) {
                 int sq = processing_bb.ctz();
-                processing_bb &= (processing_bb - 1);
+                processing_bb.clear_bit(sq);
                 
                 if (piece_type == QUEEN) {
                     if (team == RED_YELLOW) n_queen_ry++; else n_queen_bg++;
@@ -1072,8 +1094,6 @@ int AlphaBetaPlayer::Evaluate(
                     if (!(BitboardImpl::IndexToBitboard(sq) & BitboardImpl::kCentralMask).is_zero()) {
                         rook_bonus = 50;
                     } else {
-                        // ** CORRECTED ROOK LOGIC **
-                        // Use only the FORWARD ray for each color to match mailbox logic
                         Bitboard forward_ray;
                         switch (color) {
                             case RED:    forward_ray = BitboardImpl::kRayAttacks[sq][BitboardImpl::D_N]; break;
@@ -1083,7 +1103,7 @@ int AlphaBetaPlayer::Evaluate(
                             default:     forward_ray.limbs.fill(0); break;
                         }
                         if ((forward_ray & all_pawns).is_zero()) {
-                           rook_bonus = 25; // Equivalent to !blocked_by_pawn in old code
+                           rook_bonus = 25; 
                         }
                     }
                     eval += team_sign * rook_bonus;
@@ -1121,7 +1141,6 @@ int AlphaBetaPlayer::Evaluate(
         eval += 2 * (total_moves[RED] + total_moves[YELLOW] - total_moves[BLUE] - total_moves[GREEN]);
     }
     
-    // ** ASYMMETRIC EVALUATION BLOCK (CORRECTLY PLACED) **
     constexpr int kAsymmetricQueenBonus = 0;
     constexpr int kStartEvaluation = 16 * kPieceEvaluations[PAWN] + 4 * kPieceEvaluations[KNIGHT] + 4 * kPieceEvaluations[BISHOP] + 4 * kPieceEvaluations[ROOK] + 2 * kPieceEvaluations[QUEEN] + 2 * kPieceEvaluations[KING];
     constexpr float kAsymmetricPieceEvalFactor = 0.05f;
@@ -1148,7 +1167,6 @@ int AlphaBetaPlayer::Evaluate(
     constexpr int kMultiQueenBonus = 200;
     if (n_queen_ry >= 2) eval += kMultiQueenBonus;
     if (n_queen_bg >= 2) eval -= kMultiQueenBonus;
-    // ** END OF ASYMMETRIC BLOCK **
 
     if (options_.enable_piece_imbalance) {
       int diff_ry = std::abs(n_major_pieces[RED] - n_major_pieces[YELLOW]);
@@ -1192,7 +1210,7 @@ int AlphaBetaPlayer::Evaluate(
             Bitboard king_zone = BitboardImpl::kKingAttacks[king_sq];
             while(!king_zone.is_zero()) {
                 int zone_sq = king_zone.ctz();
-                king_zone &= (king_zone - 1);
+                king_zone.clear_bit(zone_sq);
                 Bitboard ry_attackers = board.GetAttackersBB(zone_sq, RED_YELLOW);
                 Bitboard bg_attackers = board.GetAttackersBB(zone_sq, BLUE_GREEN);
                 Bitboard all_zone_attackers = ry_attackers | bg_attackers;
@@ -1200,7 +1218,7 @@ int AlphaBetaPlayer::Evaluate(
                 int value_of_protection = 0, num_protectors = 0;
                 while(!all_zone_attackers.is_zero()) {
                     int attacker_sq = all_zone_attackers.ctz();
-                    all_zone_attackers &= (all_zone_attackers - 1);
+                    all_zone_attackers.clear_bit(attacker_sq);
                     Piece p = board.GetPiece(attacker_sq);
                     if(p.GetPieceType() == KING) continue;
                     int val = king_attacker_values_[p.GetPieceType()];
@@ -1252,7 +1270,6 @@ void AlphaBetaPlayer::ResetHistoryHeuristics() {
 }
 
 void AlphaBetaPlayer::AgeHistoryHeuristics() {
-  // Age quiet move history heuristic by dividing all scores by 2
   for (int pt = 0; pt < 6; ++pt) {
     for (int r1 = 0; r1 < 14; ++r1) {
       for (int c1 = 0; c1 < 14; ++c1) {
@@ -1265,7 +1282,6 @@ void AlphaBetaPlayer::AgeHistoryHeuristics() {
     }
   }
 
-  // Age capture move history heuristic by dividing all scores by 2
   for (int pt1 = 0; pt1 < 6; ++pt1) {
     for (int c1 = 0; c1 < 4; ++c1) {
       for (int pt2 = 0; pt2 < 6; ++pt2) {
@@ -1280,29 +1296,24 @@ void AlphaBetaPlayer::AgeHistoryHeuristics() {
     }
   }
 
-  // Countermoves are not aged, they are cleared to prevent using
-  // a move from a completely different position.
   std::memset(counter_moves, 0, sizeof(Move) * 14 * 14 * 14 * 14);
 
-  // Age continuation histories by iterating down to the final integer tables.
   for (int in_check = 0; in_check < 2; ++in_check) {
     for (int is_capture = 0; is_capture < 2; ++is_capture) {
       auto& cont_hist_table = continuation_history[in_check][is_capture];
 
-      for (auto& piece_hist : cont_hist_table) { // Iterates over piece_type (7 elements)
-        for (auto& to_row_hist : piece_hist) { // Iterates over to_row (14 elements)
-          for (auto& to_col_hist : to_row_hist) { // Iterates over to_col (14 elements)
-            // The to_col_hist here is a StatsEntry<PieceToHistory, NOT_USED>
-            PieceToHistory* h = &to_col_hist; // Get the pointer to the underlying PieceToHistory object
+      for (auto& piece_hist : cont_hist_table) { 
+        for (auto& to_row_hist : piece_hist) { 
+          for (auto& to_col_hist : to_row_hist) { 
+            PieceToHistory* h = &to_col_hist; 
 
-            // Age the PieceToHistory table this pointer points to.
             if (h != nullptr) {
                 using entry_t = StatsEntry<int32_t, 2147483647>;
-                entry_t* p_start = reinterpret_cast<entry_t*>(h); // Reinterpret as a flat array of StatsEntry<int32_t, ...>
-                constexpr size_t num_entries = sizeof(PieceToHistory) / sizeof(entry_t); // Calculate how many int32_t values are in PieceToHistory
+                entry_t* p_start = reinterpret_cast<entry_t*>(h); 
+                constexpr size_t num_entries = sizeof(PieceToHistory) / sizeof(entry_t);
 
                 for (size_t i = 0; i < num_entries; ++i) {
-                    p_start[i] = static_cast<int32_t>(p_start[i]) >> 1; // Divide by 2
+                    p_start[i] = static_cast<int32_t>(p_start[i]) >> 1; 
                 }
             }
           }
@@ -1337,9 +1348,8 @@ AlphaBetaPlayer::MakeMove(
   root_team_ = board.GetTurn().GetTeam();
   int64_t hash_key = board.HashKey();
   if (hash_key != last_board_key_) {
-    // If the board has changed, reset all aspiration window states.
     for (auto& state : thread_aspiration_states_) {
-        state = AspirationState(); // Reset to default values
+        state = AspirationState(); 
     }
   }
   last_board_key_ = hash_key;
@@ -1364,7 +1374,6 @@ AlphaBetaPlayer::MakeMove(
     ResetMobilityScores(thread_states.back(), board);
   }
 
-  // --- MODIFICATION START: Collect results from all threads ---
   std::vector<std::optional<std::tuple<int, std::optional<Move>, int>>> results(num_threads);
   std::mutex results_mutex;
 
@@ -1384,7 +1393,6 @@ AlphaBetaPlayer::MakeMove(
       std::lock_guard<std::mutex> lock(results_mutex);
       results[0] = main_res;
   }
-  // --- MODIFICATION END ---
 
   SetCanceled(true);
   for (auto& thread : threads) {
@@ -1397,9 +1405,6 @@ AlphaBetaPlayer::MakeMove(
   }
   num_nodes_ += total_nodes_this_search;
 
-  // --- NEW BEST THREAD SELECTION LOGIC (INSPIRED BY BERSERK) ---
-
-  // Step 1: Find the worst score among all threads for normalization
   int worst_score = kMateValue;
   for (const auto& res_opt : results) {
     if (res_opt) {
@@ -1407,8 +1412,6 @@ AlphaBetaPlayer::MakeMove(
     }
   }
 
-  // Step 2: Tally votes for each move.
-  // The vote value is (score - worst_score) * depth.
   std::unordered_map<Move, int64_t> vote_map;
   for (const auto& res_opt : results) {
     if (res_opt) {
@@ -1420,10 +1423,9 @@ AlphaBetaPlayer::MakeMove(
     }
   }
   
-  // Step 3: Select the best thread based on a hierarchical decision model.
   int best_thread_idx = -1;
   int64_t best_vote_score = -1;
-  int best_score = -kMateValue * 2; // Worse than any possible score
+  int best_score = -kMateValue * 2; 
 
   for (size_t i = 0; i < results.size(); ++i) {
     if (!results[i].has_value()) {
@@ -1447,33 +1449,22 @@ AlphaBetaPlayer::MakeMove(
     bool is_current_mate = std::abs(current_score) == kMateValue;
     bool is_best_mate = std::abs(best_score) == kMateValue;
 
-    // Hierarchy:
-    // 1. Mates are always preferred over non-mates.
-    // 2. Faster mates (higher score) are better.
-    // 3. For non-mates, the move with the highest total vote is best.
-    // 4. If votes are tied, the thread with the higher individual weighted score is better.
-
     if (is_best_mate) {
       if (is_current_mate && current_score > best_score) {
-        // A faster mate was found.
         best_thread_idx = i;
         best_score = current_score;
         best_vote_score = current_vote_score;
       }
-      // Otherwise, the current best (a mate) is better than the new one.
     } else if (is_current_mate) {
-      // The new result is a mate, the old one wasn't. This is always better.
       best_thread_idx = i;
       best_score = current_score;
       best_vote_score = current_vote_score;
     } else {
-      // Neither result is a mate. Compare votes.
       if (current_vote_score > best_vote_score) {
         best_thread_idx = i;
         best_score = current_score;
         best_vote_score = current_vote_score;
       } else if (current_vote_score == best_vote_score) {
-        // Tie-break with individual thread's weighted score.
         auto [best_s, _, best_d] = *results[best_thread_idx];
         int64_t current_thread_value = static_cast<int64_t>(current_score - worst_score) * current_depth;
         int64_t best_thread_value = static_cast<int64_t>(best_s - worst_score) * best_d;
@@ -1493,8 +1484,6 @@ AlphaBetaPlayer::MakeMove(
     pv_info_ = thread_states[best_thread_idx].GetPVInfo();
   }
   
-  // --- END OF NEW LOGIC ---
-
   SetCanceled(false);
   return final_result;
 }
@@ -1524,7 +1513,6 @@ AlphaBetaPlayer::MakeMoveSingleThread(
     while (next_depth <= max_depth) {
       std::optional<std::tuple<int, std::optional<Move>>> move_and_value;
 
-      // All threads use their own aspiration window
       int prev = thread_state.asp_state_.average_root_eval_;
       int delta = 50;
       if (thread_state.asp_state_.asp_nobs_ > 0) {
@@ -1610,23 +1598,22 @@ int PVInfo::GetDepth() const {
 void AlphaBetaPlayer::UpdateMobilityEvaluation(
     ThreadState& thread_state, Board& board, Player player) {
 
-  // We need to temporarily set the board's turn to the player we're evaluating,
-  // because some helper functions might rely on `board.GetTurn()`.
   Player curr_player = board.GetTurn();
   board.SetPlayer(player);
 
   int color = player.GetColor();
   
-  // --- Part 1: Calculate Total Moves and Threats ---
-  Move* moves = thread_state.GetNextMoveBufferPartition();
-  size_t num_moves = board.GetPseudoLegalMoves2(
-      moves, kBufferPartitionSize);
+  ExtMove* moves = thread_state.GetNextMoveBufferPartition(); 
+  
+  ExtMove* end_ptr = board.GetPseudoLegalMoves2(moves);
+  size_t num_moves = end_ptr - moves;
+  
   thread_state.TotalMoves()[color] = num_moves;
 
   int n_threats = 0;
   for (size_t move_id = 0; move_id < num_moves; move_id++) {
     auto& move = moves[move_id];
-    if (move.IsCapture()) {
+    if (IsCapture(board, move)) {
       if (move.ApproxSEE(board, kPieceEvaluations) >= 100) {
         n_threats++;
       }
@@ -1634,13 +1621,11 @@ void AlphaBetaPlayer::UpdateMobilityEvaluation(
   }
   thread_state.n_threats[color] = n_threats;
   
-  // --- Part 2: Correctly Calculate Piece Activation ---
   if (options_.enable_piece_activation) {
     auto piece_activated = [this](
         int color, PieceType piece_type,
         int from_sq, int n_moves) {
       if (piece_type == KNIGHT) {
-        // activated so long as it's not on the back rank
         BoardLocation location = BitboardImpl::IndexToLocation(from_sq);
         int row = location.GetRow();
         int col = location.GetCol();
@@ -1678,7 +1663,6 @@ void AlphaBetaPlayer::UpdateMobilityEvaluation(
         }
 
         attacks &= ~friendly_pieces;
-        // FIX: Apply the corrected exclusion mask here.
         attacks &= ~mobility_exclusion_mask;
 
         int n_one_piece_moves = attacks.popcount();
@@ -1691,23 +1675,18 @@ void AlphaBetaPlayer::UpdateMobilityEvaluation(
     thread_state.NActivated()[color] = n_pieces_activated;
   }
 
-  // --- Cleanup ---
   board.SetPlayer(curr_player);
   thread_state.ReleaseMoveBufferPartition();
 }
 
 bool AlphaBetaPlayer::HasShield(const Board& board, PlayerColor color, int king_sq) {
   if (king_sq < 0) {
-      return false; // No king, no shield.
+      return false;
   }
 
   const Team team = GetTeam(color);
   const Bitboard& friendly_pieces = board.team_bitboards_[team];
   
-  // Offsets for the three 'forward' directions for each color.
-  // These are relative to the king's square on a 16-wide board representation.
-  // Format: {Forward-Left, Forward, Forward-Right}
-  // N=-16, E=1, S=16, W=-1, NE=-15, NW=-17, SE=17, SW=15
   const int shield_offsets[4][3] = {
       /* RED    */ { -17, -16, -15 }, // NW, N, NE
       /* BLUE   */ { -15,   1,  17 }, // NE, E, SE
@@ -1715,15 +1694,11 @@ bool AlphaBetaPlayer::HasShield(const Board& board, PlayerColor color, int king_
       /* GREEN  */ { -17,  -1,  15 }  // NW, W, SW
   };
 
-  // The original logic required each of the three forward rays to be blocked
-  // by either the edge of the board or a friendly piece within two squares.
-  // We replicate this logic, but only for pawns.
-  for (int i = 0; i < 3; ++i) { // For each of the 3 forward directions
+  for (int i = 0; i < 3; ++i) { 
       int offset = shield_offsets[color][i];
       
       bool ray_is_blocked = false;
 
-      // Check the first square on the ray
       int sq1 = king_sq + offset;
       Bitboard b1 = BitboardImpl::IndexToBitboard(sq1);
       if ((b1 & BitboardImpl::kLegalSquares).is_zero()) {
@@ -1733,10 +1708,9 @@ bool AlphaBetaPlayer::HasShield(const Board& board, PlayerColor color, int king_
       }
 
       if (ray_is_blocked) {
-          continue; // This ray is blocked, check the next one.
+          continue; 
       }
 
-      // If not blocked, check the second square on the ray
       int sq2 = sq1 + offset;
       Bitboard b2 = BitboardImpl::IndexToBitboard(sq2);
       if ((b2 & BitboardImpl::kLegalSquares).is_zero()) {
@@ -1746,13 +1720,10 @@ bool AlphaBetaPlayer::HasShield(const Board& board, PlayerColor color, int king_
       }
       
       if (!ray_is_blocked) {
-          // If we reach here, this ray is NOT blocked by a pawn or the edge.
-          // The shield is incomplete.
           return false;
       }
   }
 
-  // All 3 forward rays were successfully blocked.
   return true;
 }
 
@@ -1761,7 +1732,6 @@ bool AlphaBetaPlayer::OnBackRank(PlayerColor color, int king_sq) const {
       return false;
   }
   Bitboard king_bb = BitboardImpl::IndexToBitboard(king_sq);
-  // Check if the king's bitboard intersects with the pre-calculated back rank mask
   return !( (BitboardImpl::kBackRankMasks[color] & king_bb).is_zero() );
 }
 
