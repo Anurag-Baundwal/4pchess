@@ -97,7 +97,8 @@ enum NodeType {
 };
 
 constexpr size_t kBufferPartitionSize = 300; 
-constexpr size_t kBufferNumPartitions = 200; 
+// CRITICAL FIX: Increased to 1024 to prevent overflow (crash) during deep QSearch
+constexpr size_t kBufferNumPartitions = 1024; 
 
 struct AspirationState {
   int average_root_eval_ = 0;
@@ -111,7 +112,7 @@ class ThreadState {
   ThreadState(
       PlayerOptions options, const Board& board, const PVInfo& pv_info, AspirationState& asp_state);
   ~ThreadState();
-  ExtMove* GetNextMoveBufferPartition(); // CHANGED: Move* -> ExtMove*
+  ExtMove* GetNextMoveBufferPartition(); 
   void ReleaseMoveBufferPartition();
   int* NActivated() { return n_activated_; }
   int* TotalMoves() { return total_moves_; }
@@ -130,7 +131,7 @@ class ThreadState {
   const Board& root_board_;
   PVInfo pv_info_;
 
-  ExtMove* move_buffer_ = nullptr; // CHANGED: Move* -> ExtMove*
+  ExtMove* move_buffer_ = nullptr; 
   size_t buffer_id_ = 0;
   int n_activated_[4] = {0, 0, 0, 0};
   int total_moves_[4] = {0, 0, 0, 0};
