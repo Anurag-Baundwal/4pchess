@@ -33,6 +33,7 @@ MovePicker::MovePicker(
     ExtMove* buffer,
     size_t buffer_size,
     Move* counter_moves,
+    const SafetyInfo& safety, // Added SafetyInfo param
     bool include_quiets,
     const PieceToHistory** piece_to_history
     ) {
@@ -40,15 +41,23 @@ MovePicker::MovePicker(
   stages_.resize(5);
   moves_ = buffer;
   
-  // CHANGED: Use new API returning end pointer
-  ExtMove* end_ptr = board.GetPseudoLegalMoves2(buffer);
+  // CHANGED: Dispatch to templated generation using the passed safety info.
+  // This matches the Perft optimization pattern.
+  ExtMove* end_ptr = buffer;
+  switch (board.GetTurn().GetColor()) {
+      case RED:    end_ptr = board.GenerateMovesT<RED>(buffer, safety); break;
+      case BLUE:   end_ptr = board.GenerateMovesT<BLUE>(buffer, safety); break;
+      case YELLOW: end_ptr = board.GenerateMovesT<YELLOW>(buffer, safety); break;
+      case GREEN:  end_ptr = board.GenerateMovesT<GREEN>(buffer, safety); break;
+      default:     break;
+  }
+
   num_moves_ = end_ptr - buffer;
   board_ = &board;
 
   for (size_t i = 0; i < num_moves_; i++) {
     auto& move = moves_[i];
 
-    // CHANGED: Retrieve capture info from board
     const auto capture = GetCapturePiece(board, move);
     bool is_capture = capture.Present();
     
@@ -64,7 +73,7 @@ MovePicker::MovePicker(
                && (killers[0] == move || killers[1] == move)
                && include_quiets) {
       stages_[KILLER].emplace_back(static_cast<short>(i), static_cast<float>(score + (move == killers[0] ? 1 : 0)));
-    } else if (is_capture) { // CHANGED: move.IsCapture() -> is_capture
+    } else if (is_capture) { 
       int captured_val = piece_evaluations[capture.GetPieceType()];
       int attacker_val = piece_evaluations[piece.GetPieceType()];
       int incr_score = captured_val - attacker_val/100;
@@ -131,7 +140,6 @@ Move* MovePicker::GetNextMove() {
     init_stages_[stage_] = true;
   }
 
-  // Cast ExtMove* back to Move* is safe as ExtMove inherits Move
   Move* move = &moves_[stage_vec[stage_idx_].index];
   stage_idx_++;
 

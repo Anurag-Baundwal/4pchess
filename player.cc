@@ -210,19 +210,34 @@ void ThreadState::ReleaseMoveBufferPartition() {
 int AlphaBetaPlayer::GetNumLegalMoves(Board& board) {
   constexpr int kLimit = 300;
   ExtMove moves[kLimit];
-  Player player = board.GetTurn();
   
-  ExtMove* end_ptr = board.GetPseudoLegalMoves2(moves);
-  size_t num_moves = end_ptr - moves;
+  // OPTIMIZATION: Use SafetyInfo to filter moves
+  SafetyInfo safety = board.CalculateSafety(board.GetTurn().GetColor());
+  bool in_check = !safety.checkers.is_zero();
+  
+  ExtMove* end_ptr = nullptr;
+  // Dispatch manually
+  switch (board.GetTurn().GetColor()) {
+      case RED:    end_ptr = board.GenerateMovesT<RED>(moves, safety); break;
+      case BLUE:   end_ptr = board.GenerateMovesT<BLUE>(moves, safety); break;
+      case YELLOW: end_ptr = board.GenerateMovesT<YELLOW>(moves, safety); break;
+      case GREEN:  end_ptr = board.GenerateMovesT<GREEN>(moves, safety); break;
+      default:     return 0;
+  }
   
   int n_legal = 0;
-  for (size_t i = 0; i < num_moves; i++) {
-    const auto& move = moves[i];
-    board.MakeMove(move);
-    if (!board.IsKingInCheck(player)) {
-      n_legal++;
+  for (ExtMove* m = moves; m < end_ptr; ++m) {
+    const auto& move = *m;
+    int from_sq = move.FromIndex();
+    bool is_king = board.GetPiece(from_sq).GetPieceType() == KING;
+    bool is_ep = move.IsEnPassant();
+    bool is_pinned = safety.pinned.test(from_sq);
+    
+    // Fast legality check
+    if ((in_check || is_king || is_ep || is_pinned) && !board.IsLegal(move, safety)) {
+        continue;
     }
-    board.UndoMove(move);
+    n_legal++;
   }
 
   return n_legal;
@@ -244,6 +259,12 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     PVInfo& pvinfo,
     int null_moves,
     bool is_cut_node) {
+
+  // SAFETY GUARD: Prevent stack overflow and index out of bounds
+  if (ply >= kMaxPly) {
+    return std::make_tuple(Evaluate(thread_state, board, maximizing_player, alpha, beta), std::nullopt);
+  }
+
   depth = std::max(depth, 0);
   if (canceled_
       || (deadline.has_value()
@@ -292,6 +313,9 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
 
   }
   Player player = board.GetTurn();
+  
+  // OPTIMIZATION: Calculate safety once per node
+  SafetyInfo safety = board.CalculateSafety(player.GetColor());
 
   if (depth <= 0) {
     if (options_.enable_qsearch) {
@@ -328,7 +352,8 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     && (ss-2)->current_move.Present()
     && ss->static_eval + 150 < (ss-2)->static_eval;
 
-  bool in_check = board.IsKingInCheck(player);
+  // OPTIMIZATION: Use pre-calculated safety
+  bool in_check = !safety.checkers.is_zero();
   ss->in_check = in_check;
 
   if (options_.enable_futility_pruning
@@ -341,6 +366,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     return std::make_tuple(beta, std::nullopt);
   }
 
+  // Partner safety check remains expensive (full recalc), but rarer.
   bool partner_checked = board.IsKingInCheck(GetPartner(player));
 
   if (options_.enable_null_move_pruning
@@ -404,6 +430,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     moves,
     kBufferPartitionSize,
     counter_moves,
+    safety, // PASS SAFETY
     true,
     cont_hist
     );
@@ -429,8 +456,19 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
 
     const auto& from = move.From();
     const auto& to = move.To();
-    Piece piece = board.GetPiece(move.From());
+    int from_sq = move.FromIndex();
+    
+    Piece piece = board.GetPiece(from_sq);
     PieceType piece_type = piece.GetPieceType();
+    
+    // CRITICAL OPTIMIZATION: Filter illegal moves BEFORE MakeMove
+    bool is_king_move = piece_type == KING;
+    bool is_ep = move.IsEnPassant();
+    bool is_pinned = safety.pinned.test(from_sq);
+    
+    if ((in_check || is_king_move || is_ep || is_pinned) && !board.IsLegal(move, safety)) {
+        continue;
+    }
     
     // Check capture using board context
     bool is_capture = IsCapture(board, move);
@@ -445,55 +483,41 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
         && !is_root_node
         && tt_move.has_value() && move == *tt_move
         && !ss->excludedMove.Present()
-        && depth >= 6 // Only for reasonably deep searches
+        && depth >= 6 
         && tte != nullptr && tte->score != value_none_tt && std::abs(tte->score) < kMateValue
-        && tte->bound == LOWER_BOUND // The TT move was a fail-high
+        && tte->bound == LOWER_BOUND 
         && tte->depth >= depth - 3
         )
     {
       num_singular_extension_searches_.fetch_add(1, std::memory_order_relaxed);
 
-      // Calculate the term used for beta thresholds.
       int depth_term = (58 + 76 * (ss->tt_pv && node_type == NonPV)) * depth / 57;
-
-      // Beta for a single (1-ply) extension.
       int singular_beta_single = tte->score - depth_term * 2;
-      
-      // A more aggressive beta for a double (2-ply) extension.
       int singular_beta_double = tte->score - depth_term * 4;
-
       int singular_depth = (depth-1) / 2;
 
-      ss->excludedMove = move; // Exclude the current move for the sub-search
+      ss->excludedMove = move; 
 
       PVInfo singular_pvinfo;
-      // The verification search is performed on the CURRENT board state.
-      // We search against the more aggressive beta for the double extension.
       auto singular_res = Search(ss, NonPV, thread_state, board, ply, singular_depth,
                                 singular_beta_double - 1, singular_beta_double,
                                 maximizing_player, expanded, deadline, singular_pvinfo, null_moves, is_cut_node);
 
-      ss->excludedMove = Move(); // Reset for the main search
+      ss->excludedMove = Move(); 
 
       if (singular_res.has_value()) {
         int singular_score = std::get<0>(*singular_res);
-        
-        // If the search fails low against the aggressive beta, the move is very singular.
         if (singular_score < singular_beta_double) {
-          // Grant a 2-ply extension.
           num_singular_extensions_.fetch_add(1, std::memory_order_relaxed);
           e = 2; 
         }
-        // Otherwise, check if it fails low against the normal beta.
         else if (singular_score < singular_beta_single) {
-          // Grant a 1-ply extension.
           num_singular_extensions_.fetch_add(1, std::memory_order_relaxed);
           e = 1;
         }
       }
     }
 
-    // check extensions at early moves.
     if (options_.enable_check_extensions
         && delivers_check
         && move_count < 6
@@ -575,6 +599,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
 
     board.MakeMove(move);
 
+    // Still need to check if the game ended due to king capture (4PC specific)
     if (board.CheckWasLastMoveKingCapture() != IN_PROGRESS) {
       board.UndoMove(move);
       alpha = beta;
@@ -583,10 +608,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       break;
     }
 
-    if (board.IsKingInCheck(player)) {
-      board.UndoMove(move);
-      continue;
-    }
+    // IsKingInCheck(player) check REMOVED because IsLegal handled it.
 
     has_legal_moves = true;
     ss->move_count = move_count++;
@@ -717,6 +739,8 @@ AlphaBetaPlayer::QSearch(
     bool maximizing_player,
     const std::optional<std::chrono::time_point<std::chrono::system_clock>>& deadline,
     PVInfo& pv_info) {
+
+  // Safety guard against deep recursion in QSearch
   if (canceled_
       || (deadline.has_value()
         && std::chrono::system_clock::now() >= *deadline)) {
@@ -763,7 +787,10 @@ AlphaBetaPlayer::QSearch(
   }
 
   Player player = board.GetTurn();
-  bool in_check = board.IsKingInCheck(player);
+  
+  // OPTIMIZATION: Safety calc + pre-filter
+  SafetyInfo safety = board.CalculateSafety(player.GetColor());
+  bool in_check = !safety.checkers.is_zero();
   ss->in_check = in_check;
 
   int best_value;
@@ -804,7 +831,8 @@ AlphaBetaPlayer::QSearch(
     board, pv_move, ss->killers, kPieceEvaluations,
     history_heuristic, capture_heuristic, piece_move_order_scores_,
     options_.enable_move_order_checks, moves, kBufferPartitionSize,
-    counter_moves, in_check, cont_hist
+    counter_moves, safety, // PASS SAFETY
+    in_check, cont_hist
   );
 
   int move_count = 0;
@@ -818,6 +846,15 @@ AlphaBetaPlayer::QSearch(
     if (move_ptr == nullptr) break;
     Move& move = *move_ptr;
     
+    int from_sq = move.FromIndex();
+    bool is_king = board.GetPiece(from_sq).GetPieceType() == KING;
+    bool is_ep = move.IsEnPassant();
+    bool is_pinned = safety.pinned.test(from_sq);
+    
+    if ((in_check || is_king || is_ep || is_pinned) && !board.IsLegal(move, safety)) {
+        continue;
+    }
+
     bool capture = IsCapture(board, move);
     
     if (!in_check) {
@@ -853,10 +890,7 @@ AlphaBetaPlayer::QSearch(
       break;
     }
 
-    if (board.IsKingInCheck(player)) {
-      board.UndoMove(move);
-      continue;
-    }
+    // IsKingInCheck Removed (IsLegal handled it)
 
     move_count++;
     if (best_value > -kMateValue) {
@@ -1605,7 +1639,16 @@ void AlphaBetaPlayer::UpdateMobilityEvaluation(
   
   ExtMove* moves = thread_state.GetNextMoveBufferPartition(); 
   
-  ExtMove* end_ptr = board.GetPseudoLegalMoves2(moves);
+  // OPTIMIZATION: Use SafetyInfo + GenerateMovesT
+  SafetyInfo safety = board.CalculateSafety(player.GetColor());
+  ExtMove* end_ptr = nullptr;
+  switch (player.GetColor()) {
+      case RED:    end_ptr = board.GenerateMovesT<RED>(moves, safety); break;
+      case BLUE:   end_ptr = board.GenerateMovesT<BLUE>(moves, safety); break;
+      case YELLOW: end_ptr = board.GenerateMovesT<YELLOW>(moves, safety); break;
+      case GREEN:  end_ptr = board.GenerateMovesT<GREEN>(moves, safety); break;
+      default:     end_ptr = moves; break;
+  }
   size_t num_moves = end_ptr - moves;
   
   thread_state.TotalMoves()[color] = num_moves;

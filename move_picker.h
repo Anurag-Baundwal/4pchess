@@ -69,9 +69,10 @@ class MovePicker {
     int capture_heuristic[6][4][6][4][14][14],
     int piece_move_order_scores[6],
     bool enable_move_order_checks,
-    ExtMove* buffer, // CHANGED: Move* -> ExtMove*
+    ExtMove* buffer, 
     size_t buffer_size,
     Move* counter_moves,
+    const SafetyInfo& safety, // ADDED SafetyInfo
     bool include_quiets = true,
     const PieceToHistory** piece_to_history = nullptr
     );
@@ -88,7 +89,7 @@ class MovePicker {
   };
 
   Board* board_ = nullptr;
-  ExtMove* moves_ = nullptr; // CHANGED: Move* -> ExtMove*
+  ExtMove* moves_ = nullptr; 
   size_t num_moves_ = 0;
   uint8_t stage_ = 0;
   uint8_t stage_idx_ = 0;
