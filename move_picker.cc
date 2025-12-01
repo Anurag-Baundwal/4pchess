@@ -13,7 +13,6 @@ enum Stage {
   QUIET = 4,
 };
 
-// Helper to determine capture from board state
 static inline Piece GetCapturePiece(const Board& board, const Move& move) {
     if (move.IsEnPassant()) {
         return board.GetPiece(move.GetEnpassantLocation());
@@ -33,16 +32,13 @@ MovePicker::MovePicker(
     ExtMove* buffer,
     size_t buffer_size,
     Move* counter_moves,
-    const SafetyInfo& safety, // Added SafetyInfo param
+    const SafetyInfo& safety,
     bool include_quiets,
     const PieceToHistory** piece_to_history
     ) {
   enable_move_order_checks_ = enable_move_order_checks;
-  stages_.resize(5);
   moves_ = buffer;
   
-  // CHANGED: Dispatch to templated generation using the passed safety info.
-  // This matches the Perft optimization pattern.
   ExtMove* end_ptr = buffer;
   switch (board.GetTurn().GetColor()) {
       case RED:    end_ptr = board.GenerateMovesT<RED>(buffer, safety); break;
@@ -67,12 +63,16 @@ MovePicker::MovePicker(
     const auto& to = move.To();
 
     int score = piece_move_order_scores[piece.GetPieceType()];
+    
+    int stage_idx = -1;
+
     if (pvmove.has_value() && move == *pvmove) {
-      stages_[PV_MOVE].emplace_back(static_cast<short>(i), static_cast<float>(score));
+      stage_idx = PV_MOVE;
     } else if (killers != nullptr
                && (killers[0] == move || killers[1] == move)
                && include_quiets) {
-      stages_[KILLER].emplace_back(static_cast<short>(i), static_cast<float>(score + (move == killers[0] ? 1 : 0)));
+      stage_idx = KILLER;
+      score += (move == killers[0] ? 1 : 0);
     } else if (is_capture) { 
       int captured_val = piece_evaluations[capture.GetPieceType()];
       int attacker_val = piece_evaluations[piece.GetPieceType()];
@@ -83,13 +83,12 @@ MovePicker::MovePicker(
         [to.GetRow()][to.GetCol()];
       score += history_score;
       if (attacker_val <= captured_val) {
-        stages_[GOOD_CAPTURE].emplace_back(static_cast<short>(i), static_cast<float>(score));
+        stage_idx = GOOD_CAPTURE;
       } else {
-        stages_[BAD_CAPTURE].emplace_back(static_cast<short>(i), static_cast<float>(score));
+        stage_idx = BAD_CAPTURE;
       }
     } else if (include_quiets) {
       score += history_heuristic[piece.GetPieceType()][from.GetRow()][from.GetCol()][to.GetRow()][to.GetCol()] / 2;
-      // Use direct index math for counter_moves array
       int cm_idx = from.GetRow()*14*14*14 + from.GetCol()*14*14 + to.GetRow()*14 + to.GetCol();
       if (move == counter_moves[cm_idx]) {
         score += 50;
@@ -101,46 +100,50 @@ MovePicker::MovePicker(
           score += (*piece_to_history[3])[piece_type][to.GetRow()][to.GetCol()] / 4;
           score += (*piece_to_history[4])[piece_type][to.GetRow()][to.GetCol()] / 4;
       }
+      stage_idx = QUIET;
+    }
 
-      stages_[QUIET].emplace_back(static_cast<short>(i), static_cast<float>(score));
+    if (stage_idx != -1) {
+        auto& stage = stages_[stage_idx];
+        if (stage.count < kMaxStageMoves) {
+            stage.items[stage.count++] = Item(static_cast<short>(i), static_cast<float>(score));
+        }
     }
   }
 }
 
 Move* MovePicker::GetNextMove() {
-  while (stage_ < stages_.size() && stage_idx_ >= stages_[stage_].size()) {
+  while (stage_ < 5 && stage_idx_ >= stages_[stage_].count) {
     stage_++;
     stage_idx_ = 0;
   }
-  if (stage_ >= stages_.size()) {
+  if (stage_ >= 5) {
     return nullptr;
   }
 
-  auto& stage_vec = stages_[stage_];
+  auto& stage_buf = stages_[stage_];
+  
   if (!init_stages_[stage_]) {
-    if (stage_vec.size() > 1) {
+    if (stage_buf.count > 1) {
       if (enable_move_order_checks_) {
-        for (auto& item : stage_vec) {
+        for (int i = 0; i < stage_buf.count; ++i) {
           // DeliversCheck uses the board to determine checks
-          if (moves_[item.index].DeliversCheck(*board_)) {
-            item.score += (stage_ == QUIET ? 100'000.0f : 1000.0f);
+          if (moves_[stage_buf.items[i].index].DeliversCheck(*board_)) {
+            stage_buf.items[i].score += (stage_ == QUIET ? 100'000.0f : 1000.0f);
           }
         }
       }
 
-      struct {
-        bool operator()(const Item& a, const Item& b) {
+      // Sort the array portion
+      std::sort(stage_buf.items, stage_buf.items + stage_buf.count, 
+        [](const Item& a, const Item& b) {
           return a.score > b.score;
-        }
-      } customLess;
-
-      std::sort(stage_vec.begin(), stage_vec.end(), customLess);
+        });
     }
-
     init_stages_[stage_] = true;
   }
 
-  Move* move = &moves_[stage_vec[stage_idx_].index];
+  Move* move = &moves_[stage_buf.items[stage_idx_].index];
   stage_idx_++;
 
   return move;

@@ -319,7 +319,8 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
 
   if (depth <= 0) {
     if (options_.enable_qsearch) {
-      return QSearch(ss, is_pv_node ? PV : NonPV, thread_state, board, 0, alpha, beta,
+      // FIX: Pass 'ply' to QSearch to enforce max ply limits
+      return QSearch(ss, is_pv_node ? PV : NonPV, thread_state, board, ply, depth, alpha, beta,
           maximizing_player, deadline, pvinfo);
     }
 
@@ -733,12 +734,18 @@ AlphaBetaPlayer::QSearch(
     NodeType node_type,
     ThreadState& thread_state,
     Board& board,
+    int ply, // ADDED param
     int depth,
     int alpha,
     int beta,
     bool maximizing_player,
     const std::optional<std::chrono::time_point<std::chrono::system_clock>>& deadline,
     PVInfo& pv_info) {
+
+  // FIX: Prevent stack/buffer overflow in deep QSearch
+  if (ply >= kMaxPly) {
+      return std::make_tuple(Evaluate(thread_state, board, maximizing_player, alpha, beta), std::nullopt);
+  }
 
   // Safety guard against deep recursion in QSearch
   if (canceled_
@@ -912,8 +919,9 @@ AlphaBetaPlayer::QSearch(
     bool is_pv_move = pv_move.has_value() && *pv_move == move;
     std::shared_ptr<PVInfo> child_pvinfo = is_pv_move && pv_info.GetChild() != nullptr ? pv_info.GetChild() : std::make_shared<PVInfo>();
 
+    // FIX: Pass ply + 1 to recursive call
     value_and_move_or = QSearch(
-        ss+1, node_type, thread_state, board, depth - 1, -beta, -alpha, !maximizing_player,
+        ss+1, node_type, thread_state, board, ply + 1, depth - 1, -beta, -alpha, !maximizing_player,
         deadline, *child_pvinfo);
 
     board.UndoMove(move);

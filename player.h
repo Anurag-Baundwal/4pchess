@@ -96,8 +96,9 @@ enum NodeType {
   Root,
 };
 
-constexpr size_t kBufferPartitionSize = 300; 
-// CRITICAL FIX: Increased to 1024 to prevent overflow (crash) during deep QSearch
+// Increased buffer size for 4PC complexity
+constexpr size_t kBufferPartitionSize = 600; 
+// Increased partition count to prevent overflow in deep QSearches
 constexpr size_t kBufferNumPartitions = 1024; 
 
 struct AspirationState {
@@ -176,6 +177,7 @@ class AlphaBetaPlayer {
       NodeType node_type,
       ThreadState& thread_state,
       Board& board,
+      int ply, // ADDED: ply to prevent stack/buffer overflow
       int depth,
       int alpha,
       int beta,

@@ -72,12 +72,11 @@ class MovePicker {
     ExtMove* buffer, 
     size_t buffer_size,
     Move* counter_moves,
-    const SafetyInfo& safety, // ADDED SafetyInfo
+    const SafetyInfo& safety, 
     bool include_quiets = true,
     const PieceToHistory** piece_to_history = nullptr
     );
 
-  // If this returns nullptr then there are no more moves
   Move* GetNextMove();
   int GetNumMoves() const { return num_moves_; };
 
@@ -85,15 +84,28 @@ class MovePicker {
   struct Item {
     unsigned short index;
     float score;
+    Item() = default;
     Item(short idx, float sco) : index(idx), score(sco) { }
+  };
+
+  // Fixed size buffers to avoid heap allocation
+  static constexpr int kMaxStageMoves = 256;
+  
+  struct StageBuffer {
+      Item items[kMaxStageMoves];
+      int count = 0;
   };
 
   Board* board_ = nullptr;
   ExtMove* moves_ = nullptr; 
   size_t num_moves_ = 0;
+  
   uint8_t stage_ = 0;
   uint8_t stage_idx_ = 0;
-  std::vector<std::vector<Item>> stages_;
+  
+  // Replaces std::vector<std::vector<Item>>
+  StageBuffer stages_[5];
+  
   bool init_stages_[5] = {false, false, false, false, false};
   bool enable_move_order_checks_;
 };
