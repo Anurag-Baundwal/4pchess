@@ -423,6 +423,9 @@ void InitBitboards() {
     g_BishopDiagAttacksRaw = kBishopDiagAttacksTable.data();
     g_BishopAntiDiagAttacksRaw = kBishopAntiDiagAttacksTable.data();
 
+    // Call static initialization for Board hashes
+    Board::InitializeStaticHashes();
+
     is_initialized = true;
 }
 
@@ -492,6 +495,12 @@ const Player kBluePlayer = Player(BLUE);
 const Player kYellowPlayer = Player(YELLOW);
 const Player kGreenPlayer = Player(GREEN);
 
+// Definition of static members
+int64_t Board::piece_hashes_[4][6][256];
+int64_t Board::turn_hashes_[4];
+int64_t Board::en_passant_hashes_[256];
+int64_t Board::castling_hashes_[4][2];
+
 Board::Board(
     Player turn,
     std::unordered_map<BoardLocation, Piece> location_to_piece,
@@ -529,23 +538,7 @@ Board::Board(
 
   for (const auto& it : location_to_piece) SetPiece(it.first, it.second);
   
-  std::mt19937_64 rng(958829);
-  for (int color = 0; color < 4; color++) turn_hashes_[color] = rng();
-  for (int color = 0; color < 4; color++) {
-    for (int piece_type = 0; piece_type < 6; piece_type++) {
-      for (int i = 0; i < kNumSquares; i++) {
-          piece_hashes_[color][piece_type][i] = rng();
-      }
-    }
-  }
-  // Init EP hashes
-  for (int i = 0; i < 256; ++i) en_passant_hashes_[i] = rng();
-  
-  // Init Castling hashes
-  for (int c = 0; c < 4; ++c) {
-      castling_hashes_[c][KINGSIDE] = rng();
-      castling_hashes_[c][QUEENSIDE] = rng();
-  }
+  // Zobrist hashes now initialized in InitBitboards via InitializeStaticHashes
 
   InitializeHash();
 }
@@ -570,6 +563,27 @@ void Board::InitializeHash() {
         if (castling_rights_[c].Queenside()) hash_key_ ^= castling_hashes_[c][QUEENSIDE];
     }
     UpdateTurnHash(static_cast<int>(turn_.GetColor()));
+}
+
+void Board::InitializeStaticHashes() {
+    static bool initialized = false;
+    if (initialized) return;
+    
+    std::mt19937_64 rng(958829);
+    for (int i = 0; i < 4; ++i) turn_hashes_[i] = rng();
+    for (int c = 0; c < 4; ++c) {
+        for (int pt = 0; pt < 6; ++pt) {
+            for (int s = 0; s < 256; ++s) {
+                piece_hashes_[c][pt][s] = rng();
+            }
+        }
+    }
+    for (int i = 0; i < 256; ++i) en_passant_hashes_[i] = rng();
+    for (int c = 0; c < 4; ++c) {
+        castling_hashes_[c][KINGSIDE] = rng();
+        castling_hashes_[c][QUEENSIDE] = rng();
+    }
+    initialized = true;
 }
 
 Piece Board::GetPiece(int index) const {

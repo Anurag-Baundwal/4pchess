@@ -324,6 +324,9 @@ class Board {
         std::optional<EnpassantInitialization> enp = std::nullopt);
   Board(const Board&) = default;
 
+  // Static initialization helper for Zobrist hashes
+  static void InitializeStaticHashes();
+
   SafetyInfo CalculateSafety(PlayerColor us) const;
   template<PlayerColor Us> SafetyInfo CalculateSafetyT() const;
 
@@ -485,7 +488,7 @@ class Board {
   Bitboard color_bitboards_[4];   
   Bitboard team_bitboards_[2];     
 
-  static constexpr int kMaxGameDepth = 512;
+  static constexpr int kMaxGameDepth = 4096;
   
   Piece piece_on_square_[256];
   
@@ -500,10 +503,12 @@ class Board {
   int player_piece_evaluations_[4] = {0, 0, 0, 0};
 
   int64_t hash_key_ = 0;
-  int64_t piece_hashes_[4][6][256];
-  int64_t turn_hashes_[4];
-  int64_t en_passant_hashes_[256];
-  int64_t castling_hashes_[4][2]; 
+  
+  // Static hash arrays to reduce object size
+  static int64_t piece_hashes_[4][6][256];
+  static int64_t turn_hashes_[4];
+  static int64_t en_passant_hashes_[256];
+  static int64_t castling_hashes_[4][2]; 
 };
 
 namespace BitboardImpl {
@@ -598,6 +603,12 @@ inline void Board::MovePiece(const BoardLocation& from, const BoardLocation& to)
 }
 
 inline void Board::MakeMove(const Move& move) {
+    // BOUNDS CHECK BEFORE WRITING
+    if (move_history_ptr_ >= kMaxGameDepth) {
+        std::cerr << "History overflow at depth " << move_history_ptr_ << std::endl;
+        abort();
+    }
+
     const Player player = turn_;
     // OPTIMIZATION: Use direct indices
     int from_sq = move.FromIndex();
@@ -738,12 +749,7 @@ inline void Board::MakeMove(const Move& move) {
     turn_ = GetNextPlayer(turn_);
     UpdateTurnHash(static_cast<int>(turn_.GetColor()));
 
-    if (move_history_ptr_ < kMaxGameDepth) {
-        move_history_ptr_++;
-    } else {
-        std::cerr << "History overflow" << std::endl;
-        abort();
-    }
+    move_history_ptr_++;
 }
 
 inline void Board::UndoMove(const Move& move) {
