@@ -887,8 +887,16 @@ AlphaBetaPlayer::QSearch(
     ss->current_move = move;
     ss->continuation_history = &continuation_history[ss->in_check][capture][piece_type][move.To().GetRow()][move.To().GetCol()];
     
-    bool delivers_check = move.DeliversCheck(board);
+bool delivers_check = move.DeliversCheck(board);
+
+    // 1. Declare and cache the captured piece type BEFORE MakeMove
+    PieceType captured_type = NO_PIECE;
+    if (capture) {
+        captured_type = GetCapturePiece(board, move).GetPieceType();
+    }
+
     board.MakeMove(move);
+
     if (board.CheckWasLastMoveKingCapture() != IN_PROGRESS) {
       board.UndoMove(move);
       best_value = beta;
@@ -897,15 +905,15 @@ AlphaBetaPlayer::QSearch(
       break;
     }
 
-    // IsKingInCheck Removed (IsLegal handled it)
-
     move_count++;
     if (best_value > -kMateValue) {
       if ((!delivers_check && move_count > 2) || quiet_check_evasions > 1) {
         board.UndoMove(move);
         continue;
       }
-      if (capture && !delivers_check && futility_base + kPieceEvaluations[GetCapturePiece(board, move).GetPieceType()] < alpha) {
+      // 2. Use the cached 'captured_type' here. 
+      // Do NOT call GetCapturePiece(board...) here because the piece is already gone!
+      if (capture && !delivers_check && futility_base + kPieceEvaluations[captured_type] < alpha) {
         board.UndoMove(move);
         continue;
       }
