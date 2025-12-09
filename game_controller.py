@@ -591,10 +591,21 @@ class GameController:
         bot2_title = self.window_config['BOT_2_TITLE']
 
         if self.self_partner_mode:
-            bot1_window = self._find_window(bot1_title)
-            self.windows[self.controlled_colors[0]] = bot1_window
-            self.windows[self.controlled_colors[1]] = bot1_window
-            print(f"Mapping colors {self.controlled_colors[0]} and {self.controlled_colors[1]} to window '{bot1_title}'")
+            # Try Bot 1 first
+            target_window = self._find_window(bot1_title)
+            target_title = bot1_title
+
+            # If Bot 1 isn't found, fallback to Bot 2
+            if not target_window:
+                print(f"[INIT] Window '{bot1_title}' not found. Checking for '{bot2_title}'...")
+                target_window = self._find_window(bot2_title)
+                target_title = bot2_title
+
+            self.windows[self.controlled_colors[0]] = target_window
+            self.windows[self.controlled_colors[1]] = target_window
+            
+            if target_window:
+                print(f"Mapping colors {self.controlled_colors[0]} and {self.controlled_colors[1]} to window '{target_title}'")
         else:
             self.windows[self.controlled_colors[0]] = self._find_window(bot1_title)
             self.windows[self.controlled_colors[1]] = self._find_window(bot2_title)
