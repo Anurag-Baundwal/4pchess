@@ -1399,7 +1399,7 @@ int AlphaBetaPlayer::Evaluate(
 
     // Asymmetric evaluation for playing style.
     // If engine_team is NO_TEAM, then the eval is symmetric.
-    constexpr int kAsymmetricQueenBonus = 200;
+    constexpr int kAsymmetricQueenBonus = 100;
     constexpr int kStartEvaluation =
       16 * kPieceEvaluations[PAWN]
       + 4 * kPieceEvaluations[KNIGHT]
@@ -1458,7 +1458,7 @@ int AlphaBetaPlayer::Evaluate(
 
     // Mobility evaluation
     if (options_.enable_mobility_evaluation) {
-      eval += 2 * (total_moves[RED] + total_moves[YELLOW]
+      eval += 5 * (total_moves[RED] + total_moves[YELLOW]
                    - total_moves[BLUE] - total_moves[GREEN]);
     }
 
