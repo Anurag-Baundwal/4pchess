@@ -19,7 +19,7 @@ parser.add_argument('-prod', '--prod', type=parse_bool, required=False,
 # might need to set this to another value depending on your computer.
 # recommended: max(1, #physical processors - 2)
 parser.add_argument('-num_threads', '--num_threads', type=int, required=False,
-    default=11)
+    default=9)
 parser.add_argument('-max_depth', '--max_depth', type=int, required=False,
     default=100)
 parser.add_argument('-arrows', '--arrows', type=parse_bool, required=False,
@@ -41,7 +41,7 @@ args = parser.parse_args()
 
 
 _USE_PROD_SERVER = args.prod
-_BOT_NAME = 'Team Titan'
+_BOT_NAME = 'TeamEnigma'
 _BOT_VERSION = 'v0.0.0'
 if _USE_PROD_SERVER:
   _API_KEY_FILENAME = 'api_key_prod.txt'
@@ -51,9 +51,14 @@ else:
   _SERVER_URL = api.TEST_SERVER_URL
 
 _MAX_MOVE_MS = 30000
-_MIN_REMAINING_MOVE_MS = 30000
+_MIN_REMAINING_MOVE_MS = 0
 _MIN_MOVE_TIME_MS = 100
 
+# --- NEW TIME MANAGEMENT CONSTANTS ---
+_TIME_PRESSURE_THRESHOLD_PERCENT = 0.50
+_TIME_PRESSURE_FACTOR_DECREASE = 0.75
+_SAFETY_MARGIN = 0.85
+# ------------------------------------
 
 def _read_api_token(filepath: str) -> str:
   """Read the API token from the given filepath."""
@@ -129,7 +134,7 @@ class Pgn4Info:
         move_number = 4 * (game_move - 1) + len(matches)
         last_move = _standardize_move(matches[-1])
 
-    pattern = '(Red|Yellow|Green|Blue) "TeamTitan'
+    pattern = '(Red|Yellow|Green|Blue) "TeamEnigma'
     m = re.search(pattern, pgn4, re.IGNORECASE)
     team = None
     if m:
@@ -156,6 +161,8 @@ class Server:
     self._last_arrow_request = None
     self._gameoverchat = False
     self._game_number = None
+    # --- NEW: State for adaptive time management ---
+    self._time_pressure_factor = 1.0
 
   def _read_streaming_response(self, response):
     for content in response.iter_content(chunk_size=None):
@@ -195,6 +202,8 @@ class Server:
             and self._game_number != pgn4_info.game_number):
           self._gameoverchat = False
           self._game_number = pgn4_info.game_number
+          # --- NEW: Reset time pressure factor for new games ---
+          self._time_pressure_factor = 1.0
 
     info = json_response.get('info')
     if info:
@@ -237,28 +246,58 @@ class Server:
         if move is None:
           self._uci.set_position(fen)
 
-          max_move_ms = _MAX_MOVE_MS
 
-          if self._pgn4_info.played_n_moves < 4:
-            max_move_ms = 5000
+          # --- ENTIRELY NEW TIME MANAGEMENT LOGIC ---
+          assert self._pgn4_info is not None
 
           clock_ms = float(json_response['clock'])
-          assert self._pgn4_info is not None
+          base_time_ms = self._pgn4_info.base_time_ms
           incr_ms = self._pgn4_info.incr_time_ms
-          buffer_ms = 1000
-          if incr_ms <= 1000:
-            buffer_ms = 250
+          delay_ms = self._pgn4_info.delay_time_ms
 
-          move_time_ms = self._pgn4_info.delay_time_ms + incr_ms - buffer_ms
-          min_remaining_ms = _MIN_REMAINING_MOVE_MS
-          if clock_ms > min_remaining_ms:
-            move_time_ms += (clock_ms - min_remaining_ms) / 20
+          # 1. Determine if we are in time pressure.
+          time_pressure_threshold_ms = base_time_ms * _TIME_PRESSURE_THRESHOLD_PERCENT
+          is_in_time_pressure = clock_ms < time_pressure_threshold_ms
 
-          move_time_ms = min(move_time_ms, max_move_ms)
-          move_time_ms = max(move_time_ms, _MIN_MOVE_TIME_MS)
+          if is_in_time_pressure:
+              # Reduce thinking time factor by 25% for this turn
+              self._time_pressure_factor *= _TIME_PRESSURE_FACTOR_DECREASE
+              print(f"[TIME] Low on time! Reducing think factor to {self._time_pressure_factor:.2f}")
+          else:
+              # If not in time pressure, reset the factor to normal
+              self._time_pressure_factor = 1.0
+
+          # 2. Calculate base thinking time.
+          move_time_ms = incr_ms + (delay_ms * 0.65)
+
+          # Always add a fraction of the remaining clock time.
+          # Use a different divisor based on whether there's an increment/delay.
+          if incr_ms > 0:
+              move_time_ms += clock_ms / 20
+          else:
+              # Use a larger divisor for games without increment to conserve time.
+              # This factor can be adjusted.
+              moves_played = self._pgn4_info.played_n_moves
+              divisor = 50 * (1.01 ** moves_played) # Divisor gets slightly larger as the game progresses
+              move_time_ms += clock_ms / divisor
+
+          # 3. Apply the time pressure factor.
+          move_time_ms *= self._time_pressure_factor
+
+          # 4. Apply safety margin and clamp within boundaries.
+          move_time_ms *= _SAFETY_MARGIN
+
+          # # Special case for the first 4 moves to avoid timeouts on game start.
+          # if self._pgn4_info.played_n_moves < 4:
+          #     move_time_ms = min(move_time_ms, 2500) # Cap opening moves at 2.5s
+
+          final_move_time_ms = int(min(max(move_time_ms, _MIN_MOVE_TIME_MS), _MAX_MOVE_MS))
+
+          print(f"[TIME] Clock: {clock_ms/1000:.1f}s. Thinking for: {final_move_time_ms/1000:.2f}s")
+          # --- END OF NEW TIME MANAGEMENT LOGIC ---
 
           res = self._uci.get_best_move(
-              move_time_ms,
+              final_move_time_ms, # Use the newly calculated time
               gameover_callback=self._handle_gameover,
               pv_callback=self.display_arrows,
               last_move=self._pgn4_info.last_move)
@@ -279,16 +318,12 @@ class Server:
             if score_ry is not None:
               if res.get('ponder_hit', False):
                 score_ry = -score_ry
-              chat = [f'score: {score_ry:.02f}']
+              chat = [f'eval: {score_ry:.02f}']
               if depth is not None:
                 chat.append(f'depth: {depth}')
               chat = ', '.join(chat)
               self._api.chat(chat)
 
-#        if score is not None and score >= 100000000:
-#          if not self._gameoverchat:
-#            self._gameoverchat = True
-#            self._api.chat('gg')
         play_response = self._api.play(move)
 
         if args.ponder:
