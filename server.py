@@ -86,7 +86,7 @@ class Pgn4Info:
 
   def __init__(self, base_time_ms: int, incr_time_ms: int, delay_time_ms: int,
       last_move: str | None, team: str, played_n_moves: int,
-      game_number: str):
+      game_number: str, my_colors: list[str]):
     self.base_time_ms = base_time_ms
     self.incr_time_ms = incr_time_ms
     self.delay_time_ms = delay_time_ms
@@ -94,6 +94,7 @@ class Pgn4Info:
     self.team = team
     self.played_n_moves = played_n_moves
     self.game_number = game_number
+    self.my_colors = my_colors
 
   @classmethod
   def FromString(cls, pgn4: str):
@@ -134,20 +135,53 @@ class Pgn4Info:
         move_number = 4 * (game_move - 1) + len(matches)
         last_move = _standardize_move(matches[-1])
 
-    pattern = '(Red|Yellow|Green|Blue) "TeamEnigma'
-    m = re.search(pattern, pgn4, re.IGNORECASE)
-    team = None
-    if m:
-      color = m.group(1).lower()
-      if color in {'red', 'yellow'}:
-        team = 'red_yellow'
-      elif color in {'blue', 'green'}:
-        team = 'blue_green'
-      else:
-        team = 'no_team'
+    # --- DETERMINE COLORS ---
+    # 1. Determine if SelfPartner
+    is_self_partner = False
+    if 'SelfPartner' in pgn4:
+      is_self_partner = True
+
+    my_colors = set()
+
+    # Helper to check if TeamEnigma owns a specific color header
+    # e.g., [Red "TeamEnigma1"]
+    def check_header(color_name):
+      # Regex looks for: [ColorName "TeamEnigma..."]
+      # This handles TeamEnigma, TeamEnigma1, TeamEnigma2, etc.
+      pattern = f'\\[{color_name} "TeamEnigma'
+      return bool(re.search(pattern, pgn4, re.IGNORECASE))
+
+    if check_header('Red'):
+      my_colors.add('r')
+      if is_self_partner:
+        my_colors.add('y')
+    
+    if check_header('Blue'):
+      my_colors.add('b')
+      if is_self_partner:
+        my_colors.add('g')
+
+    # In standard teams (not self-partner), we must explicitly check Yellow and Green
+    # as they might be separate players.
+    if not is_self_partner:
+      if check_header('Yellow'):
+        my_colors.add('y')
+      if check_header('Green'):
+        my_colors.add('g')
+    
+    my_colors_list = list(my_colors)
+
+    # Maintain legacy team string for UCI/Eval purposes
+    team = 'no_team'
+    # Heuristic: if we control Red, we are likely on the Red/Yellow team.
+    # If we control Blue, we are likely on the Blue/Green team.
+    if 'r' in my_colors or 'y' in my_colors:
+      team = 'red_yellow'
+    elif 'b' in my_colors or 'g' in my_colors:
+      team = 'blue_green'
 
     return Pgn4Info(base_time_ms, incr_time_ms, delay_time_ms, last_move, team,
-        move_number, game_number)
+        move_number, game_number, my_colors_list)
 
 
 class Server:
@@ -164,25 +198,6 @@ class Server:
     # --- NEW: State for adaptive time management ---
     self._time_pressure_factor = 1.0
 
-  def _read_streaming_response(self, response):
-    for content in response.iter_content(chunk_size=None):
-      content = content.decode('utf-8')
-      if not content:
-        continue
-      for part in content.splitlines():
-        part = part.strip()
-        if not part:
-          continue
-        json_response = None
-        try:
-          json_response = json.loads(part.strip())
-        except:
-          pass
-        if json_response is not None:
-          gameover = self._handle_stream_json(json_response)
-          if gameover:
-            return
-
   def _handle_gameover(self):
     if not self._gameoverchat:
       self._gameoverchat = True
@@ -190,8 +205,7 @@ class Server:
       self._uci.maybe_stop_ponder_thread()
 
   def _handle_stream_json(self, json_response):
-#    print(json_response)
-
+    # 1. Update PGN Info
     if 'pgn4' in json_response:
       pgn4_info = Pgn4Info.FromString(json_response['pgn4'])
       if pgn4_info is not None:
@@ -205,6 +219,7 @@ class Server:
           # --- NEW: Reset time pressure factor for new games ---
           self._time_pressure_factor = 1.0
 
+    # 2. Check general info status (Game Start / No Game)
     info = json_response.get('info')
     if info:
       info = info.lower()
@@ -212,21 +227,27 @@ class Server:
         return False
       elif 'no game found' in info:
         return False
-      elif info == "it's not your turn":
-        return False
-      elif info == "it's your turn":
-        if 'fen4' in json_response:
-          fen = json_response['fen4']
-        else:
-          fen = json_response['move']['fen']
+      # We intentionally IGNORE "it's not your turn" and "it's your turn" here.
+      # We rely on the FEN to tell us the truth.
 
+    # 3. Determine FEN
+    fen = None
+    if 'fen4' in json_response:
+      fen = json_response['fen4']
+    elif 'move' in json_response and 'fen' in json_response['move']:
+      fen = json_response['move']['fen']
+
+    if fen:
         fen = fen.replace('\n', '')
+
+        # Check Game Over
         if 'gameOver' in fen:
           if args.arrows:
             self.clear_arrows()
           self._handle_gameover()
           return True
-
+        
+        # Mapping for specific 4PC variants to Start FENs
         if fen == '4PCo':
           fen = uci_wrapper.START_FEN_OLD
         elif fen == '4PC':
@@ -239,6 +260,22 @@ class Server:
           # the response is a FEN string?
           pass
 
+        # --- KEY CHANGE: DETERMINE IF IT IS OUR TURN ---
+        # The FEN starts with the color to move (e.g., "Y-...").
+        # We assume _pgn4_info is populated (it should be if we have a fen).
+        is_my_turn = False
+        if self._pgn4_info and self._pgn4_info.my_colors:
+             # Extract active color character (R, B, Y, G)
+             active_color = fen.split('-')[0].lower()
+             if active_color in self._pgn4_info.my_colors:
+                 is_my_turn = True
+        
+        # If it's not our turn based on FEN, we stop here.
+        if not is_my_turn:
+            return False
+
+        # --- EXECUTE MOVE LOGIC (Only if it is our turn) ---
+
         move = None
         if args.enable_tablebase:
           move = tablebase.FEN_TO_BEST_MOVE.get(fen)
@@ -246,58 +283,75 @@ class Server:
         if move is None:
           self._uci.set_position(fen)
 
-
-          # --- ENTIRELY NEW TIME MANAGEMENT LOGIC ---
+          # --- TIME MANAGEMENT LOGIC ---
           assert self._pgn4_info is not None
-
-          clock_ms = float(json_response['clock'])
+          
           base_time_ms = self._pgn4_info.base_time_ms
           incr_ms = self._pgn4_info.incr_time_ms
           delay_ms = self._pgn4_info.delay_time_ms
+          
+          move_time_ms = 0.0
 
-          # 1. Determine if we are in time pressure.
-          time_pressure_threshold_ms = base_time_ms * _TIME_PRESSURE_THRESHOLD_PERCENT
-          is_in_time_pressure = clock_ms < time_pressure_threshold_ms
+          if 'clock' in json_response:
+              # STRATEGY A: Clock is known. Use adaptive time management.
+              clock_ms = float(json_response['clock'])
 
-          if is_in_time_pressure:
-              # Reduce thinking time factor by 25% for this turn
-              self._time_pressure_factor *= _TIME_PRESSURE_FACTOR_DECREASE
-              print(f"[TIME] Low on time! Reducing think factor to {self._time_pressure_factor:.2f}")
+              # 1. Determine if we are in time pressure.
+              time_pressure_threshold_ms = base_time_ms * _TIME_PRESSURE_THRESHOLD_PERCENT
+              is_in_time_pressure = clock_ms < time_pressure_threshold_ms
+
+              if is_in_time_pressure:
+                  # Reduce thinking time factor by 25% for this turn
+                  self._time_pressure_factor *= _TIME_PRESSURE_FACTOR_DECREASE
+                  print(f"[TIME] Low on time! Reducing think factor to {self._time_pressure_factor:.2f}")
+              else:
+                  # If not in time pressure, reset the factor to normal
+                  self._time_pressure_factor = 1.0
+
+              # 2. Calculate base thinking time.
+              move_time_ms = incr_ms + (delay_ms * 0.65)
+
+              # Always add a fraction of the remaining clock time.
+              # Use a different divisor based on whether there's an increment/delay.
+              if incr_ms > 0:
+                  move_time_ms += clock_ms / 20
+              else:
+                  # Use a larger divisor for games without increment to conserve time.
+                  moves_played = self._pgn4_info.played_n_moves
+                  divisor = 50 * (1.01 ** moves_played) # Divisor gets slightly larger as the game progresses
+                  move_time_ms += clock_ms / divisor
+              
+              # 3. Apply the time pressure factor.
+              move_time_ms *= self._time_pressure_factor
+              
+              print(f"[TIME] Clock: {clock_ms/1000:.1f}s. ", end='')
+
           else:
-              # If not in time pressure, reset the factor to normal
-              self._time_pressure_factor = 1.0
+              # STRATEGY B: Clock is missing (API Error fallback). Use conservative values.
+              # We assume no time pressure if we can't see the clock.
+              self._time_pressure_factor = 1.0 
+              
+              if incr_ms > 0:
+                  move_time_ms = float(incr_ms)
+              else:
+                  # Use delay * 0.65
+                  move_time_ms = float(delay_ms) * 0.65
+                  
+                  # Safety catch for 0+0 games or if calc is too low
+                  if move_time_ms < _MIN_MOVE_TIME_MS:
+                      move_time_ms = float(_MIN_MOVE_TIME_MS)
 
-          # 2. Calculate base thinking time.
-          move_time_ms = incr_ms + (delay_ms * 0.65)
-
-          # Always add a fraction of the remaining clock time.
-          # Use a different divisor based on whether there's an increment/delay.
-          if incr_ms > 0:
-              move_time_ms += clock_ms / 20
-          else:
-              # Use a larger divisor for games without increment to conserve time.
-              # This factor can be adjusted.
-              moves_played = self._pgn4_info.played_n_moves
-              divisor = 50 * (1.01 ** moves_played) # Divisor gets slightly larger as the game progresses
-              move_time_ms += clock_ms / divisor
-
-          # 3. Apply the time pressure factor.
-          move_time_ms *= self._time_pressure_factor
+              print("[TIME] (Clock missing). ", end='')
 
           # 4. Apply safety margin and clamp within boundaries.
           move_time_ms *= _SAFETY_MARGIN
-
-          # # Special case for the first 4 moves to avoid timeouts on game start.
-          # if self._pgn4_info.played_n_moves < 4:
-          #     move_time_ms = min(move_time_ms, 2500) # Cap opening moves at 2.5s
-
           final_move_time_ms = int(min(max(move_time_ms, _MIN_MOVE_TIME_MS), _MAX_MOVE_MS))
 
-          print(f"[TIME] Clock: {clock_ms/1000:.1f}s. Thinking for: {final_move_time_ms/1000:.2f}s")
-          # --- END OF NEW TIME MANAGEMENT LOGIC ---
+          print(f"Thinking for: {final_move_time_ms/1000:.2f}s")
+          # --- END OF TIME MANAGEMENT LOGIC ---
 
           res = self._uci.get_best_move(
-              final_move_time_ms, # Use the newly calculated time
+              final_move_time_ms,
               gameover_callback=self._handle_gameover,
               pv_callback=self.display_arrows,
               last_move=self._pgn4_info.last_move)
@@ -329,10 +383,7 @@ class Server:
         if args.ponder:
           self._uci.ponder(fen, move, self._handle_gameover)
 
-      else:
-        return False
-    else:
-      return False
+    return False
 
   def clear_arrows(self):
     self._api.arrow('clear')
@@ -350,16 +401,16 @@ class Server:
     response = self._api.arrow(request)
 
   def run(self):
-
-    timeout = .5
+    print(f"Connecting to {_SERVER_URL} via polling...")
     while True:
-      # HTTPResponse
       try:
-        response = self._api.stream(timeout)
-        self._read_streaming_response(response)
-        response.close()
+        response = self._api.get_state()
+        if response:
+            self._handle_stream_json(response)
       except Exception as e:
-        pass
+        # Print the error so we know if something is wrong
+        print(f"Error in poll loop: {e}")
+      
       time.sleep(0.25)
 
 

@@ -17,7 +17,8 @@ ENDPOINTS={
     "play":             "?token={}&play={}",
     "play_selfpartner": "?token={}&play={}&playerId={}",
     "resign":           "?token={}&play=R",
-    "stream":           "?token={}&stream=1"
+    "stream":           "?token={}&stream=1",
+    "state":            "?token={}" # <--- NEW: Endpoint for polling
 }
 
 # https://www.chess.com/variants-test
@@ -50,6 +51,10 @@ class Api:
         response.raise_for_status()
         return response.json()
 
+    def get_state(self):
+        # <--- NEW: Polls the current game state
+        return self.api_get(ENDPOINTS["state"].format(self.token))
+
     def stream(self, timeout=None):
         # get the stream data.
         url = urljoin(self.url, ENDPOINTS["stream"].format(self.token))
@@ -81,4 +86,3 @@ class Api:
         # chess.com likes it when you set it.
         self.header.update({"User-Agent": "chesscom-bot/{} user:{}".format(self.version, user)})
         self.session.headers.update(self.header)
-
