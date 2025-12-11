@@ -400,19 +400,52 @@ class Server:
     self._last_arrow_request = request
     response = self._api.arrow(request)
 
+
   def run(self):
     print(f"Connecting to {_SERVER_URL} via polling...")
+    
+    log_file = "server_dump.txt"
+    last_logged_str = None
+
     while True:
       try:
         response = self._api.get_state()
         if response:
+            # --- START LOGGING CODE ---
+            try:
+                # Sort keys ensures that if the server sends keys in a different order 
+                # but the data is the same, we still treat it as a duplicate.
+                current_str = json.dumps(response, sort_keys=True)
+                
+                with open(log_file, "a", encoding="utf-8") as f:
+                    if current_str == last_logged_str:
+                        # Same as before: just add a dot on the same line
+                        f.write('.')
+                    else:
+                        # New response!
+                        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        # If this isn't the very first line, add a newline 
+                        # to ensure we break away from any previous dots.
+                        if last_logged_str is not None:
+                            f.write("\n")
+                            
+                        f.write(f"[{timestamp}] {current_str}")
+                        last_logged_str = current_str
+                    
+                    # Force write to disk so you see dots in real-time
+                    f.flush()
+
+            except Exception as log_error:
+                print(f"Could not write to log file: {log_error}")
+            # --- END LOGGING CODE ---
+
             self._handle_stream_json(response)
       except Exception as e:
         # Print the error so we know if something is wrong
         print(f"Error in poll loop: {e}")
       
       time.sleep(0.25)
-
 
 if __name__ == '__main__':
   Server().run()
