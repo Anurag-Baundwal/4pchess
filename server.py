@@ -446,9 +446,8 @@ class Server:
         if response:
             # --- START LOGGING CODE ---
             try:
-                # Sort keys ensures that if the server sends keys in a different order 
-                # but the data is the same, we still treat it as a duplicate.
-                current_str = json.dumps(response, sort_keys=True)
+                # Removed sort_keys=True so it keeps the order sent by the server
+                current_str = json.dumps(response)
                 
                 with open(log_file, "a", encoding="utf-8") as f:
                     if current_str == last_logged_str:
@@ -466,8 +465,8 @@ class Server:
                         f.write(f"[{timestamp}] {current_str}")
                         last_logged_str = current_str
                     
-                    # Force write to disk so you see dots in real-time
-                    f.flush()
+                    # Removed f.flush() - The 'with' statement automatically closes 
+                    # and flushes the file, which is safer for manual editing.
 
             except Exception as log_error:
                 print(f"Could not write to log file: {log_error}")
