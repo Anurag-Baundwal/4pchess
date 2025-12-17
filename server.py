@@ -37,6 +37,9 @@ parser.add_argument(
 parser.add_argument(
     '-ponder', '--ponder', type=parse_bool, required=False,
     default=False)
+parser.add_argument(
+    '-play_fast', '--play_fast', type=parse_bool, required=False,
+    default=False)
 args = parser.parse_args()
 
 
@@ -370,8 +373,15 @@ class Server:
 
               print("[TIME] (Clock missing). ", end='')
 
-          # 4. Apply safety margin and clamp within boundaries.
+          # 4. Apply safety margin.
           move_time_ms *= _SAFETY_MARGIN
+
+          # 5. Optional: Speed up play if requested to improve spectator experience.
+          if args.play_fast:
+              move_time_ms *= 0.5
+              print(f"[TIME] Fast mode: reducing time to {move_time_ms/1000:.2f}s")
+
+          # 6. Clamp within allowed boundaries (min/max).
           final_move_time_ms = int(min(max(move_time_ms, _MIN_MOVE_TIME_MS), _MAX_MOVE_MS))
 
           print(f"Thinking for: {final_move_time_ms/1000:.2f}s")
