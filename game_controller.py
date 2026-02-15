@@ -259,7 +259,7 @@ class TimeManager:
         required_stable_iterations = 2 if self.is_time_pressure else (4 if self.is_unstable else 3)
         
         if self.stability_counter >= required_stable_iterations:
-            if elapsed_ms > (self.initial_budget_ms * 0.25):
+            if elapsed_ms > (self.initial_budget_ms * 0.45):
                 mode = "TIME PRESSURE" if self.is_time_pressure else "STABLE"
                 print(f"[TIME] {mode}: Stable for {self.stability_counter} iterations. Stopping search early.")
                 self.should_stop = True

@@ -487,7 +487,7 @@ class Server:
         # Print the error so we know if something is wrong
         print(f"Error in poll loop: {e}")
       
-      time.sleep(0.25)
+      time.sleep(0.1)
 
 if __name__ == '__main__':
   Server().run()
