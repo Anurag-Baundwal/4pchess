@@ -36,7 +36,7 @@ class PVInfo {
   std::shared_ptr<PVInfo> child_ = nullptr;
 };
 
-constexpr size_t kTranspositionTableSize = 2'000'000;
+constexpr size_t kTranspositionTableSize = 5'000'000;
 constexpr int kMaxPly = 300;
 constexpr int kKillersPerPly = 3;
 
