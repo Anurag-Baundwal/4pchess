@@ -57,10 +57,10 @@ _MAX_MOVE_MS = 30000
 _MIN_REMAINING_MOVE_MS = 0
 _MIN_MOVE_TIME_MS = 100
 
-# --- NEW TIME MANAGEMENT CONSTANTS ---
+# --- TIME MANAGEMENT CONSTANTS ---
 _TIME_PRESSURE_THRESHOLD_PERCENT = 0.50
 _TIME_PRESSURE_FACTOR_DECREASE = 0.75
-_SAFETY_MARGIN = 0.85
+_SAFETY_MARGIN = 0.95
 # ------------------------------------
 
 def _read_api_token(filepath: str) -> str:
@@ -138,8 +138,7 @@ class Pgn4Info:
         move_number = 4 * (game_move - 1) + len(matches)
         last_move = _standardize_move(matches[-1])
 
-    # --- DETERMINE COLORS ---
-    # 1. Determine if SelfPartner
+    # Determine if SelfPartner
     is_self_partner = False
     if 'SelfPartner' in pgn4:
       is_self_partner = True
@@ -147,10 +146,7 @@ class Pgn4Info:
     my_colors = set()
 
     # Helper to check if TeamEnigma owns a specific color header
-    # e.g., [Red "TeamEnigma1"]
     def check_header(color_name):
-      # Regex looks for: [ColorName "TeamEnigma..."]
-      # This handles TeamEnigma, TeamEnigma1, TeamEnigma2, etc.
       pattern = f'\\[{color_name} "TeamEnigma'
       return bool(re.search(pattern, pgn4, re.IGNORECASE))
 
@@ -164,8 +160,6 @@ class Pgn4Info:
       if is_self_partner:
         my_colors.add('g')
 
-    # In standard teams (not self-partner), we must explicitly check Yellow and Green
-    # as they might be separate players.
     if not is_self_partner:
       if check_header('Yellow'):
         my_colors.add('y')
@@ -176,8 +170,6 @@ class Pgn4Info:
 
     # Maintain legacy team string for UCI/Eval purposes
     team = 'no_team'
-    # Heuristic: if we control Red, we are likely on the Red/Yellow team.
-    # If we control Blue, we are likely on the Blue/Green team.
     if 'r' in my_colors or 'y' in my_colors:
       team = 'red_yellow'
     elif 'b' in my_colors or 'g' in my_colors:
@@ -198,8 +190,6 @@ class Server:
     self._last_arrow_request = None
     self._gameoverchat = False
     self._game_number = None
-    # --- NEW: State for adaptive time management ---
-    self._time_pressure_factor = 1.0
 
   def _handle_gameover(self):
     if not self._gameoverchat:
@@ -209,28 +199,21 @@ class Server:
 
   def _get_clock_from_pgn(self, pgn: str, active_color: str, base_time_ms: int) -> float:
       """Extracts the last clock time for the active color from the PGN."""
-      # Map color characters to their turn index (Standard 4PC order: Red, Blue, Yellow, Green)
       color_map = {'r': 0, 'b': 1, 'y': 2, 'g': 3}
       
       if active_color not in color_map:
           return float(base_time_ms)
           
       target_idx = color_map[active_color]
-      
-      # Find all instances of "clock=XXXX" in the PGN
-      # The matches list will correspond to the move order: R, B, Y, G, R, B...
       matches = re.findall(r'clock=(\d+)', pgn)
       
-      # Iterate backwards through matches to find the last time this color moved
       for i in range(len(matches) - 1, -1, -1):
           if i % 4 == target_idx:
               return float(matches[i])
               
-      # If the player hasn't moved yet (start of game), return base time
       return float(base_time_ms)
 
   def _handle_stream_json(self, json_response):
-    # 1. Update PGN Info
     if 'pgn4' in json_response:
       pgn4_info = Pgn4Info.FromString(json_response['pgn4'])
       if pgn4_info is not None:
@@ -241,21 +224,13 @@ class Server:
             and self._game_number != pgn4_info.game_number):
           self._gameoverchat = False
           self._game_number = pgn4_info.game_number
-          # --- NEW: Reset time pressure factor for new games ---
-          self._time_pressure_factor = 1.0
 
-    # 2. Check general info status (Game Start / No Game)
     info = json_response.get('info')
     if info:
       info = info.lower()
-      if 'game starting' in info:
+      if 'game starting' in info or 'no game found' in info:
         return False
-      elif 'no game found' in info:
-        return False
-      # We intentionally IGNORE "it's not your turn" and "it's your turn" here.
-      # We rely on the FEN to tell us the truth.
 
-    # 3. Determine FEN
     fen = None
     if 'fen4' in json_response:
       fen = json_response['fen4']
@@ -265,14 +240,12 @@ class Server:
     if fen:
         fen = fen.replace('\n', '')
 
-        # Check Game Over
         if 'gameOver' in fen:
           if args.arrows:
             self.clear_arrows()
           self._handle_gameover()
           return True
         
-        # Mapping for specific 4PC variants to Start FENs
         if fen == '4PCo':
           fen = uci_wrapper.START_FEN_OLD
         elif fen == '4PC':
@@ -281,30 +254,23 @@ class Server:
           fen = uci_wrapper.START_FEN_BY
         elif fen == '4PCn':
           fen = uci_wrapper.START_FEN_BYG
-        else:
-          # the response is a FEN string?
-          pass
 
-        # --- KEY CHANGE: DETERMINE IF IT IS OUR TURN ---
-        # The FEN starts with the color to move (e.g., "Y-...").
-        # We assume _pgn4_info is populated (it should be if we have a fen).
+        # Make sure it's our turn based on active color
         is_my_turn = False
-        active_color = fen.split('-')[0].lower() # Extract active color
+        active_color = fen.split('-')[0].lower()
         
         if self._pgn4_info and self._pgn4_info.my_colors:
              if active_color in self._pgn4_info.my_colors:
                  is_my_turn = True
         
-        # If it's not our turn based on FEN, we stop here.
         if not is_my_turn:
             return False
-
-        # --- EXECUTE MOVE LOGIC (Only if it is our turn) ---
 
         move = None
         if args.enable_tablebase:
           move = tablebase.FEN_TO_BEST_MOVE.get(fen)
         score = None
+        
         if move is None:
           self._uci.set_position(fen)
 
@@ -314,76 +280,53 @@ class Server:
           base_time_ms = self._pgn4_info.base_time_ms
           incr_ms = self._pgn4_info.incr_time_ms
           delay_ms = self._pgn4_info.delay_time_ms
-          
           move_time_ms = 0.0
           
-          # --- FIX: Attempt to get clock from JSON, otherwise extract from PGN ---
           clock_ms = None
-          
           if 'clock' in json_response:
               clock_ms = float(json_response['clock'])
           elif 'move' in json_response and 'clock' in json_response['move']:
               clock_ms = float(json_response['move']['clock'])
           elif 'pgn4' in json_response:
-              # Parse from PGN if missing from API fields
               clock_ms = self._get_clock_from_pgn(json_response['pgn4'], active_color, base_time_ms)
 
           if clock_ms is not None:
-              # STRATEGY A: Clock is known. Use adaptive time management.
-              
-              # 1. Determine if we are in time pressure.
-              time_pressure_threshold_ms = base_time_ms * _TIME_PRESSURE_THRESHOLD_PERCENT
-              is_in_time_pressure = clock_ms < time_pressure_threshold_ms
+              is_in_time_pressure = clock_ms < (base_time_ms * _TIME_PRESSURE_THRESHOLD_PERCENT)
+              time_pressure_multiplier = _TIME_PRESSURE_FACTOR_DECREASE if is_in_time_pressure else 1.0
 
-              if is_in_time_pressure:
-                  # Reduce thinking time factor by 25% for this turn
-                  self._time_pressure_factor *= _TIME_PRESSURE_FACTOR_DECREASE
-                  print(f"[TIME] Low on time! Reducing think factor to {self._time_pressure_factor:.2f}")
+              if delay_ms > 0:
+                  # Full delay + capped base time; no pressure multiplier as delay doesn't accumulate
+                  move_time_ms = float(delay_ms)
+                  if not is_in_time_pressure:
+                      move_time_ms += min(clock_ms / 40.0, delay_ms * 0.5)
+                  else:
+                      print("[TIME] Low on time! Sticking to delay buffer. ", end='')
+              elif incr_ms > 0:
+                  # Standard increment math
+                  move_time_ms = (incr_ms + (clock_ms / 20.0)) * time_pressure_multiplier
               else:
-                  # If not in time pressure, reset the factor to normal
-                  self._time_pressure_factor = 1.0
-
-              # 2. Calculate base thinking time.
-              move_time_ms = incr_ms + (delay_ms * 0.65)
-
-              # Always add a fraction of the remaining clock time.
-              if incr_ms > 0:
-                  move_time_ms += clock_ms / 20
-              else:
-                  # Use a larger divisor for games without increment to conserve time.
+                  # Sudden death exponential scaling
                   moves_played = self._pgn4_info.played_n_moves
                   divisor = 50 * (1.01 ** moves_played)
-                  move_time_ms += clock_ms / divisor
-              
-              # 3. Apply the time pressure factor.
-              move_time_ms *= self._time_pressure_factor
+                  move_time_ms = (clock_ms / divisor) * time_pressure_multiplier
               
               print(f"[TIME] Clock: {clock_ms/1000:.1f}s. ", end='')
-
           else:
-              # STRATEGY B: Clock is strictly missing (API Error + PGN parse fail). Use conservative values.
-              self._time_pressure_factor = 1.0 
-              
-              if incr_ms > 0:
+              # Missing clock fallback logic
+              if delay_ms > 0:
+                  move_time_ms = delay_ms * 0.90
+              elif incr_ms > 0:
                   move_time_ms = float(incr_ms)
               else:
-                  move_time_ms = float(delay_ms) * 0.65
-                  if move_time_ms < _MIN_MOVE_TIME_MS:
-                      move_time_ms = float(_MIN_MOVE_TIME_MS)
-
+                  move_time_ms = _MIN_MOVE_TIME_MS
               print("[TIME] (Clock missing). ", end='')
 
-          # 4. Apply safety margin.
+          # Apply safety margin and bounds
           move_time_ms *= _SAFETY_MARGIN
-
-          # 5. Optional: Speed up play if requested to improve spectator experience.
           if args.play_fast:
-              move_time_ms *= 0.5
-              print(f"[TIME] Fast mode: reducing time to {move_time_ms/1000:.2f}s")
-
-          # 6. Clamp within allowed boundaries (min/max).
+              move_time_ms *= 0.30
+          
           final_move_time_ms = int(min(max(move_time_ms, _MIN_MOVE_TIME_MS), _MAX_MOVE_MS))
-
           print(f"Thinking for: {final_move_time_ms/1000:.2f}s")
           # --- END OF TIME MANAGEMENT LOGIC ---
 
@@ -399,30 +342,16 @@ class Server:
           score = res['score']
           depth = res['depth']
 
+          # Guarded eval chat strictly for team formats
           if args.chat_eval and score is not None:
             team = self._pgn4_info.team
-            score_ry = None
-            if team == 'red_yellow':
-              score_ry = score / 100
-            elif team == 'blue_green':
-              score_ry = -score / 100
-            if score_ry is not None:
-              if res.get('ponder_hit', False):
-                score_ry = -score_ry
-              chat = [f'eval: {score_ry:.02f}']
-              if depth is not None:
-                chat.append(f'depth: {depth}')
-              chat = ', '.join(chat)
-              self._api.chat(chat)
+            if team in ('red_yellow', 'blue_green'):
+                score_ry = score / 100 if team == 'red_yellow' else -score / 100
+                if res.get('ponder_hit', False):
+                  score_ry = -score_ry
+                self._api.chat(f'eval: {score_ry:.02f}, depth: {depth}')
 
-        # Handle play logic (standard vs self-partner)
-        if self._pgn4_info.team == 'red_yellow' or self._pgn4_info.team == 'blue_green':
-             # Note: You might need specific logic here if playing SelfPartner
-             # But for now, standard play:
-             play_response = self._api.play(move)
-        else:
-             play_response = self._api.play(move)
-
+        self._api.play(move)
         if args.ponder:
           self._uci.ponder(fen, move, self._handle_gameover)
 
@@ -441,12 +370,10 @@ class Server:
     if request == self._last_arrow_request:
       return
     self._last_arrow_request = request
-    response = self._api.arrow(request)
-
+    self._api.arrow(request)
 
   def run(self):
     print(f"Connecting to {_SERVER_URL} via polling...")
-    
     log_file = "server_dump.txt"
     last_logged_str = None
 
@@ -454,39 +381,21 @@ class Server:
       try:
         response = self._api.get_state()
         if response:
-            # --- START LOGGING CODE ---
             try:
-                # Removed sort_keys=True so it keeps the order sent by the server
                 current_str = json.dumps(response)
-                
                 with open(log_file, "a", encoding="utf-8") as f:
                     if current_str == last_logged_str:
-                        # Same as before: just add a dot on the same line
                         f.write('.')
                     else:
-                        # New response!
                         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                        
-                        # If this isn't the very first line, add a newline 
-                        # to ensure we break away from any previous dots.
-                        if last_logged_str is not None:
-                            f.write("\n")
-                            
+                        if last_logged_str is not None: f.write("\n")
                         f.write(f"[{timestamp}] {current_str}")
                         last_logged_str = current_str
-                    
-                    # Removed f.flush() - The 'with' statement automatically closes 
-                    # and flushes the file, which is safer for manual editing.
-
             except Exception as log_error:
                 print(f"Could not write to log file: {log_error}")
-            # --- END LOGGING CODE ---
-
             self._handle_stream_json(response)
       except Exception as e:
-        # Print the error so we know if something is wrong
         print(f"Error in poll loop: {e}")
-      
       time.sleep(0.1)
 
 if __name__ == '__main__':
