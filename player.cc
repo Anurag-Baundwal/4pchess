@@ -378,7 +378,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     auto value_and_move_or = Search(
         ss+1, NonPV, thread_state, board, ply + 1, nmp_depth,
         -beta, -beta + 1, !maximizing_player, expanded, deadline, null_pvinfo,
-        null_moves + 1, is_verification_search=false);
+        null_moves + 1, /*is_cut_node=*/false, /*is_verification_search=*/false);
 
     board.UndoNullMove();
 
