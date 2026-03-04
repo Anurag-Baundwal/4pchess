@@ -58,6 +58,7 @@ std::string GetPVStr(const AlphaBetaPlayer& player) {
 
 CommandLine::CommandLine() {
   player_options_.num_threads = 1;
+  player_options_.nnue_weights_filepath = "models"; // Default NNUE path
 }
 
 void CommandLine::Run() {
@@ -231,10 +232,10 @@ void CommandLine::HandleCommand(
     std::cout << "id author " << kAuthorName << std::endl;
 
     // Allowed options
-    std::cout << "option name Hash type spin default 100"
-      << std::endl; // size in MB
-    std::cout << "option name UCI_ShowCurrLine type check default false"
-      << std::endl;
+    std::cout << "option name Hash type spin default 100\n"; // size in MB
+    std::cout << "option name UCI_ShowCurrLine type check default false\n";
+    std::cout << "option name NNUE type check default false\n";
+    std::cout << "option name NNUEPath type string default models\n";
 
     std::cout << "uciok" << std::endl;
   } else if (command == "debug") {
@@ -253,12 +254,31 @@ void CommandLine::HandleCommand(
   } else if (command == "isready") {
     std::cout << "readyok" << std::endl;
   } else if (command == "setoption") {
-    if (parts.size() != 5) {
+    if (parts.size() < 5 || parts[1] != "name") {
       SendInvalidCommandMessage(line);
       return;
     }
+
+    size_t value_idx = 0;
+    for (size_t i = 3; i < parts.size(); ++i) {
+      if (parts[i] == "value") {
+        value_idx = i + 1;
+        break;
+      }
+    }
+    if (value_idx == 0 || value_idx >= parts.size()) {
+      SendInvalidCommandMessage("Missing 'value' in setoption command: " + line);
+      return;
+    }
+
     std::string option_name = LowerCase(parts[2]);
-    const auto& option_value = parts[4];
+    std::string option_value = parts[value_idx];
+    
+    // Reconstruct value if it contains spaces (useful for path settings)
+    for (size_t i = value_idx + 1; i < parts.size(); ++i) {
+      option_value += " " + parts[i];
+    }
+
     if (option_name == "hash") {
       auto val = ParseInt(option_value);
       if (val.has_value()) {
@@ -319,9 +339,22 @@ void CommandLine::HandleCommand(
         player_ = std::make_shared<AlphaBetaPlayer>(player_options_);
       } else {
         SendInvalidCommandMessage(
-            "Invalid team: " + option_value + ". Must be red_yellow, or blue_green.");
+            "Invalid team: " + option_value + ". Must be red_yellow, blue_green, no_team, or current_team.");
         return;
       }
+    } else if (option_name == "nnue") {
+      if (option_value == "true") {
+        player_options_.enable_nnue = true;
+      } else if (option_value == "false") {
+        player_options_.enable_nnue = false;
+      } else {
+        SendInvalidCommandMessage("NNUE option value must be 'true' or 'false', given: " + option_value);
+        return;
+      }
+      player_ = std::make_shared<AlphaBetaPlayer>(player_options_);
+    } else if (option_name == "nnuepath") {
+      player_options_.nnue_weights_filepath = option_value;
+      player_ = std::make_shared<AlphaBetaPlayer>(player_options_);
     } else {
       SendInvalidCommandMessage("Unrecognized option: " + option_name);
       return;
@@ -329,6 +362,11 @@ void CommandLine::HandleCommand(
     StopEvaluation();
 
   } else if (command == "get_num_legal_moves") {
+    std::lock_guard lock(mutex_);
+    if (board_ == nullptr) {
+        SendInfoMessage("Board not initialized.");
+        return;
+    }
     int n_legal = player_->GetNumLegalMoves(*board_);
     SendInfoMessage("n_legal " + std::to_string(n_legal));
 
@@ -431,8 +469,7 @@ void CommandLine::HandleCommand(
     while (cmd_id < parts.size()) {
       const auto& option_name = parts[cmd_id];
 
-      if (option_name_to_value.find(option_name)
-          != option_name_to_value.end()) {
+      if (option_name_to_value.count(option_name)) {
         if (parts.size() < cmd_id + 2) {
           SendInvalidCommandMessage(line);
           return;
@@ -441,7 +478,8 @@ void CommandLine::HandleCommand(
         auto* value = option_name_to_value[option_name];
         *value = ParseInt(int_str);
         if (!value->has_value()) {
-          SendInvalidCommandMessage("Can not parse integer: {}" + int_str);
+          SendInvalidCommandMessage("Can not parse integer for " + option_name + ": " + int_str);
+          return;
         }
         cmd_id += 2;
       } else if (option_name == "searchmoves") {
@@ -465,8 +503,10 @@ void CommandLine::HandleCommand(
       } else if (option_name == "infinite") { 
         options.infinite = true;
         cmd_id++;
+      } else {
+        SendInfoMessage("Unrecognized 'go' option: " + option_name);
+        cmd_id++;
       }
-
     }
 
     StopEvaluation();
@@ -490,6 +530,4 @@ void CommandLine::HandleCommand(
   }
 }
 
-
 }  // namespace chess
-

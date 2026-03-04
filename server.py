@@ -40,6 +40,15 @@ parser.add_argument(
 parser.add_argument(
     '-play_fast', '--play_fast', type=parse_bool, required=False,
     default=False)
+
+# --- NNUE specific arguments ---
+parser.add_argument(
+    '-enable_nnue', '--enable_nnue', type=parse_bool, required=False,
+    default=False)
+parser.add_argument(
+    '-nnue_path', '--nnue_path', type=str, required=False,
+    default='nnue/models')
+# -------------------------------
 args = parser.parse_args()
 
 
@@ -183,8 +192,13 @@ class Server:
 
   def __init__(self):
     self._token = _read_api_token(_API_KEY_FILENAME)
-    self._uci = uci_wrapper.UciWrapper(args.num_threads, args.max_depth,
-        args.ponder)
+    self._uci = uci_wrapper.UciWrapper(
+        args.num_threads, 
+        args.max_depth,
+        args.ponder,
+        enable_nnue=args.enable_nnue,
+        nnue_path=args.nnue_path
+    )
     self._api = api.Api(_SERVER_URL, self._token, _BOT_NAME, _BOT_VERSION)
     self._pgn4_info = None
     self._last_arrow_request = None

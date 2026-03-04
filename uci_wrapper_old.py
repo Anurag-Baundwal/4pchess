@@ -47,15 +47,17 @@ def get_move_response(process, response, pv_callback, gameover_callback):
 
 class UciWrapper:
 
-  def __init__(self, num_threads, max_depth, ponder):
+  def __init__(self, num_threads, max_depth, ponder, enable_nnue=False, nnue_path=None):
     self._num_threads = num_threads
-    self.create_process(num_threads)
     self._max_depth = max_depth
     self._ponder_thread = None
     self._ponder_result = {}
     self._ponder_state = {'ponder_time': 0}
     self._team = None
     self._ponder = ponder
+    self._enable_nnue = enable_nnue
+    self._nnue_path = nnue_path
+    self.create_process(num_threads)
 
   def create_process(self, num_threads):
     self._process = subprocess.Popen(
@@ -64,6 +66,15 @@ class UciWrapper:
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         bufsize=1)
+
+    # Initialize NNUE configuration in the engine
+    if getattr(self, '_enable_nnue', False):
+      if getattr(self, '_nnue_path', None):
+        self._process.stdin.write(f'setoption name NNUEPath value {self._nnue_path}\n')
+      self._process.stdin.write('setoption name NNUE value true\n')
+    else:
+      self._process.stdin.write('setoption name NNUE value false\n')
+
     self._process.stdin.write(
         f'setoption name threads value {num_threads}\n')
 
@@ -74,7 +85,7 @@ class UciWrapper:
   def maybe_recreate_process(self):
     if self._process is None or self._process.returncode is not None:
       print('recreate process')
-      self._process = self.create_process()
+      self.create_process(self._num_threads)
       self.set_team(self._team)
 
   def maybe_stop_ponder_thread(self):

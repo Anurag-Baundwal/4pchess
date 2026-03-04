@@ -17,12 +17,12 @@
 #endif
 
 #include "board.h"
+#include "nnue/nnue.h"
 
 namespace chess {
 
 constexpr int kMobilityMultiplier = 5;
-Piece Piece::kNoPiece = Piece();
-BoardLocation BoardLocation::kNoLocation = BoardLocation();
+
 CastlingRights CastlingRights::kMissingRights = CastlingRights();
 
 const BoardLocation kRedInitialRookLocationKingside(13, 10);
@@ -34,39 +34,6 @@ const BoardLocation kYellowInitialRookLocationQueenside(0, 10);
 const BoardLocation kGreenInitialRookLocationKingside(3, 13);
 const BoardLocation kGreenInitialRookLocationQueenside(10, 13);
 
-const Player kRedPlayer = Player(RED);
-const Player kBluePlayer = Player(BLUE);
-const Player kYellowPlayer = Player(YELLOW);
-const Player kGreenPlayer = Player(GREEN);
-
-const Piece kRedPawn(kRedPlayer, PAWN);
-const Piece kRedKnight(kRedPlayer, KNIGHT);
-const Piece kRedBishop(kRedPlayer, BISHOP);
-const Piece kRedRook(kRedPlayer, ROOK);
-const Piece kRedQueen(kRedPlayer, QUEEN);
-const Piece kRedKing(kRedPlayer, KING);
-
-const Piece kBluePawn(kBluePlayer, PAWN);
-const Piece kBlueKnight(kBluePlayer, KNIGHT);
-const Piece kBlueBishop(kBluePlayer, BISHOP);
-const Piece kBlueRook(kBluePlayer, ROOK);
-const Piece kBlueQueen(kBluePlayer, QUEEN);
-const Piece kBlueKing(kBluePlayer, KING);
-
-const Piece kYellowPawn(kYellowPlayer, PAWN);
-const Piece kYellowKnight(kYellowPlayer, KNIGHT);
-const Piece kYellowBishop(kYellowPlayer, BISHOP);
-const Piece kYellowRook(kYellowPlayer, ROOK);
-const Piece kYellowQueen(kYellowPlayer, QUEEN);
-const Piece kYellowKing(kYellowPlayer, KING);
-
-const Piece kGreenPawn(kGreenPlayer, PAWN);
-const Piece kGreenKnight(kGreenPlayer, KNIGHT);
-const Piece kGreenBishop(kGreenPlayer, BISHOP);
-const Piece kGreenRook(kGreenPlayer, ROOK);
-const Piece kGreenQueen(kGreenPlayer, QUEEN);
-const Piece kGreenKing(kGreenPlayer, KING);
-
 namespace {
 
 int64_t rand64() {
@@ -74,7 +41,6 @@ int64_t rand64() {
   int32_t t1 = rand();
   return (((int64_t)t0) << 32) + (int64_t)t1;
 }
-
 
 void AddPawnMoves2(
     MoveBuffer& moves,
@@ -120,6 +86,51 @@ void AddPawnMoves2(
 }
 
 }  // namespace
+
+// ---------------------------------------------------------
+// NEW: NNUE Helpers
+// ---------------------------------------------------------
+std::vector<PlacedPiece> Board::GetPieceListFlat() const {
+  std::vector<PlacedPiece> flat_list;
+  flat_list.reserve(64); 
+  for (int i = 0; i < 4; ++i) {
+    flat_list.insert(flat_list.end(), piece_list_[i].begin(), piece_list_[i].end());
+  }
+  return flat_list;
+}
+
+void Board::UpdateAccumulator(const Move& move, const NNUE& nnue, Accumulator& acc) const {
+  const BoardLocation& from = move.From();
+  const BoardLocation& to = move.To();
+  const Piece moving_piece = GetPiece(from);
+
+  // 1. Remove the moving piece from its starting square
+  nnue.RemovePiece(acc, moving_piece, from);
+
+  // 2. Handle captures
+  if (move.IsStandardCapture()) {
+    nnue.RemovePiece(acc, move.GetStandardCapture(), to);
+  } else if (move.GetEnpassantLocation().Present()) {
+    nnue.RemovePiece(acc, move.GetEnpassantCapture(), move.GetEnpassantLocation());
+  }
+
+  // 3. Handle promotion or place the moving piece at the destination
+  if (move.GetPromotionPieceType() != NO_PIECE) {
+    Piece promoted_piece(moving_piece.GetColor(), move.GetPromotionPieceType());
+    nnue.AddPiece(acc, promoted_piece, to);
+  } else {
+    nnue.AddPiece(acc, moving_piece, to);
+  }
+
+  // 4. Handle castling (Rook movement)
+  if (move.GetRookMove().Present()) {
+    const SimpleMove& rook_move = move.GetRookMove();
+    Piece rook(moving_piece.GetColor(), ROOK);
+    nnue.RemovePiece(acc, rook, rook_move.From());
+    nnue.AddPiece(acc, rook, rook_move.To());
+  }
+}
+// ---------------------------------------------------------
 
 void Board::GetPawnMoves2(
     MoveBuffer& moves,
@@ -946,9 +957,6 @@ bool Board::IsAttackedByTeam(Team team, const BoardLocation& location) const {
   PlacedPiece attackers[1];
   size_t pos = GetAttackers2(attackers, 1, team, location);
   return pos > 0;
-
-  // auto attackers = GetAttackers(team, location, /*return_early=*/true);
-  // return attackers.size() > 0;
 }
 
 bool Board::IsOnPathBetween(
@@ -1112,6 +1120,25 @@ GameResult Board::CheckWasLastMoveKingCapture() const {
   return IN_PROGRESS;
 }
 
+bool Board::IsLegalLocation(int row, int col) const {
+  if (row < 0
+      || row > GetMaxRow()
+      || col < 0
+      || col > GetMaxCol()
+      || (row < 3 && (col < 3 || col > 10))
+      || (row > 10 && (col < 3 || col > 10))) {
+    return false;
+  }
+  return true;
+}
+
+bool Board::IsLegalLocation(const BoardLocation& location) const {
+  if (location.Missing()) {
+      return false;
+  }
+  return IsLegalLocation(location.GetRow(), location.GetCol());
+}
+
 void Board::SetPiece(
     const BoardLocation& location,
     const Piece& piece) {
@@ -1157,7 +1184,7 @@ void Board::RemovePiece(const BoardLocation& location) {
   // END OPTIMIZATION
 
   UpdatePieceHash(piece, location);
-  location_to_piece_[location.GetIndex()] = Piece();
+  location_to_piece_[location.GetIndex()] = Piece::kNoPiece;
   piece_indices_[location.GetIndex()] = -1;
   
   // Update king location
@@ -1232,7 +1259,6 @@ void Board::MakeMove(const Move& move) {
   }
   // --- END HASHING LOGIC (Part 1) ---
 
-
   const auto piece = GetPiece(move.From());
 
   // Capture
@@ -1274,7 +1300,6 @@ void Board::MakeMove(const Move& move) {
   }
   // --- END HASHING LOGIC (Part 2) ---
 
-
   // En-passant
   const auto enpassant_location = move.GetEnpassantLocation();
   if (enpassant_location.Present()) {
@@ -1295,8 +1320,8 @@ void Board::MakeMove(const Move& move) {
   UpdateTurnHash(t);
   UpdateTurnHash((t+1)%4);
 
-  turn_ = GetNextPlayer(turn_);
-  moves_.push_back(move_to_store); // Push the copy with history
+  turn_ = GetNextPlayer(turn_); 
+  moves_.push_back(move_to_store); 
 }
 
 void Board::UndoMove() {
@@ -1401,7 +1426,7 @@ BoardLocation Board::GetKingLocation(PlayerColor color) const {
 }
 
 Team Board::TeamToPlay() const {
-  return GetTeam(GetTurn().GetColor());
+  return GetTeam(GetTurn().GetColor()); 
 }
 
 int Board::PieceEvaluation() const {
@@ -1477,6 +1502,7 @@ Board::Board(
       }
     }
   }
+  
   // NEW: Initialize en_passant_target_
   for (int i = 0; i < 4; ++i) {
       en_passant_target_[i] = BoardLocation::kNoLocation;
@@ -1491,7 +1517,7 @@ Board::Board(
 
   // OPTIMIZATION: Initialize 1D arrays
   for (int i = 0; i < 196; ++i) {
-      location_to_piece_[i] = Piece();
+      location_to_piece_[i] = Piece::kNoPiece;
       piece_indices_[i] = -1;
   }
 
@@ -1545,7 +1571,6 @@ Board::Board(
   }
 
   // --- END OF THE FIX ---
-
 
   // Deduce the setup type based on the initial position of the Blue King.
   // In the classic setup, the Blue King is on a8 (row 6), in modern it's on a7 (row 7).
@@ -1615,52 +1640,6 @@ Board::Board(
   }
 
   InitializeHash();
-}
-
-inline Team GetTeam(PlayerColor color) {
-  return (color == RED || color == YELLOW) ? RED_YELLOW : BLUE_GREEN;
-}
-
-Player GetNextPlayer(const Player& player) {
-  switch (player.GetColor()) {
-  case RED:
-    return kBluePlayer;
-  case BLUE:
-    return kYellowPlayer;
-  case YELLOW:
-    return kGreenPlayer;
-  case GREEN:
-  default:
-    return kRedPlayer;
-  }
-}
-
-Player GetPartner(const Player& player) {
-  switch (player.GetColor()) {
-  case RED:
-    return kYellowPlayer;
-  case BLUE:
-    return kGreenPlayer;
-  case YELLOW:
-    return kRedPlayer;
-  case GREEN:
-  default:
-    return kBluePlayer;
-  }
-}
-
-Player GetPreviousPlayer(const Player& player) {
-  switch (player.GetColor()) {
-  case RED:
-    return kGreenPlayer;
-  case BLUE:
-    return kRedPlayer;
-  case YELLOW:
-    return kBluePlayer;
-  case GREEN:
-  default:
-    return kYellowPlayer;
-  }
 }
 
 std::shared_ptr<Board> Board::CreateStandardSetup(SetupType setup) {
@@ -1737,70 +1716,24 @@ int Move::ManhattanDistance() const {
        + std::abs(from_.GetCol() - to_.GetCol());
 }
 
-namespace {
-
-std::string ToStr(PlayerColor color) {
-  switch (color) {
-  case RED:
-    return "RED";
-  case BLUE:
-    return "BLUE";
-  case YELLOW:
-    return "YELLOW";
-  case GREEN:
-    return "GREEN";
-  default:
-    return "UNINITIALIZED_PLAYER";
-  }
-}
-
-std::string ToStr(PieceType piece_type) {
-  switch (piece_type) {
-  case PAWN:
-    return "P";
-  case ROOK:
-    return "R";
-  case KNIGHT:
-    return "N";
-  case BISHOP:
-    return "B";
-  case KING:
-    return "K";
-  case QUEEN:
-    return "Q";
-  default:
-    return "U";
-  }
-}
-
-}  // namespace
-
-std::ostream& operator<<(
-    std::ostream& os, const Piece& piece) {
-  os << ToStr(piece.GetColor()) << "(" << ToStr(piece.GetPieceType()) << ")";
-  return os;
-}
-
-std::ostream& operator<<(
-    std::ostream& os, const PlacedPiece& placed_piece) {
-  os << placed_piece.GetPiece() << "@" << placed_piece.GetLocation();
-  return os;
-}
-
-std::ostream& operator<<(
-    std::ostream& os, const Player& player) {
-  os << "Player(" << ToStr(player.GetColor()) << ")";
-  return os;
-}
-
-std::ostream& operator<<(
-    std::ostream& os, const BoardLocation& location) {
-  os << "Loc(" << (int)location.GetRow() << ", " << (int)location.GetCol() << ")";
-  return os;
+bool Move::operator==(const Move& other) const {
+  return from_ == other.from_
+      && to_ == other.to_
+      && standard_capture_ == other.standard_capture_
+      && promotion_piece_type_ == other.promotion_piece_type_
+      && en_passant_location_ == other.en_passant_location_
+      && en_passant_capture_ == other.en_passant_capture_
+      && rook_move_ == other.rook_move_
+      && initial_castling_rights_ == other.initial_castling_rights_
+      && castling_rights_ == other.castling_rights_;
 }
 
 std::ostream& operator<<(std::ostream& os, const Move& move) {
-  os << "Move(" << move.From() << " -> " << move.To() << ")";
+  os << "Move(" << move.From() << " -> " << move.To();
+  if (move.GetPromotionPieceType() != NO_PIECE) {
+       os << "=" << ToStr(move.GetPromotionPieceType());
+  }
+  os << ")";
   return os;
 }
 
@@ -1822,7 +1755,7 @@ std::ostream& operator<<(
     os << std::endl;
   }
 
-  os << "Turn: " << board.turn_ << std::endl;
+  os << "Turn: " << board.GetTurn() << std::endl;
 
   os << "All moves: " << std::endl;
   for (const auto& move : board.moves_) {
@@ -1869,17 +1802,6 @@ std::optional<CastlingType> Board::GetRookLocationType(
     break;
   }
   return std::nullopt;
-}
-
-Team OtherTeam(Team team) {
-  return team == RED_YELLOW ? BLUE_GREEN : RED_YELLOW;
-}
-
-std::string BoardLocation::PrettyStr() const {
-  std::string s;
-  s += ('a' + GetCol());
-  s += std::to_string(14 - GetRow());
-  return s;
 }
 
 std::string Move::PrettyStr() const {
@@ -2052,6 +1974,5 @@ int StaticExchangeEvaluationCapture(
   board.UndoMove();
   return value;
 }
-
 
 }  // namespace chess

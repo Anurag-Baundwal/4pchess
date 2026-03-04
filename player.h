@@ -14,6 +14,7 @@
 #include "board.h"
 #include "move_picker.h"
 #include "transposition_table.h"
+#include "nnue/nnue.h"
 
 namespace chess {
 
@@ -69,6 +70,10 @@ struct PlayerOptions {
   bool enable_knight_bonus = true;
   Team engine_team = NO_TEAM;
 
+  // for NNUE
+  bool enable_nnue = false;
+  std::string nnue_weights_filepath = ""; // Path to NNUE model directory
+
   // for pruning / reduction
   bool enable_futility_pruning = true;
   bool enable_late_move_reduction = true;
@@ -96,6 +101,9 @@ struct Stack {
   int root_depth = 0;
   int static_eval = 0;
   int reduction = 0;
+  
+  // State for NNUE evaluation
+  Accumulator nnue_acc;
 };
 
 enum NodeType {
@@ -154,7 +162,8 @@ class ThreadState {
 class AlphaBetaPlayer {
  public:
   AlphaBetaPlayer(
-      std::optional<PlayerOptions> options = std::nullopt);
+      std::optional<PlayerOptions> options = std::nullopt,
+      std::shared_ptr<NNUE> nnue_template_for_copy = nullptr);
   ~AlphaBetaPlayer();
 
   std::optional<std::tuple<int, std::optional<Move>, int>> MakeMove(
@@ -163,7 +172,7 @@ class AlphaBetaPlayer {
       int max_depth = 20);
   int StaticEvaluation(Board& board);
   // Eval with respect to the maximizing player
-  int Evaluate(ThreadState& thread_state, Board& board, bool maximizing_player,
+  int Evaluate(Stack* ss, ThreadState& thread_state, Board& board, bool maximizing_player,
       int alpha = -kMateValue, int beta = kMateValue);
   void CancelEvaluation() { canceled_ = true; }
   // NOTE: Should wait until evaluation is done before resetting this to true.
@@ -279,6 +288,9 @@ class AlphaBetaPlayer {
   bool enable_debug_ = false;
 
   int64_t last_board_key_ = 0;
+
+  // Main NNUE instance (shared across threads because evaluation is stateless)
+  std::shared_ptr<NNUE> nnue_;
 
   // For evaluation
   int king_attack_weight_[30];

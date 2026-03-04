@@ -14,162 +14,14 @@
 #include <array>
 #include <cstdint>
 
+#include "types.h"
+
 namespace chess {
 
+// Forward declarations
 class Board;
-
-constexpr int kNumPieceTypes = 6;
-
-enum PieceType : int8_t {
-  PAWN = 0, KNIGHT = 1, BISHOP = 2, ROOK = 3, QUEEN = 4, KING = 5,
-  NO_PIECE = 6,
-};
-
-// In centipawns
-constexpr int kPieceEvaluations[6] = {
-  50,     // PAWN
-  300,    // KNIGHT
-  400,    // BISHOP
-  500,    // ROOK
-  1000,   // QUEEN
-  10000,  // KING (unused)
-};
-
-enum PlayerColor : int8_t {
-  UNINITIALIZED_PLAYER = -1,
-  RED = 0, BLUE = 1, YELLOW = 2, GREEN = 3,
-};
-
-enum Team : int8_t {
-  RED_YELLOW = 0, BLUE_GREEN = 1, NO_TEAM = 2, CURRENT_TEAM = 3,
-};
-
-class Player {
- public:
-  Player() : color_(UNINITIALIZED_PLAYER) { }
-  explicit Player(PlayerColor color) : color_(color) { }
-
-  PlayerColor GetColor() const { return color_; }
-  Team GetTeam() const {
-    return (color_ == RED || color_ == YELLOW) ? RED_YELLOW : BLUE_GREEN;
-  }
-  bool operator==(const Player& other) const {
-    return color_ == other.color_;
-  }
-  bool operator!=(const Player& other) const {
-    return !(*this == other);
-  }
-  friend std::ostream& operator<<(
-      std::ostream& os, const Player& player);
-
- private:
-  PlayerColor color_;
-};
-
-}  // namespace chess
-
-
-template <>
-struct std::hash<chess::Player>
-{
-  std::size_t operator()(const chess::Player& x) const
-  {
-    return std::hash<int>()(x.GetColor());
-  }
-};
-
-
-namespace chess {
-
-class Piece {
- public:
-  Piece() : Piece(false, RED, NO_PIECE) { }
-
-  Piece(bool present, PlayerColor color, PieceType piece_type) {
-    bits_ = (((int8_t)present) << 7)
-          | (((int8_t)color) << 5)
-          | (((int8_t)piece_type) << 2);
-  }
-
-  Piece(PlayerColor color, PieceType piece_type)
-    : Piece(true, color, piece_type) { }
-
-  Piece(Player player, PieceType piece_type)
-    : Piece(true, player.GetColor(), piece_type) { }
-
-  bool Present() const {
-    return bits_ & (1 << 7);
-  }
-  bool Missing() const { return !Present(); }
-  PlayerColor GetColor() const {
-    return static_cast<PlayerColor>((bits_ & 0b01100000) >> 5);
-  }
-  PieceType GetPieceType() const {
-    return static_cast<PieceType>((bits_ & 0b00011100) >> 2);
-  }
-
-  bool operator==(const Piece& other) const { return bits_ == other.bits_; }
-  bool operator!=(const Piece& other) const { return bits_ != other.bits_; }
-
-  Player GetPlayer() const { return Player(GetColor()); }
-  Team GetTeam() const { return GetPlayer().GetTeam(); }
-  friend std::ostream& operator<<(
-      std::ostream& os, const Piece& piece);
-
-  static Piece kNoPiece;
-
- private:
-  // bit 0: presence
-  // bit 1-2: player
-  // bit 3-5: piece type
-  int8_t bits_;
-};
-
-class BoardLocation {
- public:
-  BoardLocation() : loc_(196) {}
-  BoardLocation(int8_t row, int8_t col) {
-    loc_ = (row < 0 || row >= 14 || col < 0 || col >= 14)
-      ? 196 : 14 * row + col;
-  }
-
-  bool Present() const { return loc_ < 196; }
-  bool Missing() const { return !Present(); }
-  int8_t GetRow() const { return loc_ / 14; }
-  int8_t GetCol() const { return loc_ % 14; }
-  uint8_t GetIndex() const { return loc_; } // OPTIMIZATION: Raw index access
-
-  BoardLocation Relative(int8_t delta_row, int8_t delta_col) const {
-    return BoardLocation(GetRow() + delta_row, GetCol() + delta_col);
-  }
-
-  bool operator==(const BoardLocation& other) const { return loc_ == other.loc_; }
-  bool operator!=(const BoardLocation& other) const { return loc_ != other.loc_; }
-
-  friend std::ostream& operator<<(
-      std::ostream& os, const BoardLocation& location);
-  std::string PrettyStr() const;
-
-  static BoardLocation kNoLocation;
-
- private:
-  // value 0-195: 14*row + col
-  // value 196: not present
-  uint8_t loc_;
-};
-
-}  // namespace chess
-
-template <>
-struct std::hash<chess::BoardLocation>
-{
-  std::size_t operator()(const chess::BoardLocation& x) const
-  {
-    return std::hash<int>()(x.GetIndex());
-  }
-};
-
-namespace chess {
+class NNUE;
+struct Accumulator;
 
 // Move or capture. Does not include pawn promotion, en-passant, or castling.
 class SimpleMove {
@@ -306,30 +158,20 @@ class Move {
     return standard_capture_.Present() ? standard_capture_ : en_passant_capture_;
   }
 
-  bool operator==(const Move& other) const {
-    return from_ == other.from_
-        && to_ == other.to_
-        && standard_capture_ == other.standard_capture_
-        && promotion_piece_type_ == other.promotion_piece_type_
-        && en_passant_location_ == other.en_passant_location_
-        && en_passant_capture_ == other.en_passant_capture_
-        && rook_move_ == other.rook_move_
-        && initial_castling_rights_ == other.initial_castling_rights_
-        && castling_rights_ == other.castling_rights_;
-  }
+  bool operator==(const Move& other) const; // Implementation in board.cc
   bool operator!=(const Move& other) const {
     return !(*this == other);
   }
   int ManhattanDistance() const;
-  friend std::ostream& operator<<(
-      std::ostream& os, const Move& move);
+  friend std::ostream& operator<<(std::ostream& os, const Move& move);
   std::string PrettyStr() const;
+  
   // NOTE: This does not find discovered checks.
   bool DeliversCheck(Board& board);
   int SEE(Board& board, const int* piece_evaluations);
   int ApproxSEE(Board& board, const int* piece_evaluations);
 
-  // NEW: Added for storing pre-move en passant state for UndoMove
+  // NEW: Store the en passant target square that was cleared by this move.
   const BoardLocation& GetPreviousEnPassantTarget() const { return previous_en_passant_target_; }
   void SetPreviousEnPassantTarget(const BoardLocation& loc) { previous_en_passant_target_ = loc; }
 
@@ -356,7 +198,7 @@ class Move {
   // Castling rights after the move
   CastlingRights castling_rights_; // 1
 
-  // NEW: Store the en passant target square that was cleared by this move.
+  // Store the en passant target square that was cleared by this move.
   BoardLocation previous_en_passant_target_; // 1
 
   // Cached check
@@ -374,26 +216,6 @@ enum GameResult {
   WIN_RY = 1,
   WIN_BG = 2,
   STALEMATE = 3,
-};
-
-class PlacedPiece {
- public:
-  PlacedPiece() = default;
-
-  PlacedPiece(const BoardLocation& location,
-              const Piece& piece)
-    : location_(location),
-      piece_(piece)
-  { }
-
-  const BoardLocation& GetLocation() const { return location_; }
-  const Piece& GetPiece() const { return piece_; }
-  friend std::ostream& operator<<(
-      std::ostream& os, const PlacedPiece& placed_piece);
-
- private:
-  BoardLocation location_;
-  Piece piece_;
 };
 
 struct MoveBuffer {
@@ -489,6 +311,10 @@ class Board {
 
   void MakeMove(const Move& move);
   void UndoMove();
+
+  // NEW: Update NNUE Accumulator incrementally
+  void UpdateAccumulator(const Move& move, const NNUE& nnue, Accumulator& acc) const;
+  
   bool LastMoveWasCapture() const {
     return !moves_.empty() && moves_.back().GetStandardCapture().Present();
   }
@@ -532,13 +358,11 @@ class Board {
       CastlingRights initial_castling_rights = CastlingRights::kMissingRights,
       CastlingRights castling_rights = CastlingRights::kMissingRights) const;
 
-
   friend std::ostream& operator<<(
       std::ostream& os, const Board& board);
 
   // NEW: Friend function to access private members for FEN generation
   friend std::string GenerateFENFromBoard(const Board& board);
-
 
   // Use with caution: after you set the player you must reset it to its
   // original value before calling UndoMove past the current moves.
@@ -547,21 +371,13 @@ class Board {
   void MakeNullMove();
   void UndoNullMove();
 
-  bool IsLegalLocation(int row, int col) const {
-    if (row < 0
-        || row > GetMaxRow()
-        || col < 0
-        || col > GetMaxCol()
-        || (row < 3 && (col < 3 || col > 10))
-        || (row > 10 && (col < 3 || col > 10))) {
-      return false;
-    }
-    return true;
-  }
-  bool IsLegalLocation(const BoardLocation& location) const {
-    return IsLegalLocation(location.GetRow(), location.GetCol());
-  }
-  const std::vector<std::vector<PlacedPiece>>& GetPieceList() { return piece_list_; };
+  bool IsLegalLocation(int row, int col) const;
+  bool IsLegalLocation(const BoardLocation& location) const;
+
+  const std::vector<std::vector<PlacedPiece>>& GetPieceList() const { return piece_list_; }
+  
+  // NEW: Provides a flattened array of pieces needed for NNUE root initialization
+  std::vector<PlacedPiece> GetPieceListFlat() const;
 
   // NEW: Getter for testing en passant state.
   const BoardLocation& GetEnPassantTarget(PlayerColor color) const {
@@ -632,18 +448,13 @@ class Board {
 
   // OPTIMIZATION: Use 1D mailbox array
   Piece location_to_piece_[196];
-  
   // OPTIMIZATION: Index into piece_list_ for O(1) updates
   int8_t piece_indices_[196];
-
   std::vector<std::vector<PlacedPiece>> piece_list_;
 
   BoardLocation locations_[14][14];
-
   SetupType setup_type_;
-  
   CastlingRights castling_rights_[4];
-  
   // NEW: Each color has a potential en passant target square.
   BoardLocation en_passant_target_[4];
 
@@ -665,20 +476,11 @@ class Board {
   Move move_buffer_2_[300];
 };
 
-// Helper functions
-
-Team OtherTeam(Team team);
-Team GetTeam(PlayerColor color);
-Player GetNextPlayer(const Player& player);
-Player GetPreviousPlayer(const Player& player);
-Player GetPartner(const Player& player);
-
-// Returns the static exchange evaluation of a capture.
+// Helper functions (SEE)
 int StaticExchangeEvaluationCapture(
     const int piece_evaluations[6],
     Board& board,
     const Move& move);
-
 
 }  // namespace chess
 

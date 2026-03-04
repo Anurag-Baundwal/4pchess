@@ -1,0 +1,43 @@
+{
+  "configurations": [
+    {
+      "inheritEnvironments": [
+        "msvc_x64"
+      ],
+      "name": "x64-Debug",
+      "includePath": [
+        "${env.INCLUDE}",
+        "${workspaceRoot}\\**"
+      ],
+      "defines": [
+        "WIN32",
+        "_DEBUG",
+        "UNICODE",
+        "_UNICODE"
+      ],
+      "intelliSenseMode": "windows-msvc-x64"
+    }, 
+    {
+      "name": "Debug gen_data.exe (Gen 1)",
+      "type": "cppvsdbg", 
+      "request": "launch",
+      "program": "${workspaceFolder}/bazel-bin/nnue/gen_data.exe",
+      "args": [
+        "../data/data/gen_1", // output_dir
+        "8", // search_depth
+        "12", // num_threads
+        "10000", // num_samples
+        "0.0" // nnue_search_rate
+      ],
+      "cwd": "${workspaceFolder}",
+      "stopAtEntry": true,
+      "externalConsole": true,
+      "environment": [
+        {
+          "name": "TF_ENABLE_ONEDNN_OPTS",
+          "value": "0"
+        }
+      ]
+    }
+  ]
+}

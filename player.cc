@@ -17,11 +17,11 @@
 #include "player.h"
 #include "move_picker.h"
 #include "transposition_table.h"
-//#include "static_exchange.h"
+#include "nnue/nnue.h"
 
 namespace chess {
 
-AlphaBetaPlayer::AlphaBetaPlayer(std::optional<PlayerOptions> options) {
+AlphaBetaPlayer::AlphaBetaPlayer(std::optional<PlayerOptions> options, std::shared_ptr<NNUE> nnue_template_for_copy) {
   if (options.has_value()) {
     options_ = *options;
   }
@@ -163,6 +163,17 @@ AlphaBetaPlayer::AlphaBetaPlayer(std::optional<PlayerOptions> options) {
       }
     }
   }
+
+  // Load the NNUE if enabled
+  if (options_.enable_nnue) {
+    if (!options_.nnue_weights_filepath.empty() || nnue_template_for_copy != nullptr) {
+      nnue_ = std::make_shared<NNUE>(options_.nnue_weights_filepath, nnue_template_for_copy);
+    } else {
+      nnue_ = nullptr;
+    }
+  } else {
+    nnue_ = nullptr;
+  }
 }
 
 AlphaBetaPlayer::~AlphaBetaPlayer() {
@@ -293,7 +304,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
           maximizing_player, deadline, pvinfo);
     }
 
-    int static_eval = Evaluate(thread_state, board, maximizing_player, alpha, beta);
+    int static_eval = Evaluate(ss, thread_state, board, maximizing_player, alpha, beta);
     if (options_.enable_transposition_table) {
       transposition_table_->Save(board.HashKey(), 0, std::nullopt, static_eval, static_eval, EXACT, is_pv_node);
     }
@@ -305,7 +316,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
   if (tt_hit && tte->eval != value_none_tt) {
     raw_static_eval = tte->eval;
   } else {
-    raw_static_eval = Evaluate(thread_state, board, maximizing_player, alpha, beta);
+    raw_static_eval = Evaluate(ss, thread_state, board, maximizing_player, alpha, beta);
   }
 
   // This is the evaluation we will use for pruning in this node.
@@ -368,6 +379,10 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     num_null_moves_tried_++;
     ss->continuation_history = &continuation_history[0][0][NO_PIECE][0][0];
     ss->current_move = Move();
+    
+    // Copy the accumulator state unmodified since null move does not change the board
+    (ss + 1)->nnue_acc = ss->nnue_acc;
+    
     board.MakeNullMove();
 
     // try the null move with possibly reduced depth
@@ -657,6 +672,13 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     ss->current_move = move;
     ss->continuation_history = &continuation_history[ss->in_check][move.IsCapture()][piece_type][move.To().GetRow()][move.To().GetCol()];
 
+    // --- NNUE Accumulator Update ---
+    (ss + 1)->nnue_acc = ss->nnue_acc; // Copy parent's state
+    if (options_.enable_nnue && nnue_ != nullptr) {
+        board.UpdateAccumulator(move, *nnue_, (ss + 1)->nnue_acc);
+    }
+    // -------------------------------
+
     board.MakeMove(move);
 
     if (board.CheckWasLastMoveKingCapture() != IN_PROGRESS) {
@@ -682,8 +704,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       quiets++;
     }
 
-    if (options_.enable_mobility_evaluation
-        || options_.enable_piece_activation) {
+    if (!options_.enable_nnue && (options_.enable_mobility_evaluation || options_.enable_piece_activation)) {
       UpdateMobilityEvaluation(thread_state, board, player);
     }
 
@@ -749,8 +770,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
 
     board.UndoMove();
 
-    if (options_.enable_mobility_evaluation
-        || options_.enable_piece_activation) { // reset
+    if (!options_.enable_nnue && (options_.enable_mobility_evaluation || options_.enable_piece_activation)) { // reset
       thread_state.NActivated()[player_color] = curr_n_activated;
       thread_state.TotalMoves()[player_color] = curr_total_moves;
     }
@@ -903,7 +923,7 @@ AlphaBetaPlayer::QSearch(
     if (tt_hit && tte->eval != value_none_tt) {
       raw_static_eval = tte->eval;
     } else {
-      raw_static_eval = Evaluate(thread_state, board, maximizing_player, alpha, beta);
+      raw_static_eval = Evaluate(ss, thread_state, board, maximizing_player, alpha, beta);
     }
 
     // The stand-pat score starts as the raw static eval.
@@ -1006,6 +1026,13 @@ AlphaBetaPlayer::QSearch(
     ss->current_move = move;
     ss->continuation_history = &continuation_history[ss->in_check][move.IsCapture()][piece_type][move.To().GetRow()][move.To().GetCol()];
 
+    // --- NNUE Accumulator Update ---
+    (ss + 1)->nnue_acc = ss->nnue_acc; // Copy parent's state
+    if (options_.enable_nnue && nnue_ != nullptr) {
+        board.UpdateAccumulator(move, *nnue_, (ss + 1)->nnue_acc);
+    }
+    // -------------------------------
+
     bool delivers_check = move.DeliversCheck(board);
     board.MakeMove(move);
     if (board.CheckWasLastMoveKingCapture() != IN_PROGRESS) {
@@ -1050,8 +1077,7 @@ AlphaBetaPlayer::QSearch(
 
     quiet_check_evasions += !capture && in_check;
 
-    if (options_.enable_mobility_evaluation
-        || options_.enable_piece_activation) {
+    if (!options_.enable_nnue && (options_.enable_mobility_evaluation || options_.enable_piece_activation)) {
       UpdateMobilityEvaluation(thread_state, board, player);
     }
 
@@ -1061,8 +1087,7 @@ AlphaBetaPlayer::QSearch(
 
     board.UndoMove();
 
-    if (options_.enable_mobility_evaluation
-        || options_.enable_piece_activation) { // reset
+    if (!options_.enable_nnue && (options_.enable_mobility_evaluation || options_.enable_piece_activation)) { // reset
       thread_state.NActivated()[player_color] = curr_n_activated;
       thread_state.TotalMoves()[player_color] = curr_total_moves;
     }
@@ -1219,7 +1244,23 @@ int GetNumMajorPieces(const std::vector<PlacedPiece>& pieces) {
 }  // namespace
 
 int AlphaBetaPlayer::Evaluate(
-    ThreadState& thread_state, Board& board, bool maximizing_player, int alpha, int beta) {
+    Stack* ss, ThreadState& thread_state, Board& board, bool maximizing_player, int alpha, int beta) {
+
+  // --- NNUE Evaluation ---
+  if (options_.enable_nnue && nnue_ != nullptr) {
+    int nnue_score = nnue_->Evaluate(board.GetTurn().GetColor(), ss->nnue_acc);
+
+    // Convert NNUE score to the perspective of `maximizing_player` for this node.
+    // nnue_score is the evaluation from the perspective of the player whose turn it is.
+    if ((board.GetTurn().GetTeam() == RED_YELLOW && maximizing_player) ||
+        (board.GetTurn().GetTeam() == BLUE_GREEN && !maximizing_player)) {
+      return nnue_score;
+    } else {
+      return -nnue_score;
+    }
+  }
+  // --- End NNUE Evaluation ---
+
   int eval; // w.r.t. RY team
   GameResult game_result = board.CheckWasLastMoveKingCapture();
   if (game_result != IN_PROGRESS) { // game is over
@@ -1682,6 +1723,8 @@ void AlphaBetaPlayer::AgeHistoryHeuristics() {
 }
 
 void AlphaBetaPlayer::ResetMobilityScores(ThreadState& thread_state, Board& board) {
+  if (options_.enable_nnue) return;
+
   // reset pseudo-mobility scores
   if (options_.enable_mobility_evaluation || options_.enable_piece_activation) {
     for (int i = 0; i < 4; i++) {
@@ -1693,12 +1736,17 @@ void AlphaBetaPlayer::ResetMobilityScores(ThreadState& thread_state, Board& boar
 
 int AlphaBetaPlayer::StaticEvaluation(Board& board) {
   auto pv_copy = pv_info_.Copy();
-  // Create a dummy AspirationState for this one-off evaluation,
-  // as it doesn't need to be persistent across searches.
   AspirationState dummy_asp_state;
   ThreadState thread_state(options_, board, *pv_copy, dummy_asp_state);
+  
+  Stack dummy_stack[1];
+  Stack* ss = dummy_stack;
+  if (options_.enable_nnue && nnue_ != nullptr) {
+    nnue_->InitializeAccumulator(ss->nnue_acc, board.GetPieceListFlat());
+  }
+
   ResetMobilityScores(thread_state, board);
-  return Evaluate(thread_state, board, true, -kMateValue, kMateValue);
+  return Evaluate(ss, thread_state, board, true, -kMateValue, kMateValue);
 }
 
 std::optional<std::tuple<int, std::optional<Move>, int>>
@@ -1901,6 +1949,11 @@ AlphaBetaPlayer::MakeMoveSingleThread(
     (ss-i)->continuation_history = &continuation_history[0][0][NO_PIECE][0][0];
   }
 
+  // Initialize the root node's accumulator if NNUE is enabled
+  if (options_.enable_nnue && nnue_ != nullptr) {
+    nnue_->InitializeAccumulator(ss->nnue_acc, board.GetPieceListFlat());
+  }
+
   if (options_.enable_aspiration_window) {
     while (next_depth <= max_depth) {
       std::optional<std::tuple<int, std::optional<Move>>> move_and_value;
@@ -2012,6 +2065,8 @@ int PVInfo::GetDepth() const {
 
 void AlphaBetaPlayer::UpdateMobilityEvaluation(
     ThreadState& thread_state, Board& board, Player player) {
+  
+  if (options_.enable_nnue) return;
 
   Move* moves = thread_state.GetNextMoveBufferPartition();
   Player curr_player = board.GetTurn();
