@@ -404,11 +404,11 @@ int32_t NNUE::Evaluate(PlayerColor turn, const Accumulator& acc) const {
 
   // 2. Layer 1
   int l1_output_size = layer_sizes_[1];             
-  std::vector<float> l1_input_buffer(4 * kNNUE_L0_Size); 
+  alignas(32) float l1_input_buffer[4 * kNNUE_L0_Size]; 
 
   for (int relative_view_idx = 0; relative_view_idx < 4; ++relative_view_idx) {
     PlayerColor actual_player_color_for_l0 = static_cast<PlayerColor>((turn + relative_view_idx) % 4);
-    std::memcpy(l1_input_buffer.data() + (relative_view_idx * kNNUE_L0_Size), 
+    std::memcpy(l1_input_buffer + (relative_view_idx * kNNUE_L0_Size), 
                 l0_activated[actual_player_color_for_l0], 
                 kNNUE_L0_Size * sizeof(float));
   }
