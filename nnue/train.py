@@ -1,12 +1,24 @@
+import os
+import logging
+
+# 1. Must be set BEFORE importing tensorflow to suppress C++ info/warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+
 import argparse
 import gc
 import glob
 import numpy as np
-import os
 import shutil
 import subprocess
-import tensorflow as tf
 import time
+
+import tensorflow as tf
+
+# 2. Suppress Keras/TensorFlow python-level deprecation warnings
+tf.get_logger().setLevel('ERROR')
+logging.getLogger("absl").setLevel(logging.ERROR)
+
 
 # --- Binary Entry Format ---
 ENTRY_DTYPE = np.dtype([
@@ -63,7 +75,9 @@ def create_dataset(boards_np, scores_np, batch_size):
     dataset = dataset.shuffle(min(len(boards_np), 200000))
     return dataset.map(map_fn, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
-def train_model(train_data_dirs, val_boards, val_scores, last_model, save_dir, epochs, batch_size):
+
+# 4. Pass the 'model' object directly to avoid retracing compilation
+def train_model(train_data_dirs, val_boards, val_scores, model, last_model, save_dir, epochs, batch_size):
     print(f'Loading data into RAM from {len(train_data_dirs)} directories...')
     
     # Load all training data directly into RAM
@@ -72,37 +86,39 @@ def train_model(train_data_dirs, val_boards, val_scores, last_model, save_dir, e
     
     if len(train_data) == 0:
         print("No training data found. Skipping.")
-        return
+        return model
 
     train_dataset = create_dataset(train_data['board_state'], train_data['score'], batch_size)
     val_dataset = create_dataset(val_boards, val_scores, batch_size) if len(val_boards) > 0 else None
 
     # Load or Create Model
-    model = None
-    if last_model and os.path.exists(last_model):
-        try:
-            model = tf.keras.models.load_model(last_model)
-            print(f"Resumed model from {last_model}")
-        except: pass
+    if model is None:
+        if last_model and os.path.exists(last_model):
+            try:
+                model = tf.keras.models.load_model(last_model)
+                print(f"Resumed model from {last_model}")
+            except Exception as e:
+                print(f"Failed to load model from {last_model}: {e}")
 
-    if not model:
-        model = tf.keras.Sequential([
-            tf.keras.Input(shape=(4, 14*14), dtype=tf.int32),
-            tf.keras.layers.Lambda(one_hot_layer_fn),
-            tf.keras.layers.Dense(32, activation='relu'),
-            tf.keras.layers.Flatten(),
-            tf.keras.layers.Dense(32, activation='relu'),
-            tf.keras.layers.Dense(32, activation='relu'),
-            tf.keras.layers.Dense(1, activation='sigmoid'),
-        ])
-    
-    model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+        if model is None:
+            model = tf.keras.Sequential([
+                tf.keras.Input(shape=(4, 14*14), dtype=tf.int32),
+                tf.keras.layers.Lambda(one_hot_layer_fn),
+                tf.keras.layers.Dense(32, activation='relu'),
+                tf.keras.layers.Flatten(),
+                tf.keras.layers.Dense(32, activation='relu'),
+                tf.keras.layers.Dense(32, activation='relu'),
+                tf.keras.layers.Dense(1, activation='sigmoid'),
+            ])
+            model.compile(optimizer='adam', loss='mse', metrics=['mae'])
     
     print(f"Training on {len(train_data)} positions...")
     model.fit(train_dataset, epochs=epochs, validation_data=val_dataset, verbose=1)
 
     os.makedirs(save_dir, exist_ok=True)
-    model.save(os.path.join(save_dir, 'nnue.h5'))
+    
+    # 3. Save as the newer .keras format
+    model.save(os.path.join(save_dir, 'nnue.keras'))
 
     # Save weights to CSV for C++ Eval
     dense_layers = [x for x in model.layers if isinstance(x, tf.keras.layers.Dense)]
@@ -111,6 +127,8 @@ def train_model(train_data_dirs, val_boards, val_scores, last_model, save_dir, e
         if len(weights) == 2:
             np.savetxt(os.path.join(save_dir, f'layer_{i}.kernel'), weights[0].flatten(), delimiter=',')
             np.savetxt(os.path.join(save_dir, f'layer_{i}.bias'), weights[1].flatten(), delimiter=',')
+                        
+    return model
 
 def train_rl_pipeline(args):
     output_dir = os.path.abspath(args.output_dir)
@@ -121,10 +139,17 @@ def train_rl_pipeline(args):
     gen_id = 1
     while os.path.exists(os.path.join(archive_dir, f'gen_{gen_id}')): gen_id += 1
 
-    last_model = os.path.join(archive_dir, f'gen_{gen_id-1}', 'nnue.h5') if gen_id > 1 else None
+    # Check for .keras first, fallback to .h5 if it's from an older run
+    last_model = os.path.join(archive_dir, f'gen_{gen_id-1}', 'nnue.keras') if gen_id > 1 else None
+    if last_model and not os.path.exists(last_model):
+        last_model_h5 = os.path.join(archive_dir, f'gen_{gen_id-1}', 'nnue.h5')
+        if os.path.exists(last_model_h5):
+            last_model = last_model_h5
+
     nnue_weights_dir = os.path.join(archive_dir, f'gen_{gen_id-1}') if gen_id > 1 else None
 
     global g_val_pool_boards, g_val_pool_scores
+    model = None
 
     while gen_id <= args.num_self_play_loops:
         print(f'\n========== Generation {gen_id} ==========')
@@ -159,17 +184,17 @@ def train_rl_pipeline(args):
         # 3. Train
         train_dirs = [os.path.join(output_dir, f'train_data_gen_{i}') for i in range(max(1, gen_id - args.train_last_n + 1), gen_id + 1)]
         
-        train_model(
+        model = train_model(
             train_dirs,
             np.array(g_val_pool_boards), np.array(g_val_pool_scores),
-            last_model, model_dir, args.epochs, args.batch_size
+            model, last_model, model_dir, args.epochs, args.batch_size
         )
 
         # 4. Archive
         archive_path = os.path.join(archive_dir, f'gen_{gen_id}')
         shutil.copytree(model_dir, archive_path, dirs_exist_ok=True)
         
-        last_model = os.path.join(archive_path, 'nnue.h5')
+        last_model = os.path.join(archive_path, 'nnue.keras')
         nnue_weights_dir = archive_path
         gen_id += 1
 
