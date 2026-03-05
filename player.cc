@@ -1991,9 +1991,6 @@ AlphaBetaPlayer::MakeMoveSingleThread(
 
   if (res.has_value()) {
     int eval = std::get<0>(*res);
-    if (!maximizing_player) {
-      eval = -eval;
-    }
     return std::make_tuple(eval, std::get<1>(*res), searched_depth);
   }
 
