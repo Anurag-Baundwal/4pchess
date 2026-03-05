@@ -384,6 +384,11 @@ void Player::MakeMove(const v8::FunctionCallbackInfo<v8::Value>& args) {
 
     float evaluation = std::get<0>(move_res.value());
 
+    // Convert the engine's side-to-move relative score back to an RY-relative score for the UI
+    if (board->GetTurn().GetTeam() == chess::BLUE_GREEN) {
+        evaluation = -evaluation;
+    }
+
     Local<Object> res = Object::New(isolate);
 
     // for debugging

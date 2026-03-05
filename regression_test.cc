@@ -91,8 +91,8 @@ TEST(PlayerTest, EvaluateNonCheckmate5) {
   auto res = player->MakeMove(*board, std::nullopt, 1);
   float valuation = std::get<0>(*res);
 
-  EXPECT_LT(valuation, 0);
-  EXPECT_GT(valuation, -kMateValue);
+  EXPECT_GT(valuation, 0);
+  EXPECT_LT(valuation, kMateValue);
 }
 
 TEST(PlayerTest, EvaluateNonCheckmate6) {
