@@ -33,7 +33,7 @@ g_val_pool_boards = []
 g_val_pool_scores = []
 
 def generate_training_data(output_dir, search_depth, num_threads, num_positions, nnue_weights, nnue_rate):
-    print(f'Generating {num_positions} positions into {output_dir}...')
+    print(f'Generating {num_positions} positions into {output_dir} (NNUE Use Rate = {nnue_rate:.3f})...')
     prog = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../bazel-bin/nnue/gen_data')
     if os.name == 'nt' and not prog.endswith('.exe'): prog += '.exe'
 
@@ -75,8 +75,6 @@ def create_dataset(boards_np, scores_np, batch_size):
     dataset = dataset.shuffle(min(len(boards_np), 200000))
     return dataset.map(map_fn, num_parallel_calls=tf.data.AUTOTUNE).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
-
-# 4. Pass the 'model' object directly to avoid retracing compilation
 def train_model(train_data_dirs, val_boards, val_scores, model, last_model, save_dir, epochs, batch_size):
     print(f'Loading data into RAM from {len(train_data_dirs)} directories...')
     
@@ -117,7 +115,7 @@ def train_model(train_data_dirs, val_boards, val_scores, model, last_model, save
 
     os.makedirs(save_dir, exist_ok=True)
     
-    # 3. Save as the newer .keras format
+    # Save as the newer .keras format
     model.save(os.path.join(save_dir, 'nnue.keras'))
 
     # Save weights to CSV for C++ Eval
@@ -139,7 +137,6 @@ def train_rl_pipeline(args):
     gen_id = 1
     while os.path.exists(os.path.join(archive_dir, f'gen_{gen_id}')): gen_id += 1
 
-    # Check for .keras first, fallback to .h5 if it's from an older run
     last_model = os.path.join(archive_dir, f'gen_{gen_id-1}', 'nnue.keras') if gen_id > 1 else None
     if last_model and not os.path.exists(last_model):
         last_model_h5 = os.path.join(archive_dir, f'gen_{gen_id-1}', 'nnue.h5')
@@ -154,11 +151,16 @@ def train_rl_pipeline(args):
     while gen_id <= args.num_self_play_loops:
         print(f'\n========== Generation {gen_id} ==========')
         
+        # Interpolate the NNUE Rate over time
+        # It linearly scales from the starting args.nnue_rate up to exactly 1.0 (100%) by the final loop.
+        lerp_ratio = (gen_id - 1) / max(1, args.num_self_play_loops - 1)
+        current_nnue_rate = args.nnue_rate + (1.0 - args.nnue_rate) * lerp_ratio
+        
         raw_train_dir = os.path.join(output_dir, f'raw_train_gen_{gen_id}')
         if os.path.exists(raw_train_dir): shutil.rmtree(raw_train_dir)
         
-        # 1. Generate Data
-        generate_training_data(raw_train_dir, args.search_depth, args.threads, args.positions, nnue_weights_dir, args.nnue_rate)
+        # 1. Generate Data using the interpolated current_nnue_rate
+        generate_training_data(raw_train_dir, args.search_depth, args.threads, args.positions, nnue_weights_dir, current_nnue_rate)
         
         # 2. Load and Split
         new_data = load_binary_dir_to_numpy(raw_train_dir)

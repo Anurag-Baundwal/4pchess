@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <thread>
+#include <cmath> // Required for std::exp (Softmax)
 
 #include "../board.h"
 #include "../player.h"
@@ -101,7 +102,6 @@ bool IsPositionGoodForTraining(chess::Board& board, int search_score, const std:
 
 void SerializeBoardToArray(const chess::Board& board, chess::Player current_turn, uint8_t (&board_state_array)[784]) {
     std::memset(board_state_array, 0, sizeof(board_state_array));
-    // Flatten 4 relative player views (Current, Next, Partner, Prev)
     for (int relative_view_idx = 0; relative_view_idx < 4; ++relative_view_idx) {
         chess::PlayerColor view_color = static_cast<chess::PlayerColor>((current_turn.GetColor() + relative_view_idx) % 4);
         int channel_offset = relative_view_idx * 196;
@@ -146,7 +146,6 @@ class GenData {
     std::filesystem::path thread_output_path(output_dir);
     std::filesystem::create_directories(thread_output_path);
 
-    // Thread-local binary file
     std::string bin_filename = (thread_output_path / ("data_" + std::to_string(thread_id) + ".bin")).string();
     std::ofstream fs_data(bin_filename, std::ios::binary | std::ios::out);
 
@@ -173,8 +172,13 @@ class GenData {
 
       if (!board) continue;
 
+      // 1. Determine NNUE vs HCE *once* at the start of the game
+      bool is_nnue_game = enable_nnue_ && (RandFloat() <= nnue_search_rate_);
+      AlphaBetaPlayer* p_selected = is_nnue_game ? &player_with_nnue : &player_without_nnue;
+
       int num_game_moves = 0;
-      std::vector<TrainingDataEntry> game_history; // Cache history to update exact win/loss results later
+      std::vector<TrainingDataEntry> game_history;
+      GameResult adjudicated_result = IN_PROGRESS;
 
       while (true) {
         if (num_game_moves >= kMaxMovesPerGame || positions_calculated_ >= num_samples_) break;
@@ -182,44 +186,141 @@ class GenData {
         GameResult result = board->GetGameResult();
         if (result != IN_PROGRESS) break;
 
-        AlphaBetaPlayer* p_selected = (enable_nnue_ && RandFloat() <= nnue_search_rate_) ? &player_with_nnue : &player_without_nnue;
         Player current_turn = board->GetTurn();
 
         auto res_tuple = p_selected->MakeMove(*board, std::nullopt, depth_);
         if (!res_tuple.has_value()) break;
         
-        int score = std::get<0>(res_tuple.value()); // Score relative to current player
+        // MakeMove returns score strictly from RED_YELLOW's perspective
+        int score_ry = std::get<0>(res_tuple.value()); 
+        int relative_score = (current_turn.GetTeam() == RED_YELLOW) ? score_ry : -score_ry;
+
         std::optional<Move> best_move = std::get<1>(res_tuple.value());
+        if (!best_move.has_value()) break; // No legal moves (Mate / Stalemate)
 
-        // Adjudication
-        if (num_game_moves > 20 && std::abs(score) > kAdjudicationScoreThreshold) break;
+        // Adjudication (using the RY score threshold)
+        if (num_game_moves > 20 && std::abs(score_ry) > kAdjudicationScoreThreshold) {
+            adjudicated_result = (score_ry > 0) ? WIN_RY : WIN_BG;
+            break;
+        }
 
-        // Quality Filter & Save
-        if (IsPositionGoodForTraining(*board, score, best_move)) {
+        // Save normalized relative_score to training data
+        if (IsPositionGoodForTraining(*board, relative_score, best_move)) {
             TrainingDataEntry entry;
             SerializeBoardToArray(*board, current_turn, entry.board_state);
-            entry.score = static_cast<int16_t>(std::clamp(score, -32000, 32000));
+            entry.score = static_cast<int16_t>(std::clamp(relative_score, -32000, 32000));
             entry.player_turn = static_cast<uint8_t>(current_turn.GetColor());
-            entry.game_result = -128; // In Progress (updated at game end)
+            entry.game_result = -128; // To be backfilled
             game_history.push_back(entry);
         }
 
-        // Random move injection
+        // 2. Data Diversification: Top-5 Softmax Picker with Shallow-Then-Deep Search
         if (RandFloat() < kRandomMoveRate) {
             size_t n_pseudo = board->GetPseudoLegalMoves2(buffer, 300);
-            if (n_pseudo > 0) board->MakeMove(buffer[RandInt(n_pseudo)]);
-            else break;
-        } else if (best_move.has_value()) {
-            board->MakeMove(best_move.value());
+            std::vector<Move> legal_moves;
+            for (size_t i = 0; i < n_pseudo; ++i) {
+                board->MakeMove(buffer[i]);
+                if (!board->IsKingInCheck(current_turn)) legal_moves.push_back(buffer[i]);
+                board->UndoMove();
+            }
+
+            if (!legal_moves.empty()) {
+                
+                // Helper lambda: safely evaluates candidates, preventing crashes if a move finishes the game.
+                auto evaluate_candidate = [&](const Move& m, int eval_depth) -> int {
+                    board->MakeMove(m);
+                    int score = -chess::kMateValue;
+                    if (board->GetGameResult() != IN_PROGRESS) {
+                        GameResult res = board->GetGameResult();
+                        if ((current_turn.GetTeam() == RED_YELLOW && res == WIN_RY) ||
+                            (current_turn.GetTeam() == BLUE_GREEN && res == WIN_BG)) {
+                            score = chess::kMateValue;
+                        } else if (res == STALEMATE) {
+                            score = 0;
+                        } else {
+                            score = -chess::kMateValue;
+                        }
+                    } else {
+                        auto move_res = p_selected->MakeMove(*board, std::nullopt, eval_depth); 
+                        if (move_res.has_value()) {
+                            int eval_ry = std::get<0>(*move_res);
+                            score = (current_turn.GetTeam() == RED_YELLOW) ? eval_ry : -eval_ry;
+                        }
+                    }
+                    board->UndoMove();
+                    return score;
+                };
+
+                std::vector<std::pair<Move, int>> shallow_scores;
+                
+                // Stage 1: Shallow Pre-sort (Fast, depth=2)
+                for (const auto& m : legal_moves) {
+                    shallow_scores.push_back({m, evaluate_candidate(m, 2)});
+                }
+
+                if (!shallow_scores.empty()) {
+                    std::sort(shallow_scores.begin(), shallow_scores.end(), 
+                        [](const auto& a, const auto& b) { return a.second > b.second; });
+                    
+                    // Stage 2: Deep Evaluation on the Top 7 candidates (Accurate, TT-assisted)
+                    int num_candidates = std::min<int>(7, static_cast<int>(shallow_scores.size()));
+                    std::vector<std::pair<Move, int>> deep_scores;
+
+                    for (int i = 0; i < num_candidates; ++i) {
+                        Move m = shallow_scores[i].first;
+                        deep_scores.push_back({m, evaluate_candidate(m, std::max(1, depth_ - 1))});
+                    }
+
+                    if (!deep_scores.empty()) {
+                        std::sort(deep_scores.begin(), deep_scores.end(), 
+                            [](const auto& a, const auto& b) { return a.second > b.second; });
+
+                        // Stage 3: Softmax probability distribution over the true Top 5
+                        int num_top = std::min<int>(5, static_cast<int>(deep_scores.size()));
+                        std::vector<float> probs(num_top);
+                        float sum_probs = 0.0f;
+                        
+                        float temperature = 0.3f; 
+                        int max_score = deep_scores[0].second; 
+                        
+                        for (int i = 0; i < num_top; ++i) {
+                            float scaled_score = (deep_scores[i].second - max_score) / (100.0f * temperature);
+                            probs[i] = std::exp(scaled_score); // Stable as it stays <= 1.0
+                            sum_probs += probs[i];
+                        }
+                        
+                        float rand_val = RandFloat() * sum_probs;
+                        float cumulative = 0.0f;
+                        std::optional<Move> chosen_move = std::nullopt;
+                        for (int i = 0; i < num_top; ++i) {
+                            cumulative += probs[i];
+                            if (rand_val <= cumulative) {
+                                chosen_move = deep_scores[i].first;
+                                break;
+                            }
+                        }
+                        if (!chosen_move.has_value()) chosen_move = deep_scores[0].first; // safety fallback
+                        
+                        board->MakeMove(*chosen_move);
+                    } else {
+                        board->MakeMove(*best_move);
+                    }
+                } else {
+                    board->MakeMove(*best_move);
+                }
+            } else {
+                break; // No legal moves 
+            }
         } else {
-            break; // No moves left
+            board->MakeMove(*best_move);
         }
         
         num_game_moves++;
       }
 
-      // Backfill exact game result and dump to disk
       GameResult final_result = board->GetGameResult();
+      if (final_result == IN_PROGRESS) final_result = adjudicated_result; // Catch adjudications
+
       for (auto& entry : game_history) {
           if (final_result == WIN_RY) entry.game_result = (entry.player_turn == RED || entry.player_turn == YELLOW) ? 1 : -1;
           else if (final_result == WIN_BG) entry.game_result = (entry.player_turn == BLUE || entry.player_turn == GREEN) ? 1 : -1;
