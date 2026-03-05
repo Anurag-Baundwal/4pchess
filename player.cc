@@ -252,6 +252,8 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
   std::optional<Move> tt_move;
   const HashTableEntry* tte = nullptr;
   bool tt_hit = false;
+  int tt_score = value_none_tt;
+
   if (options_.enable_transposition_table) {
     int64_t key = board.HashKey();
 
@@ -259,22 +261,30 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     if (tte != nullptr) {
       if (tte->key == key) { // valid entry
         tt_hit = true;
+        
+        // Adjust mate scores from TT storage (node-relative) to current ply
+        tt_score = tte->score;
+        if (tt_score != value_none_tt) {
+            if (tt_score >  kMateValue - 1000) tt_score -= ply;
+            if (tt_score < -kMateValue + 1000) tt_score += ply;
+        }
+        
         if (tte->depth >= depth) {
           num_cache_hits_++;
           // at non-PV nodes check for an early TT cutoff
           if (!is_root_node
               && !is_pv_node
               && (tte->bound == EXACT
-                || (tte->bound == LOWER_BOUND && tte->score >= beta)
-                || (tte->bound == UPPER_BOUND && tte->score <= alpha))
+                || (tte->bound == LOWER_BOUND && tt_score >= beta)
+                || (tte->bound == UPPER_BOUND && tt_score <= alpha))
              ) {
 
             if (tte->move.Present()) {
                 return std::make_tuple(
-                    std::min(beta, std::max(alpha, tte->score)), tte->move);
+                    std::min(beta, std::max(alpha, tt_score)), tte->move);
             }
             return std::make_tuple(
-                std::min(beta, std::max(alpha, tte->score)), std::nullopt);
+                std::min(beta, std::max(alpha, tt_score)), std::nullopt);
           }
         }
         if (tte->move.Present()) {
@@ -283,13 +293,13 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
         is_tt_pv = tte->is_pv;
       }
     }
-
   }
   Player player = board.GetTurn();
 
   if (depth <= 0) {
     if (options_.enable_qsearch) {
-      return QSearch(ss, is_pv_node ? PV : NonPV, thread_state, board, 0, alpha, beta,
+      // Pass ply to QSearch so it correctly evaluates mates!
+      return QSearch(ss, is_pv_node ? PV : NonPV, thread_state, board, ply, 0, alpha, beta,
           maximizing_player, deadline, pvinfo);
     }
 
@@ -311,13 +321,13 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
   // This is the evaluation we will use for pruning in this node.
   // It starts as the static evaluation but can be refined by the TT search score.
   int current_eval = raw_static_eval;
-  if (tt_hit && tte->score != value_none_tt) {
+  if (tt_hit && tt_score != value_none_tt) {
       if (tte->bound == EXACT) {
-          current_eval = tte->score;
+          current_eval = tt_score;
       } else if (tte->bound == LOWER_BOUND) {
-          current_eval = std::max(current_eval, tte->score);
+          current_eval = std::max(current_eval, tt_score);
       } else if (tte->bound == UPPER_BOUND) {
-          current_eval = std::min(current_eval, tte->score);
+          current_eval = std::min(current_eval, tt_score);
       }
   }
 
@@ -345,7 +355,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       && !is_tt_pv
       && depth <= 1
       && current_eval - 150 * depth >= beta // Use refined eval
-      && current_eval < kMateValue) {
+      && current_eval < kMateValue - 1000) {
     return std::make_tuple(beta, std::nullopt);
   }
 
@@ -362,7 +372,8 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       && !is_verification_search // <-- RECURSION GUARD
       && current_eval >= beta + 50 // Use refined eval
       && ss->static_eval >= beta - (35 * depth) + 250 // ss->static_eval is the refined one
-      && beta > -kMateValue
+      && beta > -kMateValue + 1000
+      && beta < kMateValue - 1000
       && !partner_checked
       ) {
     num_null_moves_tried_++;
@@ -389,7 +400,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
           
         // The null move was refuted. This indicates a strong threat from our side.
         // This is the correct place to check for a mate threat.
-        if (nmp_score >= kMateValue - 200) { // If the score is near mate, it's a clear threat.
+        if (nmp_score >= kMateValue - 1000) { // If the score is near mate, it's a clear threat.
             extend_for_mate_threat = true;
         }
 
@@ -427,10 +438,6 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
   }
 
   // Internal Iterative Reductions (IIR)
-  // At sufficient depth, for PV or Cut nodes that don't have a move from the
-  // transposition table, we can try reducing the depth by 1 to save time.
-  // This is based on the assumption that if there's no TT move, the node is
-  // less likely to be critical.
   if ((is_pv_node || is_cut_node) // Only for PV or Cut nodes
       && depth >= 7               // Only for reasonably deep searches
       && !tt_move.has_value()     // The key trigger: no TT move was found
@@ -513,7 +520,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
         && tt_move.has_value() && move == *tt_move
         && !ss->excludedMove.Present()
         && depth >= 6 // Only for reasonably deep searches
-        && tte != nullptr && tte->score != value_none_tt && std::abs(tte->score) < kMateValue
+        && tte != nullptr && tte->score != value_none_tt && std::abs(tte->score) < kMateValue - 1000 // Prevent extending mates
         && tte->bound == LOWER_BOUND // The TT move was a fail-high
         && tte->depth >= depth - 3
         )
@@ -591,7 +598,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     }
 
     if (options_.enable_late_move_pruning
-        && alpha > -kMateValue  // don't prune if we're mated
+        && alpha > -kMateValue + 1000 // don't prune if we're mated
         && quiet
         && quiets >= q
         ) {
@@ -641,7 +648,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     // TODO: investigate whether "deep" futility pruning should be allowed.
     if (!is_root_node
         && !is_pv_node
-        && alpha > -kMateValue
+        && alpha > -kMateValue + 1000
         && lmr
         && move.IsCapture()
         && lmr_depth < 10
@@ -662,10 +669,31 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     if (board.CheckWasLastMoveKingCapture() != IN_PROGRESS) {
       board.UndoMove();
 
-      alpha = beta; // fail hard
-      //value = kMateValue;
-      best_move = move;
-      pvinfo.SetBestMove(move);
+      int mate_score = kMateValue - ply; // prefer faster mates
+      searched_moves.push_back(move);
+      has_legal_moves = true; 
+      
+      if (mate_score >= beta) {
+        alpha = beta; // fail hard
+        best_move = move;
+        pvinfo.SetChild(nullptr);
+        pvinfo.SetBestMove(move);
+        fail_low = false;
+        fail_high = true;
+        break;
+      }
+      
+      if (mate_score > alpha) {
+        alpha = mate_score;
+        best_move = move;
+        pvinfo.SetChild(nullptr);
+        pvinfo.SetBestMove(move);
+        fail_low = false;
+      } else if (!best_move.has_value()) {
+        best_move = move;
+        pvinfo.SetChild(nullptr);
+        pvinfo.SetBestMove(move);
+      }
       break;
     }
 
@@ -799,14 +827,18 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
       score = std::min(beta, std::max(alpha, 0));
     } else {
       // checkmate
-      score = std::min(beta, std::max(alpha, -kMateValue));
+      score = std::min(beta, std::max(alpha, -kMateValue + ply));
     }
   }
 
   if (options_.enable_transposition_table) {
     ScoreBound bound = beta <= alpha ? LOWER_BOUND : is_pv_node &&
       best_move.has_value() ? EXACT : UPPER_BOUND;
-    transposition_table_->Save(board.HashKey(), depth, best_move, score, raw_static_eval, bound, is_pv_node);
+      
+    int tt_save_score = score;
+    if (tt_save_score >  kMateValue - 1000) tt_save_score += ply;
+    if (tt_save_score < -kMateValue + 1000) tt_save_score -= ply;
+    transposition_table_->Save(board.HashKey(), depth, best_move, tt_save_score, raw_static_eval, bound, is_pv_node);
   }
 
   if (best_move.has_value()
@@ -831,6 +863,7 @@ AlphaBetaPlayer::QSearch(
     NodeType node_type,
     ThreadState& thread_state,
     Board& board,
+    int ply,
     int depth,
     int alpha,
     int beta,
@@ -851,6 +884,7 @@ AlphaBetaPlayer::QSearch(
 
   std::optional<Move> tt_move;
   bool tt_hit = false;
+  int tt_score = value_none_tt;
 
   const HashTableEntry* tte = nullptr;
   if (options_.enable_transposition_table) {
@@ -860,21 +894,28 @@ AlphaBetaPlayer::QSearch(
     if (tte != nullptr) {
       if (tte->key == key) { // valid entry
         tt_hit = true;
+        
+        tt_score = tte->score;
+        if (tt_score != value_none_tt) {
+            if (tt_score >  kMateValue - 1000) tt_score -= ply;
+            if (tt_score < -kMateValue + 1000) tt_score += ply;
+        }
+
         if (tte->depth >= tt_depth) {
           num_cache_hits_++;
           // at non-PV nodes check for an early TT cutoff
           if (!is_pv_node
               && (tte->bound == EXACT
-                || (tte->bound == LOWER_BOUND && tte->score >= beta)
-                || (tte->bound == UPPER_BOUND && tte->score <= alpha))
+                || (tte->bound == LOWER_BOUND && tt_score >= beta)
+                || (tte->bound == UPPER_BOUND && tt_score <= alpha))
              ) {
             
             if (tte->move.Present()) {
                 return std::make_tuple(
-                    std::min(beta, std::max(alpha, tte->score)), tte->move);
+                    std::min(beta, std::max(alpha, tt_score)), tte->move);
             }
             return std::make_tuple(
-                std::min(beta, std::max(alpha, tte->score)), std::nullopt);
+                std::min(beta, std::max(alpha, tt_score)), std::nullopt);
 
           }
         }
@@ -893,11 +934,11 @@ AlphaBetaPlayer::QSearch(
   //bool partner_checked = board.IsKingInCheck(GetPartner(player));
 
   int best_value;
-  int futility_base = -kMateValue;
+  int futility_base = -kMateValue + ply;
   int raw_static_eval = value_none_tt;
 
   if (in_check) {
-    best_value = -kMateValue;
+    best_value = -kMateValue + ply;
   } else {
     // stand pat
     if (tt_hit && tte->eval != value_none_tt) {
@@ -910,21 +951,24 @@ AlphaBetaPlayer::QSearch(
     best_value = raw_static_eval;
 
     // Refine with TT search score if it provides a better bound.
-    if (tt_hit && tte->score != value_none_tt) {
+    if (tt_hit && tt_score != value_none_tt) {
         if (tte->bound == EXACT) {
-            best_value = tte->score;
+            best_value = tt_score;
         } else if (tte->bound == LOWER_BOUND) {
-            best_value = std::max(best_value, tte->score);
+            best_value = std::max(best_value, tt_score);
         } else if (tte->bound == UPPER_BOUND) {
-            best_value = std::min(best_value, tte->score);
+            best_value = std::min(best_value, tt_score);
         }
     }
 
     if (best_value >= beta) {
       if (options_.enable_transposition_table) {
         // We have a cutoff, so best_value is a lower bound score.
+        int tt_save_score = best_value;
+        if (tt_save_score >  kMateValue - 1000) tt_save_score += ply;
+        if (tt_save_score < -kMateValue + 1000) tt_save_score -= ply;
         transposition_table_->Save(
-            board.HashKey(), 0, std::nullopt, best_value, raw_static_eval, LOWER_BOUND, is_pv_node);
+            board.HashKey(), 0, std::nullopt, tt_save_score, raw_static_eval, LOWER_BOUND, is_pv_node);
       }
       return std::make_tuple(best_value, std::nullopt);
     }
@@ -1011,9 +1055,19 @@ AlphaBetaPlayer::QSearch(
     if (board.CheckWasLastMoveKingCapture() != IN_PROGRESS) {
       board.UndoMove();
 
-      best_value = beta; // fail hard
-      best_move = move;
-      pv_info.SetBestMove(move);
+      int mate_score = kMateValue - ply;
+      searched_moves.push_back(move);
+      if (mate_score > best_value) {
+        best_value = mate_score;
+        best_move = move;
+        pv_info.SetBestMove(move);
+        fail_low = false;
+        if (mate_score >= beta) {
+          fail_high = true;
+        } else if (mate_score > alpha) {
+          alpha = mate_score;
+        }
+      }
       break;
     }
 
@@ -1034,7 +1088,7 @@ AlphaBetaPlayer::QSearch(
     }
 
     // pruning
-    if (best_value > -kMateValue) {
+    if (best_value > -kMateValue + 1000) {
       if ((!delivers_check && move_count > 2)
           || quiet_check_evasions > 1) {
         board.UndoMove();
@@ -1056,7 +1110,7 @@ AlphaBetaPlayer::QSearch(
     }
 
     value_and_move_or = QSearch(
-        ss+1, node_type, thread_state, board, depth - 1, -beta, -alpha, !maximizing_player,
+        ss+1, node_type, thread_state, board, ply + 1, depth - 1, -beta, -alpha, !maximizing_player,
         deadline, *child_pvinfo);
 
     board.UndoMove();
@@ -1104,17 +1158,14 @@ AlphaBetaPlayer::QSearch(
                 searched_moves);
   }
 
-  int score = best_value;
-  if (in_check && best_value == -kMateValue) {
-    // checkmate
-    score = std::min(beta, std::max(alpha, -kMateValue));
-  } else {
-    score = std::min(beta, std::max(alpha, best_value));
-  }
+  int score = std::min(beta, std::max(alpha, best_value));
 
   if (options_.enable_transposition_table) {
     ScoreBound bound = fail_high ? LOWER_BOUND : (fail_low && is_pv_node ? EXACT : UPPER_BOUND);
-    transposition_table_->Save(board.HashKey(), tt_depth, best_move, score,
+    int tt_save_score = score;
+    if (tt_save_score >  kMateValue - 1000) tt_save_score += ply;
+    if (tt_save_score < -kMateValue + 1000) tt_save_score -= ply;
+    transposition_table_->Save(board.HashKey(), tt_depth, best_move, tt_save_score,
         raw_static_eval, bound, is_pv_node);
   }
 
@@ -1825,44 +1876,44 @@ AlphaBetaPlayer::MakeMove(
       continue;
     }
 
-    bool is_current_mate = std::abs(current_score) == kMateValue;
-    bool is_best_mate = std::abs(best_score) == kMateValue;
+    bool current_is_winning_mate = current_score > kMateValue - 1000;
+    bool current_is_losing_mate  = current_score < -kMateValue + 1000;
+    bool best_is_winning_mate    = best_score > kMateValue - 1000;
+    bool best_is_losing_mate     = best_score < -kMateValue + 1000;
 
-    // Hierarchy:
-    // 1. Mates are always preferred over non-mates.
-    // 2. Faster mates (higher score) are better.
-    // 3. For non-mates, the move with the highest total vote is best.
-    // 4. If votes are tied, the thread with the higher individual weighted score is better.
-
-    if (is_best_mate) {
-      if (is_current_mate && current_score > best_score) {
-        // A faster mate was found.
+    if (current_is_winning_mate) {
+      // 1. Current is a winning mate: Take it if best isn't, or if it's a faster mate
+      if (!best_is_winning_mate || current_score > best_score) {
         best_thread_idx = i;
         best_score = current_score;
         best_vote_score = current_vote_score;
       }
-      // Otherwise, the current best (a mate) is better than the new one.
-    } else if (is_current_mate) {
-      // The new result is a mate, the old one wasn't. This is always better.
-      best_thread_idx = i;
-      best_score = current_score;
-      best_vote_score = current_vote_score;
-    } else {
-      // Neither result is a mate. Compare votes.
-      if (current_vote_score > best_vote_score) {
-        best_thread_idx = i;
-        best_score = current_score;
-        best_vote_score = current_vote_score;
-      } else if (current_vote_score == best_vote_score) {
-        // Tie-break with individual thread's weighted score.
-        int64_t current_thread_value = static_cast<int64_t>(current_score - worst_score) * current_depth;
-        auto [best_s, _, best_d] = *results[best_thread_idx];
-        int64_t best_thread_value = static_cast<int64_t>(best_s - worst_score) * best_d;
-
-        if (current_thread_value > best_thread_value) {
+    } else if (!best_is_winning_mate) {
+      // 2. Neither are winning mates
+      if (best_is_losing_mate) {
+        // 3. Best is a losing mate: ANY non-losing mate is better, or a slower losing mate
+        if (!current_is_losing_mate || current_score > best_score) {
           best_thread_idx = i;
           best_score = current_score;
           best_vote_score = current_vote_score;
+        }
+      } else if (!current_is_losing_mate) {
+        // 4. Neither are mates of any kind. Compare votes!
+        if (current_vote_score > best_vote_score) {
+          best_thread_idx = i;
+          best_score = current_score;
+          best_vote_score = current_vote_score;
+        } else if (current_vote_score == best_vote_score) {
+          // Tie-break with individual thread's weighted score
+          int64_t current_thread_value = static_cast<int64_t>(current_score - worst_score) * current_depth;
+          auto [best_s, _, best_d] = *results[best_thread_idx];
+          int64_t best_thread_value = static_cast<int64_t>(best_s - worst_score) * best_d;
+
+          if (current_thread_value > best_thread_value) {
+            best_thread_idx = i;
+            best_score = current_score;
+            best_vote_score = current_vote_score;
+          }
         }
       }
     }
@@ -1908,7 +1959,9 @@ AlphaBetaPlayer::MakeMoveSingleThread(
       int prev = thread_state.asp_state_.average_root_eval_;
       int delta = 50;
       if (thread_state.asp_state_.asp_nobs_ > 0) {
-          delta = 50 + std::sqrt((thread_state.asp_state_.asp_sum_sq_ - thread_state.asp_state_.asp_sum_ * thread_state.asp_state_.asp_sum_ / thread_state.asp_state_.asp_nobs_) / thread_state.asp_state_.asp_nobs_);
+          int64_t sum = thread_state.asp_state_.asp_sum_;
+          int64_t variance = (thread_state.asp_state_.asp_sum_sq_ - sum * sum / thread_state.asp_state_.asp_nobs_) / thread_state.asp_state_.asp_nobs_;
+          delta = 50 + std::sqrt(std::max<int64_t>(0, variance));
       }
       
       alpha = std::max(prev - delta, -kMateValue);
@@ -1930,9 +1983,9 @@ AlphaBetaPlayer::MakeMoveSingleThread(
           }
           thread_state.asp_state_.asp_nobs_++;
           thread_state.asp_state_.asp_sum_ += evaluation;
-          thread_state.asp_state_.asp_sum_sq_ += evaluation * evaluation;
+          thread_state.asp_state_.asp_sum_sq_ += static_cast<int64_t>(evaluation) * evaluation;
 
-          if (std::abs(evaluation) == kMateValue) {
+          if (evaluation > kMateValue - 1000) {
               break;
           }
           
@@ -1963,8 +2016,8 @@ AlphaBetaPlayer::MakeMoveSingleThread(
       searched_depth = next_depth;
       next_depth++;
       int evaluation = std::get<0>(*move_and_value);
-      if (std::abs(evaluation) == kMateValue) {
-        break;  // Proven win/loss
+      if (evaluation > kMateValue - 1000) {
+        break;  // Proven win
       }
     }
 
@@ -1983,8 +2036,8 @@ AlphaBetaPlayer::MakeMoveSingleThread(
       searched_depth = next_depth;
       next_depth++;
       int evaluation = std::get<0>(*move_and_value);
-      if (std::abs(evaluation) == kMateValue) {
-        break;  // Proven win/loss
+      if (evaluation > kMateValue - 1000) {
+        break;  // Proven win
       }
     }
   }

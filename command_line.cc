@@ -193,7 +193,7 @@ void CommandLine::StartEvaluation() {
         std::cout << std::endl;
 
         best_move = std::get<1>(*res);
-        if (std::abs(score_centipawn) == kMateValue) {
+        if (score_centipawn > kMateValue - 1000) {
           break;
         }
 

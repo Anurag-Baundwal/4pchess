@@ -110,8 +110,8 @@ constexpr size_t kBufferNumPartitions = 200; // number of recursive calls
 struct AspirationState {
   int average_root_eval_ = 0;
   int asp_nobs_ = 0;
-  int asp_sum_sq_ = 0;
-  int asp_sum_ = 0;
+  int64_t asp_sum_sq_ = 0;
+  int64_t asp_sum_ = 0;
 };
 
 // Manages state of worker threads during search
@@ -193,6 +193,7 @@ class AlphaBetaPlayer {
       NodeType node_type,
       ThreadState& thread_state,
       Board& board,
+      int ply,
       int depth, // called initially with depth = 0, further decreases
       int alpha,
       int beta,
