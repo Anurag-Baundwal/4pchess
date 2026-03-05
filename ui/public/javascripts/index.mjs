@@ -13,7 +13,7 @@ const player_id_to_color = {0: 'red', 1: 'blue', 2: 'yellow', 3: 'green'};
 var request_interval = null;
 var max_search_depth = null;
 var secs_per_move = null;
-var MATE_VALUE = 1000000;
+var MATE_VALUE = 100000000;
 var currentSetupType = board_util.MODERN; // Track the current setup
 
 if (window.localStorage != null) {
@@ -373,7 +373,7 @@ function displayBoard() {
   var board_key = getBoardKey();
   var eval_results = board_key_to_eval[board_key];
   if (eval_results != null && 'evaluation' in eval_results) {
-    var evaluation = Number(parseFloat(eval_results['evaluation']) / 100).toFixed(1);
+    var evaluation = Number(parseFloat(eval_results['evaluation']) / 100).toFixed(2);
     var search_depth = eval_results['search_depth'];
     var piece_eval = board.pieceEval();
     var static_eval = Number(parseFloat(eval_results['zero_move_evaluation']) / 100).toFixed(1);
@@ -571,7 +571,7 @@ function requestBoardEvaluation() {
     } else if (eval_results != null && 'req_depth' in eval_results) {
       search_depth = eval_results['req_depth'] + 1;
       if ('evaluation' in eval_results
-          && Math.abs(eval_results['evaluation']) == MATE_VALUE) {
+          && Math.abs(eval_results['evaluation']) > MATE_VALUE - 1000) {
         return;
       }
     }
