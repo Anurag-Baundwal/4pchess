@@ -680,7 +680,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
         pvinfo.SetBestMove(move);
         fail_low = false;
         fail_high = true;
-        break;
+        break; // cutoff
       }
       
       if (mate_score > alpha) {
@@ -689,10 +689,6 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
         pvinfo.SetChild(nullptr);
         pvinfo.SetBestMove(move);
         fail_low = false;
-      } else if (!best_move.has_value()) {
-        best_move = move;
-        pvinfo.SetChild(nullptr);
-        pvinfo.SetBestMove(move);
       }
       break;
     }
@@ -832,8 +828,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
   }
 
   if (options_.enable_transposition_table) {
-    ScoreBound bound = beta <= alpha ? LOWER_BOUND : is_pv_node &&
-      best_move.has_value() ? EXACT : UPPER_BOUND;
+    ScoreBound bound = score >= beta ? LOWER_BOUND : (!fail_low && is_pv_node ? EXACT : UPPER_BOUND);
       
     int tt_save_score = score;
     if (tt_save_score >  kMateValue - 1000) tt_save_score += ply;
@@ -1059,13 +1054,18 @@ AlphaBetaPlayer::QSearch(
       searched_moves.push_back(move);
       if (mate_score > best_value) {
         best_value = mate_score;
-        best_move = move;
-        pv_info.SetBestMove(move);
-        fail_low = false;
-        if (mate_score >= beta) {
-          fail_high = true;
-        } else if (mate_score > alpha) {
-          alpha = mate_score;
+        
+        // Only update fail_low and best_move if it actually beats alpha
+        if (mate_score > alpha) {
+          best_move = move;
+          pv_info.SetBestMove(move);
+          fail_low = false;
+          
+          if (mate_score >= beta) {
+            fail_high = true;
+          } else {
+            alpha = mate_score;
+          }
         }
       }
       break;
@@ -1161,7 +1161,7 @@ AlphaBetaPlayer::QSearch(
   int score = std::min(beta, std::max(alpha, best_value));
 
   if (options_.enable_transposition_table) {
-    ScoreBound bound = fail_high ? LOWER_BOUND : (fail_low && is_pv_node ? EXACT : UPPER_BOUND);
+    ScoreBound bound = score >= beta ? LOWER_BOUND : UPPER_BOUND;
     int tt_save_score = score;
     if (tt_save_score >  kMateValue - 1000) tt_save_score += ply;
     if (tt_save_score < -kMateValue + 1000) tt_save_score -= ply;
