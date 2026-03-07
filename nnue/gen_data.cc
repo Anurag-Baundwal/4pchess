@@ -191,24 +191,26 @@ class GenData {
         auto res_tuple = p_selected->MakeMove(*board, std::nullopt, depth_);
         if (!res_tuple.has_value()) break;
         
-        // MakeMove returns score strictly from RED_YELLOW's perspective
-        int score_ry = std::get<0>(res_tuple.value()); 
-        int relative_score = (current_turn.GetTeam() == RED_YELLOW) ? score_ry : -score_ry;
+        int score = std::get<0>(res_tuple.value()); // Score / Eval from the perspective of the side to move (not RY relative)
 
         std::optional<Move> best_move = std::get<1>(res_tuple.value());
         if (!best_move.has_value()) break; // No legal moves (Mate / Stalemate)
 
-        // Adjudication (using the RY score threshold)
-        if (num_game_moves > 20 && std::abs(score_ry) > kAdjudicationScoreThreshold) {
-            adjudicated_result = (score_ry > 0) ? WIN_RY : WIN_BG;
+        // Adjudication
+        if (num_game_moves > 20 && std::abs(score) > kAdjudicationScoreThreshold) {
+            if (score > 0) {
+                adjudicated_result = (current_turn.GetTeam() == RED_YELLOW) ? WIN_RY : WIN_BG;
+            } else {
+                adjudicated_result = (current_turn.GetTeam() == RED_YELLOW) ? WIN_BG : WIN_RY;
+            }
             break;
         }
 
-        // Save normalized relative_score to training data
-        if (IsPositionGoodForTraining(*board, relative_score, best_move)) {
+        // Save normalized score to training data
+        if (IsPositionGoodForTraining(*board, score, best_move)) {
             TrainingDataEntry entry;
             SerializeBoardToArray(*board, current_turn, entry.board_state);
-            entry.score = static_cast<int16_t>(std::clamp(relative_score, -32000, 32000));
+            entry.score = static_cast<int16_t>(std::clamp(score, -32000, 32000));
             entry.player_turn = static_cast<uint8_t>(current_turn.GetColor());
             entry.game_result = -128; // To be backfilled
             game_history.push_back(entry);
@@ -243,8 +245,9 @@ class GenData {
                     } else {
                         auto move_res = p_selected->MakeMove(*board, std::nullopt, eval_depth); 
                         if (move_res.has_value()) {
-                            int eval_ry = std::get<0>(*move_res);
-                            score = (current_turn.GetTeam() == RED_YELLOW) ? eval_ry : -eval_ry;
+                            // Since we made a move, move_res is from the OPPONENT's perspective.
+                            // We negate it to get the score from current_turn's perspective.
+                            score = -std::get<0>(*move_res); 
                         }
                     }
                     board->UndoMove();
