@@ -53,7 +53,6 @@ else:
   _API_KEY_FILENAME = 'api_key_test.txt'
   _SERVER_URL = api.TEST_SERVER_URL
 
-_MAX_MOVE_MS = 30000
 _MIN_REMAINING_MOVE_MS = 0
 _MIN_MOVE_TIME_MS = 100
 
@@ -321,12 +320,18 @@ class Server:
                   move_time_ms = _MIN_MOVE_TIME_MS
               print("[TIME] (Clock missing). ", end='')
 
-          # Apply safety margin and bounds
+          # Apply safety margins
           move_time_ms *= _SAFETY_MARGIN
           if args.play_fast:
               move_time_ms *= 0.30
+
+          # Move quickly on the first turn to avoid aborting the game.
+          if (active_color == 'r' and self._pgn4_info.played_n_moves == 0) or \
+             (active_color == 'b' and self._pgn4_info.played_n_moves == 1):
+              move_time_ms *= 0.70
           
-          final_move_time_ms = int(min(max(move_time_ms, _MIN_MOVE_TIME_MS), _MAX_MOVE_MS))
+          # Enforce minimum move time floor limit
+          final_move_time_ms = int(max(move_time_ms, _MIN_MOVE_TIME_MS))
           print(f"Thinking for: {final_move_time_ms/1000:.2f}s")
           # --- END OF TIME MANAGEMENT LOGIC ---
 
