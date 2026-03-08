@@ -463,6 +463,14 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
 
   std::optional<Move> pv_move = pvinfo.GetBestMove();
   Move* moves = thread_state.GetNextMoveBufferPartition();
+
+  Move counter_move;
+  if ((ss-1)->current_move.Present()) {
+      auto prev_from = (ss-1)->current_move.From();
+      auto prev_to = (ss-1)->current_move.To();
+      counter_move = counter_moves[prev_from.GetRow()*14*14*14 + prev_from.GetCol()*14*14 + prev_to.GetRow()*14 + prev_to.GetCol()];
+  }
+
   MovePicker move_picker(
     board,
     pv_move.has_value() ? pv_move : tt_move,
@@ -474,7 +482,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     options_.enable_move_order_checks,
     moves,
     kBufferPartitionSize
-   , counter_moves
+   , counter_move
    , /*include_quiets=*/true
    , cont_hist
     );
@@ -993,6 +1001,14 @@ AlphaBetaPlayer::QSearch(
 
   std::optional<Move> pv_move = pv_info.GetBestMove();
   Move* moves = thread_state.GetNextMoveBufferPartition();
+
+  Move counter_move;
+  if ((ss-1)->current_move.Present()) {
+      auto prev_from = (ss-1)->current_move.From();
+      auto prev_to = (ss-1)->current_move.To();
+      counter_move = counter_moves[prev_from.GetRow()*14*14*14 + prev_from.GetCol()*14*14 + prev_to.GetRow()*14 + prev_to.GetCol()];
+  }
+
   MovePicker move_picker(
     board,
     pv_move,
@@ -1004,7 +1020,7 @@ AlphaBetaPlayer::QSearch(
     options_.enable_move_order_checks,
     moves,
     kBufferPartitionSize
-   , counter_moves
+   , counter_move
    , /*include_quiets=*/in_check
    , cont_hist
     );
@@ -1198,9 +1214,11 @@ void AlphaBetaPlayer::UpdateStats(
       history_heuristic[piece.GetPieceType()][from.GetRow()][from.GetCol()]
         [to.GetRow()][to.GetCol()] += bonus;
     }
-    if (options_.enable_counter_move_heuristic) {
-      counter_moves[from.GetRow()*14*14*14 + from.GetCol()*14*14
-        + to.GetRow()*14 + to.GetCol()] = move;
+    if (options_.enable_counter_move_heuristic && (ss-1)->current_move.Present()) {
+      auto prev_from = (ss-1)->current_move.From();
+      auto prev_to = (ss-1)->current_move.To();
+      counter_moves[prev_from.GetRow()*14*14*14 + prev_from.GetCol()*14*14
+        + prev_to.GetRow()*14 + prev_to.GetCol()] = move;
     }
     UpdateQuietStats(ss, move);
     UpdateContinuationHistories(ss, move, piece.GetPieceType(), bonus);

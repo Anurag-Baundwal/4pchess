@@ -98,7 +98,7 @@ class MovePicker {
     bool enable_move_order_checks,
     Move* buffer,
     size_t buffer_size
-    ,Move* counter_moves
+    ,Move counter_move
     ,bool include_quiets = true
     ,const PieceToHistory** piece_to_history = nullptr
     );
