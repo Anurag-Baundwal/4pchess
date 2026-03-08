@@ -60,6 +60,9 @@ _MIN_MOVE_TIME_MS = 100
 _TIME_PRESSURE_THRESHOLD_PERCENT = 0.50
 _TIME_PRESSURE_FACTOR_DECREASE = 0.75
 _SAFETY_MARGIN = 0.95
+# Caps think time as a fraction of the remaining clock to prevent flagging
+# in short time controls (e.g. 15s+15s). Not applied for delay controls.
+_MAX_CLOCK_FRACTION = 0.50
 # ------------------------------------
 
 def _read_api_token(filepath: str) -> str:
@@ -320,7 +323,10 @@ class Server:
                   move_time_ms = _MIN_MOVE_TIME_MS
               print("[TIME] (Clock missing). ", end='')
 
-          # Apply safety margins
+          # Apply safety margins. Also cap by clock fraction for increment/sudden-death
+          # to prevent flagging when the clock is close to or below the increment.
+          if clock_ms is not None and delay_ms == 0:
+              move_time_ms = min(move_time_ms, clock_ms * _MAX_CLOCK_FRACTION)
           move_time_ms *= _SAFETY_MARGIN
           if args.play_fast:
               move_time_ms *= 0.30
