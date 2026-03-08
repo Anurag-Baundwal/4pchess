@@ -416,7 +416,7 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
         auto verification_res = Search(
             ss, NonPV, thread_state, board, ply, nmp_depth, // Note: ply, not ply+1
             beta - 1, beta, maximizing_player, expanded, deadline, verification_pvinfo,
-            null_moves=0, is_cut_node, is_verification_search=true);
+            /*null_moves=*/0, is_cut_node, /*is_verification_search=*/true);
 
         if (verification_res.has_value()) {
           int verification_score = std::get<0>(*verification_res);
