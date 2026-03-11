@@ -1971,86 +1971,82 @@ int Move::ApproxSEE(Board& board, const int* piece_evaluations) {
   return captured_val - attacker_val;
 }
 
-namespace {
-
-int StaticExchangeEvaluationFromLists(
-    int square_piece_eval,
-    const std::vector<int>& sorted_piece_values,
-    size_t index,
-    const std::vector<int>& other_team_sorted_piece_values,
-    size_t other_index) {
-  if (index >= sorted_piece_values.size()) {
-    return 0;
-  }
-  int value_capture = square_piece_eval - StaticExchangeEvaluationFromLists(
-      sorted_piece_values[index],
-      other_team_sorted_piece_values,
-      other_index,
-      sorted_piece_values,
-      index + 1);
-  return std::max(0, value_capture);
-}
-
-int StaticExchangeEvaluationFromLocation(
-    const int piece_evaluations[6],
-    const Board& board, const BoardLocation& loc) {
-  constexpr size_t kLimit = 5;
-  PlacedPiece attackers_this_side[kLimit];
-  PlacedPiece attackers_that_side[kLimit];
-
-  size_t num_attackers_this_side = board.GetAttackers2(
-      attackers_this_side, kLimit, board.GetTurn().GetTeam(), loc);
-  size_t num_attackers_that_side = board.GetAttackers2(
-      attackers_that_side, kLimit, OtherTeam(board.GetTurn().GetTeam()), loc);
-
-  std::vector<int> piece_values_this_side;
-  piece_values_this_side.reserve(num_attackers_this_side);
-  std::vector<int> piece_values_that_side;
-  piece_values_that_side.reserve(num_attackers_that_side);
-
-  for (size_t i = 0; i < num_attackers_this_side; ++i) {
-    const auto& placed_piece = attackers_this_side[i];
-    int piece_eval = piece_evaluations[placed_piece.GetPiece().GetPieceType()];
-    piece_values_this_side.push_back(piece_eval);
-  }
-
-  for (size_t i = 0; i < num_attackers_that_side; ++i) {
-    const auto& placed_piece = attackers_that_side[i];
-    int piece_eval = piece_evaluations[placed_piece.GetPiece().GetPieceType()];
-    piece_values_that_side.push_back(piece_eval);
-  }
-
-  std::sort(piece_values_this_side.begin(), piece_values_this_side.end());
-  std::sort(piece_values_that_side.begin(), piece_values_that_side.end());
-
-  const auto attacking = board.GetPiece(loc);
-  assert(attacking.Present());
-  int attacked_piece_eval = piece_evaluations[attacking.GetPieceType()];
-
-  return StaticExchangeEvaluationFromLists(
-      attacked_piece_eval,
-      piece_values_this_side,
-      0,
-      piece_values_that_side,
-      0);
-}
-
-} // namespace
-
 int StaticExchangeEvaluationCapture(
     const int piece_evaluations[6],
     Board& board,
     const Move& move) {
 
-  const auto captured = move.GetCapturePiece();
-  assert(captured.Present());
+  BoardLocation target = move.To();
+  int initial_capture_val = piece_evaluations[move.GetCapturePiece().GetPieceType()];
 
-  int value = piece_evaluations[captured.GetPieceType()];
-
+  // Make the move to set up the board for the ensuing exchange
   board.MakeMove(move);
-  value -= StaticExchangeEvaluationFromLocation(piece_evaluations, board, move.To());
+
+  PlayerColor current_turn = board.GetTurn().GetColor();
+
+  // Gather all attackers on the target square
+  constexpr size_t kLimit = 16;
+  PlacedPiece attackers_buffer[kLimit];
+  // NO_TEAM gets attackers from all 4 players
+  size_t num_attackers = board.GetAttackers2(attackers_buffer, kLimit, NO_TEAM, target);
+
+  // Separate attackers by specific player, not by team!
+  std::vector<int> attackers_by_player[4];
+  for (size_t i = 0; i < num_attackers; ++i) {
+    PlayerColor pc = attackers_buffer[i].GetPiece().GetColor();
+    attackers_by_player[pc].push_back(piece_evaluations[attackers_buffer[i].GetPiece().GetPieceType()]);
+  }
+
+  // Sort each player's attackers descending so we can pop_back() the cheapest piece
+  for (int i = 0; i < 4; ++i) {
+    std::sort(attackers_by_player[i].begin(), attackers_by_player[i].end(), std::greater<int>());
+  }
+
+  // Track the sequence of material gains
+  std::vector<int> gains;
+  gains.push_back(initial_capture_val);
+
+  const Piece& piece_on_square = board.GetPiece(target);
+  int current_piece_val = piece_evaluations[piece_on_square.GetPieceType()];
+  Team current_owner_team = piece_on_square.GetTeam();
+
+  PlayerColor p = current_turn;
+  int passes = 0;
+
+  // Simulate the exchange sequence strictly enforcing 4PC turn order
+  while (passes < 4) {
+    // If the player's team already owns the square, or they have no pieces left, they pass.
+    if (GetTeam(p) == current_owner_team || attackers_by_player[p].empty()) {
+      passes++;
+      p = static_cast<PlayerColor>((p + 1) % 4);
+      continue;
+    }
+
+    // Player p captures!
+    passes = 0; // Reset consecutive passes
+    int attacker_val = attackers_by_player[p].back();
+    attackers_by_player[p].pop_back();
+
+    gains.push_back(current_piece_val);
+    
+    // The attacking piece is now the one sitting on the square
+    current_piece_val = attacker_val;
+    current_owner_team = GetTeam(p);
+
+    p = static_cast<PlayerColor>((p + 1) % 4);
+  }
+
   board.UndoMove();
-  return value;
+
+  // Minimax evaluation backwards through the capture sequence.
+  // Because teams never capture their own pieces, the captures strictly 
+  // alternate between the two teams, meaning standard 1v1 SEE math applies perfectly!
+  int n = gains.size();
+  while (--n > 0) {
+    gains[n - 1] -= std::max(0, gains[n]);
+  }
+
+  return gains[0];
 }
 
 
