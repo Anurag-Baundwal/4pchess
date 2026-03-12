@@ -53,7 +53,7 @@ MovePicker::MovePicker(
     } else if (move.IsCapture()) {
       int captured_val = piece_evaluations_[capture.GetPieceType()];
       int attacker_val = piece_evaluations_[piece.GetPieceType()];
-      int incr_score = captured_val - attacker_val/100;
+      int incr_score = 100 * captured_val - attacker_val;
       score += incr_score;
       int history_score = capture_heuristic[piece.GetPieceType()][piece.GetColor()]
         [capture.GetPieceType()][capture.GetColor()]
