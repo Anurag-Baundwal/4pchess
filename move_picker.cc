@@ -28,6 +28,7 @@ MovePicker::MovePicker(
     ,const PieceToHistory** piece_to_history
     ) {
   enable_move_order_checks_ = enable_move_order_checks;
+  piece_evaluations_ = piece_evaluations;
   stages_.resize(5);
   moves_ = buffer;
   num_moves_ = board.GetPseudoLegalMoves2(buffer, buffer_size);
@@ -50,8 +51,8 @@ MovePicker::MovePicker(
                && include_quiets) {
       stages_[KILLER].emplace_back(static_cast<short>(i), static_cast<float>(score + (move == killers[0] ? 1 : 0)));
     } else if (move.IsCapture()) {
-      int captured_val = piece_evaluations[capture.GetPieceType()];
-      int attacker_val = piece_evaluations[piece.GetPieceType()];
+      int captured_val = piece_evaluations_[capture.GetPieceType()];
+      int attacker_val = piece_evaluations_[piece.GetPieceType()];
       int incr_score = captured_val - attacker_val/100;
       score += incr_score;
       int history_score = capture_heuristic[piece.GetPieceType()][piece.GetColor()]
@@ -94,7 +95,11 @@ Move* MovePicker::GetNextMove() {
       if (enable_move_order_checks_) {
         for (auto& item : stage_vec) {
           if (moves_[item.index].DeliversCheck(*board_)) {
-            item.score += (stage_ == QUIET ? 100'000.0f : 1000.0f);
+            // Only give the bonus if the move isn't a bad trade
+            int approx_see = moves_[item.index].ApproxSEE(*board_, piece_evaluations_);
+            if (approx_see >= -75) {
+              item.score += (stage_ == QUIET ? 100'000.0f : 1000.0f);
+            }
           }
         }
       }

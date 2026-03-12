@@ -122,6 +122,7 @@ class MovePicker {
   std::vector<std::vector<Item>> stages_;
   bool init_stages_[5] = {false, false, false, false, false};
   bool enable_move_order_checks_;
+  const int* piece_evaluations_ = nullptr;
 };
 
 }  // namespace chess
