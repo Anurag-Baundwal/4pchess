@@ -55,7 +55,6 @@ struct PlayerOptions {
   bool enable_move_order_checks = true;
   bool enable_history_heuristic = true;
   bool enable_killers = true;
-  bool enable_counter_move_heuristic = true;
 
   // for evaluation
   bool enable_piece_activation = true;
@@ -296,9 +295,6 @@ class AlphaBetaPlayer {
   int history_heuristic[6][14][14][14][14];
   // (piece_type, piece_color, capture_piece_type, capture_piece_color, to_row, to_col)
   int capture_heuristic[6][4][6][4][14][14];
-  // https://www.chessprogramming.org/Countermove_Heuristic
-  // (from_row, from_col, to_row, to_col)
-  Move* counter_moves = nullptr;
   // indexed by (in_check, is_capture)
   ContinuationHistory** continuation_history = nullptr;
 

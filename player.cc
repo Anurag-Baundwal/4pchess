@@ -48,7 +48,6 @@ AlphaBetaPlayer::AlphaBetaPlayer(std::optional<PlayerOptions> options) {
   }
 
   heuristic_mutexes_ = std::make_unique<std::mutex[]>(kHeuristicMutexes);
-  counter_moves = new Move[14*14*14*14];
   continuation_history = new ContinuationHistory*[2];
   for (int i = 0; i < 2; i++) {
     continuation_history[i] = new ContinuationHistory[2];
@@ -166,7 +165,6 @@ AlphaBetaPlayer::AlphaBetaPlayer(std::optional<PlayerOptions> options) {
 }
 
 AlphaBetaPlayer::~AlphaBetaPlayer() {
-    delete[] counter_moves;
     for (int i = 0; i < 2; i++) {
         delete[] continuation_history[i];
     }
@@ -464,13 +462,6 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
   std::optional<Move> pv_move = pvinfo.GetBestMove();
   Move* moves = thread_state.GetNextMoveBufferPartition();
 
-  Move counter_move;
-  if ((ss-1)->current_move.Present()) {
-      auto prev_from = (ss-1)->current_move.From();
-      auto prev_to = (ss-1)->current_move.To();
-      counter_move = counter_moves[prev_from.GetRow()*14*14*14 + prev_from.GetCol()*14*14 + prev_to.GetRow()*14 + prev_to.GetCol()];
-  }
-
   MovePicker move_picker(
     board,
     pv_move.has_value() ? pv_move : tt_move,
@@ -482,7 +473,6 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     options_.enable_move_order_checks,
     moves,
     kBufferPartitionSize
-   , counter_move
    , /*include_quiets=*/true
    , cont_hist
     );
@@ -1002,13 +992,6 @@ AlphaBetaPlayer::QSearch(
   std::optional<Move> pv_move = pv_info.GetBestMove();
   Move* moves = thread_state.GetNextMoveBufferPartition();
 
-  Move counter_move;
-  if ((ss-1)->current_move.Present()) {
-      auto prev_from = (ss-1)->current_move.From();
-      auto prev_to = (ss-1)->current_move.To();
-      counter_move = counter_moves[prev_from.GetRow()*14*14*14 + prev_from.GetCol()*14*14 + prev_to.GetRow()*14 + prev_to.GetCol()];
-  }
-
   MovePicker move_picker(
     board,
     pv_move,
@@ -1020,7 +1003,6 @@ AlphaBetaPlayer::QSearch(
     options_.enable_move_order_checks,
     moves,
     kBufferPartitionSize
-   , counter_move
    , /*include_quiets=*/in_check
    , cont_hist
     );
@@ -1213,12 +1195,6 @@ void AlphaBetaPlayer::UpdateStats(
     if (options_.enable_history_heuristic) {
       history_heuristic[piece.GetPieceType()][from.GetRow()][from.GetCol()]
         [to.GetRow()][to.GetCol()] += bonus;
-    }
-    if (options_.enable_counter_move_heuristic && (ss-1)->current_move.Present()) {
-      auto prev_from = (ss-1)->current_move.From();
-      auto prev_to = (ss-1)->current_move.To();
-      counter_moves[prev_from.GetRow()*14*14*14 + prev_from.GetCol()*14*14
-        + prev_to.GetRow()*14 + prev_to.GetCol()] = move;
     }
     UpdateQuietStats(ss, move);
     UpdateContinuationHistories(ss, move, piece.GetPieceType(), bonus);
@@ -1674,7 +1650,6 @@ int AlphaBetaPlayer::Evaluate(
 void AlphaBetaPlayer::ResetHistoryHeuristics() {
   std::memset(history_heuristic, 0, sizeof(history_heuristic));
   std::memset(capture_heuristic, 0, sizeof(capture_heuristic));
-  std::memset(counter_moves, 0, sizeof(Move) * 14 * 14 * 14 * 14);
 
   for (bool in_check : {false, true}) {
     for (StatsType c : {NoCaptures, Captures}) {
@@ -1717,10 +1692,6 @@ void AlphaBetaPlayer::AgeHistoryHeuristics() {
       }
     }
   }
-
-  // Countermoves are not aged, they are cleared to prevent using
-  // a move from a completely different position.
-  std::memset(counter_moves, 0, sizeof(Move) * 14 * 14 * 14 * 14);
 
   // Age continuation histories by iterating down to the final integer tables.
   for (int in_check = 0; in_check < 2; ++in_check) {

@@ -24,7 +24,6 @@ MovePicker::MovePicker(
     bool enable_move_order_checks,
     Move* buffer,
     size_t buffer_size
-    ,Move counter_move
     ,bool include_quiets
     ,const PieceToHistory** piece_to_history
     ) {
@@ -66,9 +65,6 @@ MovePicker::MovePicker(
       }
     } else if (include_quiets) {
       score += history_heuristic[piece.GetPieceType()][from.GetRow()][from.GetCol()][to.GetRow()][to.GetCol()] / 2;
-      if (counter_move.Present() && move == counter_move) {
-        score += 50;
-      }
       score += (*piece_to_history[0])[piece_type][to.GetRow()][to.GetCol()] / 2;
       score += (*piece_to_history[1])[piece_type][to.GetRow()][to.GetCol()] / 4;
       score += (*piece_to_history[2])[piece_type][to.GetRow()][to.GetCol()] / 4;
