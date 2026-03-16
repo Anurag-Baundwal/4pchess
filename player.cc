@@ -617,9 +617,16 @@ std::optional<std::tuple<int, std::optional<Move>>> AlphaBetaPlayer::Search(
     r -= is_pv_node;
     r -= move.IsCapture() && move.ApproxSEE(board, kPieceEvaluations) > 0;
     if (!move.IsCapture()) {
-      int history_score = history_heuristic[piece.GetPieceType()][from.GetRow()][from.GetCol()]
-          [to.GetRow()][to.GetCol()];
-      r -= std::clamp((history_score - 4000) / 10000, -3, 3);
+      int history_score = history_heuristic[piece.GetPieceType()][from.GetRow()][from.GetCol()][to.GetRow()][to.GetCol()];
+      
+      if ((ss - 1)->current_move.Present()) {
+          history_score += (*cont_hist[0])[piece_type][to.GetRow()][to.GetCol()];
+      }
+      if ((ss - 2)->current_move.Present()) {
+          history_score += (*cont_hist[1])[piece_type][to.GetRow()][to.GetCol()];
+      }
+
+      r -= std::clamp((history_score - 4000) / 10000, -3, 3); 
     } else {
       Piece captured = move.GetCapturePiece();
       int history_score = capture_heuristic[piece.GetPieceType()][piece.GetColor()]
