@@ -525,31 +525,7 @@ function getBoardState() {
 }
 
 function getBoardKey() {
-  // Add setup type to the key to distinguish evaluations for different setups
   return board.moves.toString() + `|setup:${currentSetupType.name}`;
-}
-
-function handleResponse(req_key, req_depth, data) {
-  if (req_key in requests_in_flight) {
-    var depth = requests_in_flight[req_key];
-    if (depth <= req_depth) {
-      delete requests_in_flight[req_key];
-    }
-  }
-  if (data != null && 'evaluation' in data) {
-    data['req_depth'] = req_depth;
-    board_key_to_eval[req_key] = data;
-    displayBoard();
-  }
-}
-
-function handleError(req_key, req_depth, error) {
-  if (req_key in requests_in_flight) {
-    var depth = requests_in_flight[req_key];
-    if (depth <= req_depth) {
-      delete requests_in_flight[req_key];
-    }
-  }
 }
 
 function requestBoardEvaluation() {
@@ -558,54 +534,38 @@ function requestBoardEvaluation() {
 
   if (!req_pending || req_key != last_board_key) {
     if (req_pending) {
-      controller.abort();  // cancel current request
+      controller.abort();  // cancel current fetch request
       controller = new AbortController();
       signal = controller.signal;
     }
 
-    var eval_results = board_key_to_eval[req_key];
-
-    var search_depth = 1;
-    if (secs_per_move != null && max_search_depth != null) {
-      search_depth = max_search_depth;
-    } else if (eval_results != null && 'req_depth' in eval_results) {
-      search_depth = eval_results['req_depth'] + 1;
-      if ('evaluation' in eval_results
-          && Math.abs(eval_results['evaluation']) > MATE_VALUE - 1000) {
-        return;
-      }
-    }
-
-    var board_state = getBoardState();
     var req_body = {
-      'board_state': board_state,
-      'search_depth': search_depth,
-    }
-    if (secs_per_move != null) {
-      req_body['secs_per_move'] = secs_per_move;
-    }
-    var req_text = JSON.stringify(req_body);
-    // create a new request
-    var options = {
-      method: 'POST',
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: req_text,
-      signal: signal,
-    }
+      fen: utils.toFEN(board),
+      turnColorChar: board.turn.getColor().name.charAt(0).toUpperCase()
+    };
 
-    if (max_search_depth != null && search_depth > max_search_depth) {
-      return;
-    }
-
-    requests_in_flight[req_key] = search_depth;
+    requests_in_flight[req_key] = true;
     last_board_key = req_key;
-    fetch('/chess-api', options)
+    
+    fetch('/chess-api', {
+      method: 'POST',
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req_body),
+      signal: signal,
+    })
       .then((response) => response.json())
-      .then((response) => { handleResponse(req_key, search_depth, response); })
-      .catch((response) => { handleError(req_key, search_depth, response); });
+      .then((data) => {
+        delete requests_in_flight[req_key];
+        // Only update UI if we received a valid evaluation
+        if (data && data.evaluation !== undefined) {
+          board_key_to_eval[req_key] = data;
+          displayBoard();
+        }
+      })
+      .catch((err) => {
+         delete requests_in_flight[req_key];
+      });
   }
 }
 
-})()
+})(); // End of the IIFE

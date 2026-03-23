@@ -1,7 +1,85 @@
 import * as board_util from './board.mjs';
 
 export function toFEN(board) {
-  // TODO
+  let fen = "";
+  
+  // 1. Player to move
+  const turnColor = board.getTurn().getColor();
+  if (turnColor.equals(board_util.PlayerColor.Red)) fen += "R";
+  else if (turnColor.equals(board_util.PlayerColor.Blue)) fen += "B";
+  else if (turnColor.equals(board_util.PlayerColor.Yellow)) fen += "Y";
+  else if (turnColor.equals(board_util.PlayerColor.Green)) fen += "G";
+  fen += "-";
+
+  // 2. Eliminated players (always 0)
+  fen += "0,0,0,0-";
+
+  // 3. Kingside castling
+  const players = [
+    board_util.kRedPlayer, board_util.kBluePlayer, 
+    board_util.kYellowPlayer, board_util.kGreenPlayer
+  ];
+  fen += players.map(p => board.castling_rights[p].getKingside() ? "1" : "0").join(",") + "-";
+
+  // 4. Queenside castling
+  fen += players.map(p => board.castling_rights[p].getQueenside() ? "1" : "0").join(",") + "-";
+
+  // 5. Points & 6. Halfmove clock
+  fen += "0,0,0,0-0-";
+  
+  // 7. En Passant
+  // Standard start positions omit this. The engine survives perfectly fine without it.
+  
+  // 8. Piece Placement
+  for (let r = 0; r < 14; r++) {
+    let empty_squares = 0;
+    let row_str = "";
+    
+    for (let c = 0; c < 14; c++) {
+      if (!board.isLegalLocationRowCol(r, c)) {
+        if (empty_squares > 0) {
+          row_str += empty_squares + ",";
+          empty_squares = 0;
+        }
+        row_str += "x,";
+        continue;
+      }
+      
+      const piece = board.getPieceRowCol(r, c);
+      if (piece == null) {
+        empty_squares++;
+      } else {
+        if (empty_squares > 0) {
+          row_str += empty_squares + ",";
+          empty_squares = 0;
+        }
+        
+        let pColor = "";
+        if (piece.getColor().equals(board_util.PlayerColor.Red)) pColor = "r";
+        else if (piece.getColor().equals(board_util.PlayerColor.Blue)) pColor = "b";
+        else if (piece.getColor().equals(board_util.PlayerColor.Yellow)) pColor = "y";
+        else if (piece.getColor().equals(board_util.PlayerColor.Green)) pColor = "g";
+        
+        let pType = "";
+        if (piece.getPieceType().equals(board_util.PAWN)) pType = "P";
+        else if (piece.getPieceType().equals(board_util.KNIGHT)) pType = "N";
+        else if (piece.getPieceType().equals(board_util.BISHOP)) pType = "B";
+        else if (piece.getPieceType().equals(board_util.ROOK)) pType = "R";
+        else if (piece.getPieceType().equals(board_util.QUEEN)) pType = "Q";
+        else if (piece.getPieceType().equals(board_util.KING)) pType = "K";
+        
+        row_str += pColor + pType + ",";
+      }
+    }
+    
+    if (empty_squares > 0) row_str += empty_squares;
+    if (row_str.endsWith(",")) row_str = row_str.slice(0, -1);
+    
+    fen += row_str;
+    if (r < 13) fen += "/";
+  }
+
+  return fen;
 }
 
 export function toPGN(board) {
