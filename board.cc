@@ -1981,7 +1981,6 @@ int StaticExchangeEvaluationCapture(
 
   // Make the move to set up the board for the ensuing exchange
   board.MakeMove(move);
-
   PlayerColor current_turn = board.GetTurn().GetColor();
 
   // Gather all attackers on the target square
@@ -1990,21 +1989,27 @@ int StaticExchangeEvaluationCapture(
   // NO_TEAM gets attackers from all 4 players
   size_t num_attackers = board.GetAttackers2(attackers_buffer, kLimit, NO_TEAM, target);
 
+  // Use plain C-arrays (stack allocation) instead of std::vector for performance!
+  int attackers[4][kLimit];
+  int attacker_counts[4] = {0, 0, 0, 0};
+
   // Separate attackers by specific player, not by team!
-  std::vector<int> attackers_by_player[4];
   for (size_t i = 0; i < num_attackers; ++i) {
     PlayerColor pc = attackers_buffer[i].GetPiece().GetColor();
-    attackers_by_player[pc].push_back(piece_evaluations[attackers_buffer[i].GetPiece().GetPieceType()]);
+    attackers[pc][attacker_counts[pc]++] = piece_evaluations[attackers_buffer[i].GetPiece().GetPieceType()];
   }
 
   // Sort each player's attackers descending so we can pop_back() the cheapest piece
   for (int i = 0; i < 4; ++i) {
-    std::sort(attackers_by_player[i].begin(), attackers_by_player[i].end(), std::greater<int>());
+    if (attacker_counts[i] > 1) {
+      std::sort(attackers[i], attackers[i] + attacker_counts[i], std::greater<int>());
+    }
   }
 
   // Track the sequence of material gains
-  std::vector<int> gains;
-  gains.push_back(initial_capture_val);
+  int gains[32]; 
+  int num_gains = 0;
+  gains[num_gains++] = initial_capture_val;
 
   const Piece& piece_on_square = board.GetPiece(target);
   int current_piece_val = piece_evaluations[piece_on_square.GetPieceType()];
@@ -2014,9 +2019,9 @@ int StaticExchangeEvaluationCapture(
   int passes = 0;
 
   // Simulate the exchange sequence strictly enforcing 4PC turn order
-  while (passes < 4) {
+  while (passes < 4 && num_gains < 32) {
     // If the player's team already owns the square, or they have no pieces left, they pass.
-    if (GetTeam(p) == current_owner_team || attackers_by_player[p].empty()) {
+    if (GetTeam(p) == current_owner_team || attacker_counts[p] == 0) {
       passes++;
       p = static_cast<PlayerColor>((p + 1) % 4);
       continue;
@@ -2024,10 +2029,9 @@ int StaticExchangeEvaluationCapture(
 
     // Player p captures!
     passes = 0; // Reset consecutive passes
-    int attacker_val = attackers_by_player[p].back();
-    attackers_by_player[p].pop_back();
+    int attacker_val = attackers[p][--attacker_counts[p]]; 
 
-    gains.push_back(current_piece_val);
+    gains[num_gains++] = current_piece_val;
     
     // The attacking piece is now the one sitting on the square
     current_piece_val = attacker_val;
@@ -2041,9 +2045,8 @@ int StaticExchangeEvaluationCapture(
   // Minimax evaluation backwards through the capture sequence.
   // Because teams never capture their own pieces, the captures strictly 
   // alternate between the two teams, meaning standard 1v1 SEE math applies perfectly!
-  int n = gains.size();
-  while (--n > 0) {
-    gains[n - 1] -= std::max(0, gains[n]);
+  while (--num_gains > 0) {
+    gains[num_gains - 1] -= std::max(0, gains[num_gains]);
   }
 
   return gains[0];
