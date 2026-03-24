@@ -14,10 +14,10 @@ TranspositionTable::TranspositionTable(size_t table_size) {
       (hash_table_ != nullptr) && 
       "Can't create transposition table. Try using a smaller size.");
   a_mutexes_ = std::make_unique<std::mutex[]>(kNumMutexes);
-  // Initialize all eval fields to the 'none' value so we can reliably
-  // check if a static evaluation has been stored.
+  // Initialize all eval fields to the 'none' value
   for (size_t i = 0; i < table_size_; ++i) {
     hash_table_[i].eval = value_none_tt;
+    hash_table_[i].age = 0; // Initialize age
   }
 }
 
@@ -38,9 +38,28 @@ void TranspositionTable::Save(
   size_t n = key % table_size_;
   std::lock_guard<std::mutex> lock(a_mutexes_[n % kNumMutexes]);
   HashTableEntry& entry = hash_table_[n];
-  if (bound == EXACT
-      || entry.key != key
-      || entry.depth <= depth) { // Prioritize entries from deeper searches
+
+  bool replace = false;
+
+  if (entry.key != key) {
+    // 1. HASH COLLISION (Different position mapping to the same index)
+    // Replace if the existing entry is from an older search (stale), 
+    // OR if the current search is deeper.
+    if (entry.age != generation_ || depth >= entry.depth) {
+      replace = true;
+    }
+  } else {
+    // 2. SAME POSITION
+    // Replace if the new search is at least as deep, or gives an EXACT bound.
+    if (depth >= entry.depth || bound == EXACT) {
+      replace = true;
+    }
+    // Very important: Refresh the age! This prevents our deep, valuable 
+    // entries from being evicted by random hash collisions during this turn.
+    entry.age = generation_;
+  }
+
+  if (replace) {
     entry.key = key;
     entry.depth = depth;
     if (move.has_value()) {
@@ -52,6 +71,7 @@ void TranspositionTable::Save(
     entry.eval = eval;
     entry.bound = bound;
     entry.is_pv = is_pv;
+    entry.age = generation_;
   }
 }
 

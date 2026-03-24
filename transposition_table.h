@@ -25,6 +25,7 @@ struct HashTableEntry {
   int eval;
   ScoreBound bound;
   bool is_pv;
+  uint8_t age; // Added to track generation
 };
 
 class TranspositionTable {
@@ -34,6 +35,9 @@ class TranspositionTable {
    const HashTableEntry* Get(int64_t key);
    void Save(int64_t key, int depth, std::optional<Move> move,
              int score, int eval, ScoreBound bound, bool is_pv);
+   
+   // Added to track aging
+   void NewSearch() { generation_++; }
 
   ~TranspositionTable() {
     if (hash_table_ != nullptr) {
@@ -46,6 +50,8 @@ class TranspositionTable {
   size_t table_size_ = 0;
   static constexpr size_t kNumMutexes = 256;
   std::unique_ptr<std::mutex[]> a_mutexes_;
+  
+  uint8_t generation_ = 0; // Added counter
 };
 
 

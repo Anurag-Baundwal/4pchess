@@ -1758,6 +1758,12 @@ AlphaBetaPlayer::MakeMove(
   last_board_key_ = hash_key;
 
   SetCanceled(false);
+
+  // Increment TT generation for aging-based replacement
+  if (transposition_table_) {
+    transposition_table_->NewSearch();
+  }
+  
   // Use Alpha-Beta search with iterative deepening
   std::optional<std::chrono::time_point<std::chrono::system_clock>> deadline;
   auto start = std::chrono::system_clock::now();
