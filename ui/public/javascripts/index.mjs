@@ -233,6 +233,15 @@ function maybeMakeSuggestedMove() {
       const from_col = from['col'];
       const to_row = to['row'];
       const to_col = to['col'];
+      const pv_promo = pv['promotion']; // 'q', 'r', 'b', 'n', or null
+
+      let target_promo = null;
+      if (pv_promo) {
+        if (pv_promo === 'q') target_promo = board_util.QUEEN;
+        else if (pv_promo === 'r') target_promo = board_util.ROOK;
+        else if (pv_promo === 'b') target_promo = board_util.BISHOP;
+        else if (pv_promo === 'n') target_promo = board_util.KNIGHT;
+      }
 
       var piece = board.getPieceRowCol(from_row, from_col);
       var from_loc = new board_util.BoardLocation(from_row, from_col);
@@ -240,6 +249,11 @@ function maybeMakeSuggestedMove() {
       var to_loc = new board_util.BoardLocation(to_row, to_col);
       for (const move of legal_moves) {
         if (move.getTo().equals(to_loc)) {
+          // If a promotion target exists, bypass moves matching other promotion selections
+          const movePromo = move.getPromotionPieceType();
+          if (target_promo && (!movePromo || !movePromo.equals(target_promo))) {
+            continue;
+          }
           var piece_type = piece.getPieceType();
           performMove(move, piece_type);
           displayBoard();
@@ -373,10 +387,21 @@ function displayBoard() {
   var board_key = getBoardKey();
   var eval_results = board_key_to_eval[board_key];
   if (eval_results != null && 'evaluation' in eval_results) {
-    var evaluation = Number(parseFloat(eval_results['evaluation']) / 100).toFixed(2);
+    // Check if the evaluation represents a mate score (contains 'M')
+    var raw_eval = eval_results['evaluation'];
+    var evaluation = String(raw_eval).includes('M')
+      ? raw_eval
+      : Number(parseFloat(raw_eval) / 100).toFixed(2);
+
     var search_depth = eval_results['search_depth'];
     var piece_eval = board.pieceEval();
-    var static_eval = Number(parseFloat(eval_results['zero_move_evaluation']) / 100).toFixed(1);
+
+    // Check if the zero move static evaluation represents a mate score (contains 'M')
+    var raw_static = eval_results['zero_move_evaluation'];
+    var static_eval = String(raw_static).includes('M')
+      ? raw_static
+      : Number(parseFloat(raw_static) / 100).toFixed(1);
+
     var eval_html = `eval: ${evaluation} static eval: ${static_eval} <br/> depth: ${search_depth} <br/> piece eval: ${piece_eval}`;
     var turn_info = `side to move: ${board.turn.getColor().name}`; 
     $('#eval_estimate').html(eval_html);
