@@ -1,1 +1,1 @@
-node-gyp build && node app.js
+node app.js
